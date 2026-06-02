@@ -1,30 +1,51 @@
 package archive
 
 import (
-	"os"
 	"path/filepath"
-	"strings"
+
+	crawlconfig "github.com/openclaw/crawlkit/config"
 )
 
-const DefaultArchiveRoot = ".photoscrawl"
+const databaseFilename = "photos.sqlite"
+
+var runtimeApp = crawlconfig.App{Name: "photoscrawl", PlatformDirs: true}
 
 type Paths struct {
-	ArchiveRoot string
-	Database    string
+	ConfigPath string
+	DataDir    string
+	Database   string
+	CacheDir   string
+	LogDir     string
+	ShareDir   string
 }
 
-func PathsFromEnv() Paths {
-	root := strings.TrimSpace(os.Getenv("PHOTOSCRAWL_HOME"))
-	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			home = "."
-		}
-		root = filepath.Join(home, DefaultArchiveRoot)
+func DefaultPaths() (Paths, error) {
+	defaults, err := runtimeApp.DefaultPaths()
+	if err != nil {
+		return Paths{}, err
 	}
-	db := strings.TrimSpace(os.Getenv("PHOTOSCRAWL_DB"))
-	if db == "" {
-		db = filepath.Join(root, "photos.sqlite")
-	}
-	return Paths{ArchiveRoot: root, Database: db}
+	return Paths{
+		ConfigPath: defaults.ConfigPath,
+		DataDir:    defaults.BaseDir,
+		Database:   filepath.Join(defaults.BaseDir, databaseFilename),
+		CacheDir:   defaults.CacheDir,
+		LogDir:     defaults.LogDir,
+		ShareDir:   defaults.ShareDir,
+	}, nil
+}
+
+func (p Paths) EvalRootDir() string {
+	return filepath.Join(p.DataDir, "evals")
+}
+
+func (p Paths) OriginalsCacheDir() string {
+	return filepath.Join(p.CacheDir, "originals")
+}
+
+func (p Paths) PlaceContextCacheDir() string {
+	return filepath.Join(p.CacheDir, "place-context")
+}
+
+func (p Paths) PlaceBackfillDir() string {
+	return filepath.Join(p.DataDir, "backfills", "place-context-full", "apple-ingest")
 }

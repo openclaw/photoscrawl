@@ -1,6 +1,7 @@
 package evalcard
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,26 +23,30 @@ func normalizeOllamaGenerateURL(raw string) string {
 	return value + "/api/generate"
 }
 
-func defaultedOutputDir(value string, now func() time.Time) (string, error) {
+func defaultedOutputDir(value string, defaultRoot string, now func() time.Time) (string, error) {
 	if strings.TrimSpace(value) != "" {
 		return filepath.Abs(value)
 	}
-	home, err := os.UserHomeDir()
+	defaultRoot = strings.TrimSpace(defaultRoot)
+	if defaultRoot == "" {
+		return "", errors.New("eval output root is required")
+	}
+	root, err := filepath.Abs(defaultRoot)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".photoscrawl", "evals", now().UTC().Format("2006-01-02-150405")+"-photo-card"), nil
+	return filepath.Join(root, now().UTC().Format("2006-01-02-150405")+"-photo-card"), nil
 }
 
-func defaultedCacheDir(value string) (string, error) {
+func defaultedCacheDir(value string, defaultDir string) (string, error) {
 	if strings.TrimSpace(value) != "" {
 		return filepath.Abs(value)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	defaultDir = strings.TrimSpace(defaultDir)
+	if defaultDir == "" {
+		return "", errors.New("eval cache dir is required")
 	}
-	return filepath.Join(home, ".photoscrawl", "cache", "originals"), nil
+	return filepath.Abs(defaultDir)
 }
 
 func rejectRepoPath(path string) error {

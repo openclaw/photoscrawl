@@ -22,15 +22,14 @@ func TestNormalizeOllamaGenerateURL(t *testing.T) {
 }
 
 func TestDefaultOutputDirIsPrivate(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	got, err := defaultedOutputDir("", func() time.Time {
+	root := t.TempDir()
+	got, err := defaultedOutputDir("", root, func() time.Time {
 		return time.Date(2026, 5, 30, 12, 30, 0, 0, time.UTC)
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(home, ".photoscrawl", "evals", "2026-05-30-123000-photo-card")
+	want := filepath.Join(root, "2026-05-30-123000-photo-card")
 	if got != want {
 		t.Fatalf("defaultedOutputDir = %q, want %q", got, want)
 	}

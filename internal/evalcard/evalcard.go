@@ -29,6 +29,8 @@ type Options struct {
 	LibraryPath          string
 	OutputDir            string
 	CacheDir             string
+	DefaultOutputRoot    string
+	DefaultCacheDir      string
 	PromptPath           string
 	Models               []string
 	OllamaGenerateURL    string
@@ -118,11 +120,11 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, fmt.Errorf("unsupported sample %q", sample)
 	}
 
-	outputDir, err := defaultedOutputDir(opts.OutputDir, now)
+	outputDir, err := defaultedOutputDir(opts.OutputDir, opts.DefaultOutputRoot, now)
 	if err != nil {
 		return Result{}, err
 	}
-	cacheDir, err := defaultedCacheDir(opts.CacheDir)
+	cacheDir, err := defaultedCacheDir(opts.CacheDir, opts.DefaultCacheDir)
 	if err != nil {
 		return Result{}, err
 	}

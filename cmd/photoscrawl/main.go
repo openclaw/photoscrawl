@@ -29,7 +29,10 @@ func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return usage()
 	}
-	paths := archive.PathsFromEnv()
+	paths, err := archive.DefaultPaths()
+	if err != nil {
+		return err
+	}
 	switch args[0] {
 	case "init":
 		fs := flag.NewFlagSet("init", flag.ContinueOnError)
@@ -239,6 +242,8 @@ func run(ctx context.Context, args []string) error {
 			LibraryPath:          *libraryPath,
 			OutputDir:            *outDir,
 			CacheDir:             *cacheDir,
+			DefaultOutputRoot:    paths.EvalRootDir(),
+			DefaultCacheDir:      paths.OriginalsCacheDir(),
 			PromptPath:           *promptPath,
 			Models:               splitList(*models),
 			OllamaGenerateURL:    *ollamaURL,

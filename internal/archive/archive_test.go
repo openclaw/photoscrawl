@@ -9,8 +9,8 @@ import (
 func TestInitAndStatus(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	paths := Paths{ArchiveRoot: t.TempDir()}
-	paths.Database = filepath.Join(paths.ArchiveRoot, "photos.sqlite")
+	root := t.TempDir()
+	paths := Paths{DataDir: root, Database: filepath.Join(root, "photos.sqlite")}
 
 	before, err := Status(ctx, paths)
 	if err != nil {

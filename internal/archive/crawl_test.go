@@ -130,7 +130,7 @@ func TestCrawlImportsSnapshotAndTracksDelta(t *testing.T) {
 func testPaths(t *testing.T) Paths {
 	t.Helper()
 	root := t.TempDir()
-	return Paths{ArchiveRoot: root, Database: filepath.Join(root, "photos.sqlite")}
+	return Paths{DataDir: root, Database: filepath.Join(root, "photos.sqlite")}
 }
 
 func mkdirLibrary(path string) error {
