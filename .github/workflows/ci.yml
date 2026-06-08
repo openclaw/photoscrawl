@@ -51,4 +51,6 @@ jobs:
         run: GOWORK=off go test -count=1 ./...
 
       - name: Build
-        run: GOWORK=off go build -trimpath -o bin/photoscrawl ./cmd/photoscrawl
+        run: |
+          mkdir -p bin
+          GOWORK=off go build -trimpath -o bin/photoscrawl ./cmd/photoscrawl
