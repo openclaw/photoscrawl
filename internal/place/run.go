@@ -63,18 +63,6 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	return result, nil
 }
 
-func RunRaw(ctx context.Context, opts Options) (Result, error) {
-	input, err := loadInput(opts.InputPath)
-	if err != nil {
-		return Result{}, err
-	}
-	radius := opts.RadiusMeters
-	if radius <= 0 {
-		radius = defaultRadiusMeters
-	}
-	return rawAppleResult(ctx, input, radius)
-}
-
 func LoadResult(path string) (Result, error) {
 	reader, closeReader, err := inputReader(path)
 	if err != nil {

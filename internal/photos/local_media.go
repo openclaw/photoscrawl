@@ -88,14 +88,6 @@ func AttachLocalMediaPaths(snapshot *LibrarySnapshot, libraryPath string) error 
 	return nil
 }
 
-func FindLocalMediaCandidates(libraryPath, localIdentifier string) ([]LocalMediaCandidate, error) {
-	index, err := localMediaIndex(libraryPath)
-	if err != nil {
-		return nil, err
-	}
-	return index.Candidates(localIdentifier), nil
-}
-
 func localMediaIndex(libraryPath string) (LocalMediaIndex, error) {
 	roots := []struct {
 		path  string
