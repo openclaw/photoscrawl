@@ -39,7 +39,13 @@ jobs:
         run: GOWORK=off go vet ./...
 
       - name: Deadcode
-        run: GOWORK=off go run golang.org/x/tools/cmd/deadcode@v0.45.0 -test ./...
+        run: |
+          output_file=$(mktemp)
+          GOWORK=off go run golang.org/x/tools/cmd/deadcode@v0.45.0 -test ./... > "$output_file"
+          if [ -s "$output_file" ]; then
+            cat "$output_file"
+            exit 1
+          fi
 
       - name: Test
         run: GOWORK=off go test -count=1 ./...
