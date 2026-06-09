@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify module cache
+        run: GOWORK=off go mod verify
+
+      - name: Check go.mod tidy
+        run: |
+          GOWORK=off go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Vet
+        run: GOWORK=off go vet ./...
+
+      - name: Deadcode
+        run: |
+          output_file=$(mktemp)
+          GOWORK=off go run golang.org/x/tools/cmd/deadcode@v0.45.0 -test ./... > "$output_file"
+          if [ -s "$output_file" ]; then
+            cat "$output_file"
+            exit 1
+          fi
+
+      - name: Test
+        run: GOWORK=off go test -count=1 ./...
+
+      - name: Build
+        run: |
+          mkdir -p bin
+          GOWORK=off go build -trimpath -o bin/photoscrawl ./cmd/photoscrawl
