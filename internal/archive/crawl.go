@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joshp123/photoscrawl/internal/photos"
 	"github.com/openclaw/crawlkit/state"
 	"github.com/openclaw/crawlkit/store"
+	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
 type CrawlOptions struct {
@@ -191,7 +191,17 @@ where source_library_id = ? and last_seen_snapshot_id <> ?
 	}
 	c.result.PreviouslySeenMissing = missing
 
-	cursor := state.NewCursor(tx)
+	cursor, err := state.NewCursorMapped(tx, state.CursorMapping{
+		Table:      "sync_state",
+		Source:     "source",
+		EntityType: "entity_type",
+		EntityID:   "entity_id",
+		Cursor:     "cursor",
+		SyncedAt:   "synced_at",
+	})
+	if err != nil {
+		return err
+	}
 	if err := cursor.Set(ctx, c.snapshot.Provider, "source_library", sourceID, snapshotID); err != nil {
 		return err
 	}

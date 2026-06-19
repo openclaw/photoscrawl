@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/joshp123/photoscrawl/internal/photos"
+	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
 func TestNeighborsReturnsDeterministicSourceReasons(t *testing.T) {

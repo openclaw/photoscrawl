@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joshp123/photoscrawl/internal/photos"
-	repoPrompts "github.com/joshp123/photoscrawl/prompts"
+	"github.com/openclaw/photoscrawl/internal/photos"
+	repoPrompts "github.com/openclaw/photoscrawl/prompts"
 )
 
 const (

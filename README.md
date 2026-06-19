@@ -22,6 +22,7 @@ evidence supports each result.
 ## First Commands
 
 ```sh
+go run ./cmd/photoscrawl metadata --json
 go run ./cmd/photoscrawl init --json
 go run ./cmd/photoscrawl status --json
 go run ./cmd/photoscrawl crawl --library "$HOME/Pictures/Photos Library.photoslibrary" --json

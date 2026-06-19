@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshp123/photoscrawl/internal/photos"
 	"github.com/openclaw/crawlkit/control"
+	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
 func TestCrawlImportsSnapshotAndTracksDelta(t *testing.T) {

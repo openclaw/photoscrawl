@@ -8,11 +8,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/joshp123/photoscrawl/internal/archive"
-	"github.com/joshp123/photoscrawl/internal/evalcard"
-	"github.com/joshp123/photoscrawl/internal/photos"
-	"github.com/joshp123/photoscrawl/internal/place"
 	"github.com/openclaw/crawlkit/output"
+	"github.com/openclaw/photoscrawl/internal/archive"
+	"github.com/openclaw/photoscrawl/internal/evalcard"
+	"github.com/openclaw/photoscrawl/internal/photos"
+	"github.com/openclaw/photoscrawl/internal/place"
 )
 
 func main() {
@@ -35,6 +35,22 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	switch args[0] {
+	case "metadata":
+		fs := flag.NewFlagSet("metadata", flag.ContinueOnError)
+		fs.SetOutput(os.Stderr)
+		jsonFlag := fs.Bool("json", false, "write JSON")
+		formatFlag := fs.String("format", "", "output format")
+		if err := fs.Parse(args[1:]); err != nil {
+			return output.UsageError{Err: err}
+		}
+		if fs.NArg() != 0 {
+			return output.UsageError{Err: errors.New("metadata takes flags only")}
+		}
+		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "metadata", archive.ControlManifest(paths))
 	case "init":
 		fs := flag.NewFlagSet("init", flag.ContinueOnError)
 		fs.SetOutput(os.Stderr)
@@ -144,7 +160,7 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		result, err := archive.Search(ctx, paths, archive.SearchOptions{Query: *query, Limit: *limit})
+		result, err := archive.Search(ctx, paths, archive.SearchOptions{Query: joinedQuery(*query, fs.Args()), Limit: *limit})
 		if err != nil {
 			return err
 		}
@@ -330,7 +346,7 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage() error {
-	return output.UsageError{Err: errors.New("usage: photoscrawl <init|status|crawl|classify|search|open|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
+	return output.UsageError{Err: errors.New("usage: photoscrawl <metadata|init|status|crawl|classify|search|open|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
 }
 
 func splitList(value string) []string {
@@ -342,4 +358,9 @@ func splitList(value string) []string {
 		}
 	}
 	return out
+}
+
+func joinedQuery(flagValue string, args []string) string {
+	parts := append([]string{strings.TrimSpace(flagValue)}, args...)
+	return strings.TrimSpace(strings.Join(parts, " "))
 }
