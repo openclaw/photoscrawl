@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	crawlconfig "github.com/openclaw/crawlkit/config"
 	"github.com/openclaw/crawlkit/state"
 	"github.com/openclaw/crawlkit/store"
 	"github.com/openclaw/photoscrawl/internal/photos"
@@ -44,7 +45,7 @@ func Crawl(ctx context.Context, paths Paths, opts CrawlOptions) (CrawlResult, er
 	if opts.Provider == nil {
 		return CrawlResult{}, errors.New("photos provider is required")
 	}
-	libraryPath := strings.TrimSpace(opts.LibraryPath)
+	libraryPath := crawlconfig.ExpandHome(strings.TrimSpace(opts.LibraryPath))
 	if libraryPath == "" {
 		return CrawlResult{}, errors.New("library path is required")
 	}
