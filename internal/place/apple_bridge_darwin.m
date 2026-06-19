@@ -87,6 +87,7 @@ static NSDictionary *pcPlaceAddress(CLPlacemark *placemark, NSString *source) {
   return address;
 }
 
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
 static NSDictionary *pcPlaceMapItemAddress(MKMapItem *item, NSString *source) API_AVAILABLE(macos(26.0)) {
   if (item == nil) {
     return nil;
@@ -106,6 +107,7 @@ static NSDictionary *pcPlaceMapItemAddress(MKMapItem *item, NSString *source) AP
   pcPlaceSetString(address, @"source", source);
   return address.count > 1 ? address : nil;
 }
+#endif
 
 static NSDictionary *pcPlaceCoordinate(CLLocation *location) {
   if (location == nil) {
@@ -133,10 +135,13 @@ static NSDictionary *pcPlaceCandidate(MKMapItem *item, CLLocation *origin) {
   }
   CLLocation *location = nil;
   NSDictionary *address = nil;
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
   if (@available(macOS 26.0, *)) {
     location = item.location;
     address = pcPlaceMapItemAddress(item, @"apple_mapkit_local_search");
-  } else {
+  } else
+#endif
+  {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     MKPlacemark *placemark = item.placemark;
@@ -192,6 +197,7 @@ char *photoscrawl_place_context_json(const char *requestJSON, char **errorOut) {
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
     NSMutableArray *candidates = [NSMutableArray array];
 
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
     if (@available(macOS 26.0, *)) {
       __block NSArray<MKMapItem *> *mapItems = nil;
       __block NSError *geocodeError = nil;
@@ -230,7 +236,9 @@ char *photoscrawl_place_context_json(const char *requestJSON, char **errorOut) {
       [mapItems release];
       [geocodeError release];
       [request release];
-    } else {
+    } else
+#endif
+    {
       __block NSArray<CLPlacemark *> *placemarks = nil;
       __block NSError *geocodeError = nil;
       __block BOOL geocodeDone = NO;
