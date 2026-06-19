@@ -87,6 +87,28 @@ static NSDictionary *pcPlaceAddress(CLPlacemark *placemark, NSString *source) {
   return address;
 }
 
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+static NSDictionary *pcPlaceMapItemAddress(MKMapItem *item, NSString *source) API_AVAILABLE(macos(26.0)) {
+  if (item == nil) {
+    return nil;
+  }
+  NSMutableDictionary *address = [NSMutableDictionary dictionary];
+  MKAddressRepresentations *representations = item.addressRepresentations;
+  MKAddress *mapAddress = item.address;
+  pcPlaceSetString(address, @"name", item.name);
+  pcPlaceSetString(address, @"locality", representations.cityName);
+  pcPlaceSetString(address, @"country", representations.regionName);
+  pcPlaceSetString(address, @"iso_country_code", representations.regionCode);
+  NSString *formatted = mapAddress.fullAddress;
+  if (formatted.length == 0) {
+    formatted = [representations fullAddressIncludingRegion:YES singleLine:YES];
+  }
+  pcPlaceSetString(address, @"formatted", formatted);
+  pcPlaceSetString(address, @"source", source);
+  return address.count > 1 ? address : nil;
+}
+#endif
+
 static NSDictionary *pcPlaceCoordinate(CLLocation *location) {
   if (location == nil) {
     return nil;
@@ -101,14 +123,7 @@ static NSDictionary *pcPlaceCandidate(MKMapItem *item, CLLocation *origin) {
   if (item == nil) {
     return nil;
   }
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  MKPlacemark *placemark = item.placemark;
-#pragma clang diagnostic pop
   NSString *name = item.name;
-  if (name == nil || name.length == 0) {
-    name = placemark.name;
-  }
   if (name == nil || name.length == 0) {
     return nil;
   }
@@ -118,7 +133,22 @@ static NSDictionary *pcPlaceCandidate(MKMapItem *item, CLLocation *origin) {
   if (@available(macOS 10.15, *)) {
     pcPlaceSetString(candidate, @"category", item.pointOfInterestCategory);
   }
-  CLLocation *location = placemark.location;
+  CLLocation *location = nil;
+  NSDictionary *address = nil;
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+  if (@available(macOS 26.0, *)) {
+    location = item.location;
+    address = pcPlaceMapItemAddress(item, @"apple_mapkit_local_search");
+  } else
+#endif
+  {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    MKPlacemark *placemark = item.placemark;
+#pragma clang diagnostic pop
+    location = placemark.location;
+    address = pcPlaceAddress(placemark, @"apple_mapkit_local_search");
+  }
   if (location != nil && origin != nil) {
     candidate[@"distance_m"] = @([location distanceFromLocation:origin]);
     NSDictionary *coordinate = pcPlaceCoordinate(location);
@@ -126,7 +156,6 @@ static NSDictionary *pcPlaceCandidate(MKMapItem *item, CLLocation *origin) {
       candidate[@"coordinate"] = coordinate;
     }
   }
-  NSDictionary *address = pcPlaceAddress(placemark, @"apple_mapkit_local_search");
   if (address != nil) {
     candidate[@"address"] = address;
   }
@@ -168,43 +197,90 @@ char *photoscrawl_place_context_json(const char *requestJSON, char **errorOut) {
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
     NSMutableArray *candidates = [NSMutableArray array];
 
-    __block NSArray<CLPlacemark *> *placemarks = nil;
-    __block NSError *geocodeError = nil;
-    __block BOOL geocodeDone = NO;
-    CLGeocoder *geocoder = [[CLGeocoder alloc] init];
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+    if (@available(macOS 26.0, *)) {
+      __block NSArray<MKMapItem *> *mapItems = nil;
+      __block NSError *geocodeError = nil;
+      __block BOOL geocodeDone = NO;
+      MKReverseGeocodingRequest *request = [[MKReverseGeocodingRequest alloc] initWithLocation:origin];
+      [request getMapItemsWithCompletionHandler:^(NSArray<MKMapItem *> * _Nullable found, NSError * _Nullable error) {
+        mapItems = [found retain];
+        geocodeError = [error retain];
+        geocodeDone = YES;
+      }];
+      if (!pcPlaceWait(&geocodeDone, 20.0)) {
+        [request cancel];
+        pcPlaceSetError(errorOut, @"Apple reverse geocode timed out");
+        [mapItems release];
+        [geocodeError release];
+        [request release];
+        return NULL;
+      } else if (geocodeError != nil) {
+        pcPlaceSetError(errorOut, [NSString stringWithFormat:@"Apple reverse geocode failed: %@", geocodeError.localizedDescription]);
+        [mapItems release];
+        [geocodeError release];
+        [request release];
+        return NULL;
+      } else if (mapItems.count > 0) {
+        NSDictionary *address = pcPlaceMapItemAddress(mapItems.firstObject, @"apple_mapkit_reverse");
+        if (address != nil) {
+          result[@"address"] = address;
+        }
+      } else {
+        pcPlaceSetError(errorOut, @"Apple reverse geocode returned no map items");
+        [mapItems release];
+        [geocodeError release];
+        [request release];
+        return NULL;
+      }
+      [mapItems release];
+      [geocodeError release];
+      [request release];
+    } else
+#endif
+    {
+      __block NSArray<CLPlacemark *> *placemarks = nil;
+      __block NSError *geocodeError = nil;
+      __block BOOL geocodeDone = NO;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    [geocoder reverseGeocodeLocation:origin completionHandler:^(NSArray<CLPlacemark *> * _Nullable found, NSError * _Nullable error) {
-      placemarks = [found retain];
-      geocodeError = [error retain];
-      geocodeDone = YES;
-    }];
-#pragma clang diagnostic pop
-    if (!pcPlaceWait(&geocodeDone, 20.0)) {
-      [geocoder cancelGeocode];
-      pcPlaceSetError(errorOut, @"Apple reverse geocode timed out");
-      [placemarks release];
-      [geocodeError release];
-      return NULL;
-    } else if (geocodeError != nil) {
-      pcPlaceSetError(errorOut, [NSString stringWithFormat:@"Apple reverse geocode failed: %@", geocodeError.localizedDescription]);
-      [placemarks release];
-      [geocodeError release];
-      return NULL;
-    } else if (placemarks.count > 0) {
-      CLPlacemark *placemark = placemarks.firstObject;
-      NSDictionary *address = pcPlaceAddress(placemark, @"apple_corelocation_reverse");
-      if (address != nil) {
-        result[@"address"] = address;
+      CLGeocoder *geocoder = [[CLGeocoder alloc] init];
+      [geocoder reverseGeocodeLocation:origin completionHandler:^(NSArray<CLPlacemark *> * _Nullable found, NSError * _Nullable error) {
+        placemarks = [found retain];
+        geocodeError = [error retain];
+        geocodeDone = YES;
+      }];
+      if (!pcPlaceWait(&geocodeDone, 20.0)) {
+        [geocoder cancelGeocode];
+        pcPlaceSetError(errorOut, @"Apple reverse geocode timed out");
+        [placemarks release];
+        [geocodeError release];
+        [geocoder release];
+        return NULL;
+      } else if (geocodeError != nil) {
+        pcPlaceSetError(errorOut, [NSString stringWithFormat:@"Apple reverse geocode failed: %@", geocodeError.localizedDescription]);
+        [placemarks release];
+        [geocodeError release];
+        [geocoder release];
+        return NULL;
+      } else if (placemarks.count > 0) {
+        CLPlacemark *placemark = placemarks.firstObject;
+        NSDictionary *address = pcPlaceAddress(placemark, @"apple_corelocation_reverse");
+        if (address != nil) {
+          result[@"address"] = address;
+        }
+      } else {
+        pcPlaceSetError(errorOut, @"Apple reverse geocode returned no placemarks");
+        [placemarks release];
+        [geocodeError release];
+        [geocoder release];
+        return NULL;
       }
-    } else {
-      pcPlaceSetError(errorOut, @"Apple reverse geocode returned no placemarks");
       [placemarks release];
       [geocodeError release];
-      return NULL;
+      [geocoder release];
+#pragma clang diagnostic pop
     }
-    [placemarks release];
-    [geocodeError release];
 
     if (@available(macOS 11.0, *)) {
       __block MKLocalSearchResponse *searchResponse = nil;

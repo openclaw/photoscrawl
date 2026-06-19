@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshp123/photoscrawl/internal/photos"
 	"github.com/openclaw/crawlkit/control"
+	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
 func TestCrawlImportsSnapshotAndTracksDelta(t *testing.T) {
@@ -127,6 +127,26 @@ func TestCrawlImportsSnapshotAndTracksDelta(t *testing.T) {
 	}
 }
 
+func TestCrawlExpandsHomeInLibraryPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	libraryPath := filepath.Join(home, "Pictures", "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	provider := &pathRecordingProvider{snapshot: fakeSnapshot(false, false)}
+	if _, err := Crawl(context.Background(), testPaths(t), CrawlOptions{
+		LibraryPath: "~/Pictures/Fixture Photos Library.photoslibrary",
+		Provider:    provider,
+		Now:         fixedClock("2026-05-28T10:00:00Z"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if provider.path != libraryPath {
+		t.Fatalf("provider library path = %q, want %q", provider.path, libraryPath)
+	}
+}
+
 func testPaths(t *testing.T) Paths {
 	t.Helper()
 	root := t.TempDir()
@@ -151,6 +171,16 @@ type fakeProvider struct {
 
 func (f fakeProvider) Snapshot(context.Context, string) (photos.LibrarySnapshot, error) {
 	return f.snapshot, nil
+}
+
+type pathRecordingProvider struct {
+	path     string
+	snapshot photos.LibrarySnapshot
+}
+
+func (p *pathRecordingProvider) Snapshot(_ context.Context, path string) (photos.LibrarySnapshot, error) {
+	p.path = path
+	return p.snapshot, nil
 }
 
 func fakeSnapshot(changed, includeSecond bool) photos.LibrarySnapshot {

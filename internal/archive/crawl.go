@@ -12,9 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joshp123/photoscrawl/internal/photos"
+	crawlconfig "github.com/openclaw/crawlkit/config"
 	"github.com/openclaw/crawlkit/state"
 	"github.com/openclaw/crawlkit/store"
+	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
 type CrawlOptions struct {
@@ -44,7 +45,7 @@ func Crawl(ctx context.Context, paths Paths, opts CrawlOptions) (CrawlResult, er
 	if opts.Provider == nil {
 		return CrawlResult{}, errors.New("photos provider is required")
 	}
-	libraryPath := strings.TrimSpace(opts.LibraryPath)
+	libraryPath := crawlconfig.ExpandHome(strings.TrimSpace(opts.LibraryPath))
 	if libraryPath == "" {
 		return CrawlResult{}, errors.New("library path is required")
 	}
@@ -191,7 +192,17 @@ where source_library_id = ? and last_seen_snapshot_id <> ?
 	}
 	c.result.PreviouslySeenMissing = missing
 
-	cursor := state.NewCursor(tx)
+	cursor, err := state.NewCursorMapped(tx, state.CursorMapping{
+		Table:      "sync_state",
+		Source:     "source",
+		EntityType: "entity_type",
+		EntityID:   "entity_id",
+		Cursor:     "cursor",
+		SyncedAt:   "synced_at",
+	})
+	if err != nil {
+		return err
+	}
 	if err := cursor.Set(ctx, c.snapshot.Provider, "source_library", sourceID, snapshotID); err != nil {
 		return err
 	}

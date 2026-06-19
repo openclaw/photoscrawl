@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/joshp123/photoscrawl/internal/photos"
+	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
 func TestClassifyLocalModelWritesTypedObservations(t *testing.T) {
