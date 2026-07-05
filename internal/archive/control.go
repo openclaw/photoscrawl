@@ -1,6 +1,11 @@
 package archive
 
-import "github.com/openclaw/crawlkit/control"
+import (
+	"os"
+	"path/filepath"
+
+	"github.com/openclaw/crawlkit/control"
+)
 
 func ControlManifest(paths Paths) control.Manifest {
 	manifest := control.NewManifest("photoscrawl", "Apple Photos", "photoscrawl")
@@ -17,7 +22,7 @@ func ControlManifest(paths Paths) control.Manifest {
 		DefaultLogs:     paths.LogDir,
 		DefaultShare:    paths.ShareDir,
 	}
-	manifest.Capabilities = []string{"metadata", "status", "init", "search"}
+	manifest.Capabilities = []string{"metadata", "status", "init", "search", "export"}
 	manifest.Privacy = control.Privacy{
 		ExportsSecrets: false,
 		LocalOnlyScopes: []string{
@@ -33,6 +38,7 @@ func ControlManifest(paths Paths) control.Manifest {
 		"status":   {Title: "Status", Argv: []string{"photoscrawl", "status", "--json"}, JSON: true},
 		"init":     {Title: "Initialize archive", Argv: []string{"photoscrawl", "init", "--json"}, JSON: true, Mutates: true},
 		"query":    {Title: "Search", Argv: []string{"photoscrawl", "search", "--json", "--query"}, JSON: true},
+		"export":   {Title: "Export image", Argv: []string{"photoscrawl", "export", "--json", "--output", filepath.Join(paths.ShareDir, "exports") + string(os.PathSeparator), "--id"}, JSON: true, Mutates: true},
 	}
 	return manifest
 }

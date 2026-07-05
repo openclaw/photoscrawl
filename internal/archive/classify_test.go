@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/openclaw/photoscrawl/internal/photos"
@@ -143,5 +144,278 @@ func TestPromptLeakageCreatesQualityIssue(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("observations = %#v", observations)
+	}
+}
+
+func TestLocalModelOpenAIChatCompletion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	imagePath := filepath.Join(t.TempDir(), "fixture.jpeg")
+	if err := os.WriteFile(imagePath, []byte("fixture image bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		var request openAIChatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.Model != "fixture-openai-vision" || len(request.Messages) != 1 || len(request.Messages[0].Content) != 2 {
+			t.Fatalf("request = %#v", request)
+		}
+		if request.Messages[0].Content[1].ImageURL == nil || !strings.HasPrefix(request.Messages[0].Content[1].ImageURL.URL, "data:") {
+			t.Fatalf("image part = %#v", request.Messages[0].Content[1])
+		}
+		_ = json.NewEncoder(w).Encode(openAIChatCompletionResponse{
+			Choices: []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			}{{
+				Message: struct {
+					Content string `json:"content"`
+				}{Content: `{"scene_summary":"A plate of food.","food_or_objects":["plate"],"cluster_terms":["food"]}`},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	classifier, err := newLocalModelClassifier("fixture-openai-vision", server.URL, localModelAPIOpenAI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := classifier.classify(ctx, imagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Payload["scene_summary"] != "A plate of food." || len(result.Observations) == 0 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestClassifyLocalModelSkipsRowsWithoutImageInput(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	videoPath := filepath.Join(t.TempDir(), "fixture.mov")
+	if err := os.WriteFile(videoPath, []byte("fixture video bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	provider := fakeProvider{snapshot: photos.LibrarySnapshot{
+		Provider:            "fake",
+		PhotosVersion:       "fixture",
+		AuthorizationStatus: "authorized",
+		Assets: []photos.Asset{
+			{
+				LocalIdentifier: "fixture-video-asset",
+				MediaType:       "video",
+				MediaSubtypes:   "0",
+				CreationDate:    "2026-05-27T12:00:00Z",
+				Width:           100,
+				Height:          80,
+				Resources: []photos.Resource{
+					{
+						Type:             "video",
+						UTI:              "com.apple.quicktime-movie",
+						OriginalFilename: "fixture.mov",
+						LocalPath:        videoPath,
+						Availability:     "local",
+						AvailableLocally: true,
+					},
+				},
+			},
+		},
+	}}
+	if _, err := Crawl(ctx, paths, CrawlOptions{
+		LibraryPath: libraryPath,
+		Provider:    provider,
+		Now:         fixedClock("2026-05-28T10:00:00Z"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Classify(ctx, paths, ClassifyOptions{
+		All:        true,
+		LocalModel: "fixture-vision",
+		Now:        fixedClock("2026-05-28T10:15:00Z"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Processed != 1 || first.ContentClassified != 0 || first.ContentClassificationFailures != 0 {
+		t.Fatalf("first classify result = %#v", first)
+	}
+	second, err := Classify(ctx, paths, ClassifyOptions{
+		All:        true,
+		LocalModel: "fixture-vision",
+		Now:        fixedClock("2026-05-28T10:20:00Z"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Processed != 0 {
+		t.Fatalf("second classify result = %#v", second)
+	}
+}
+
+func TestClassifyLocalModelKeepsRemoteImagesRetryable(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	provider := fakeProvider{snapshot: photos.LibrarySnapshot{
+		Provider:            "fake",
+		PhotosVersion:       "fixture",
+		AuthorizationStatus: "authorized",
+		Assets: []photos.Asset{
+			{
+				LocalIdentifier: "fixture-remote-image-asset",
+				MediaType:       "image",
+				MediaSubtypes:   "0",
+				CreationDate:    "2026-05-27T12:00:00Z",
+				Width:           100,
+				Height:          80,
+				Resources: []photos.Resource{
+					{
+						Type:             "photo",
+						UTI:              "public.jpeg",
+						OriginalFilename: "fixture.jpeg",
+						Availability:     "remote",
+						NeedsDownload:    true,
+					},
+				},
+			},
+		},
+	}}
+	if _, err := Crawl(ctx, paths, CrawlOptions{
+		LibraryPath: libraryPath,
+		Provider:    provider,
+		Now:         fixedClock("2026-05-28T10:00:00Z"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Classify(ctx, paths, ClassifyOptions{
+		All:        true,
+		LocalModel: "fixture-vision",
+		Now:        fixedClock("2026-05-28T10:15:00Z"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Processed != 1 || first.WaitingForLocalContent != 1 || first.ContentClassified != 0 {
+		t.Fatalf("first classify result = %#v", first)
+	}
+	second, err := Classify(ctx, paths, ClassifyOptions{
+		All:        true,
+		LocalModel: "fixture-vision",
+		Now:        fixedClock("2026-05-28T10:20:00Z"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Processed != 1 || second.WaitingForLocalContent != 1 {
+		t.Fatalf("second classify result = %#v", second)
+	}
+}
+
+func TestClassifyLocalModelPrioritizesPendingRowsBeforeWaitingRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	imagePath := filepath.Join(t.TempDir(), "fixture.jpeg")
+	if err := os.WriteFile(imagePath, []byte("fixture image bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(ollamaGenerateResponse{
+			Response: `{"scene_summary":"A local image.","cluster_terms":["local_image"]}`,
+			Done:     true,
+		})
+	}))
+	defer server.Close()
+	provider := fakeProvider{snapshot: photos.LibrarySnapshot{
+		Provider:            "fake",
+		PhotosVersion:       "fixture",
+		AuthorizationStatus: "authorized",
+		Assets: []photos.Asset{
+			{
+				LocalIdentifier: "newer-remote-image",
+				MediaType:       "image",
+				MediaSubtypes:   "0",
+				CreationDate:    "2026-05-28T12:00:00Z",
+				Width:           100,
+				Height:          80,
+				Resources: []photos.Resource{
+					{
+						Type:             "photo",
+						UTI:              "public.jpeg",
+						OriginalFilename: "remote.jpeg",
+						Availability:     "remote",
+						NeedsDownload:    true,
+					},
+				},
+			},
+			{
+				LocalIdentifier: "older-local-image",
+				MediaType:       "image",
+				MediaSubtypes:   "0",
+				CreationDate:    "2026-05-27T12:00:00Z",
+				Width:           100,
+				Height:          80,
+				Resources: []photos.Resource{
+					{
+						Type:             "photo",
+						UTI:              "public.jpeg",
+						OriginalFilename: "local.jpeg",
+						LocalPath:        imagePath,
+						Availability:     "local",
+						AvailableLocally: true,
+					},
+				},
+			},
+		},
+	}}
+	if _, err := Crawl(ctx, paths, CrawlOptions{
+		LibraryPath: libraryPath,
+		Provider:    provider,
+		Now:         fixedClock("2026-05-28T10:00:00Z"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Classify(ctx, paths, ClassifyOptions{
+		Limit:         1,
+		LocalModel:    "fixture-vision",
+		LocalModelURL: server.URL,
+		Now:           fixedClock("2026-05-28T10:15:00Z"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Processed != 1 || first.WaitingForLocalContent != 1 || first.ContentClassified != 0 {
+		t.Fatalf("first classify result = %#v", first)
+	}
+	second, err := Classify(ctx, paths, ClassifyOptions{
+		Limit:         1,
+		LocalModel:    "fixture-vision",
+		LocalModelURL: server.URL,
+		Now:           fixedClock("2026-05-28T10:20:00Z"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Processed != 1 || second.ContentClassified != 1 || second.WaitingForLocalContent != 0 {
+		t.Fatalf("second classify result = %#v", second)
 	}
 }

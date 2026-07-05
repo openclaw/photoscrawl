@@ -23,6 +23,9 @@ const (
 	localModelClassifierSource = "local_multimodal"
 	localModelPromptVersion    = repoPrompts.LocalMultimodalObservationsV1Version
 	defaultOllamaGenerateURL   = "http://127.0.0.1:11434/api/generate"
+	defaultOpenAIChatURL       = "http://127.0.0.1:1234/v1/chat/completions"
+	localModelAPIOllama        = "ollama"
+	localModelAPIOpenAI        = "openai"
 )
 
 type contentObservation struct {
@@ -44,7 +47,8 @@ type localModelResult struct {
 type localModelClassifier struct {
 	modelID       string
 	promptVersion string
-	generateURL   string
+	api           string
+	endpointURL   string
 	client        *http.Client
 }
 
@@ -62,17 +66,29 @@ type ollamaGenerateResponse struct {
 	Error    string `json:"error,omitempty"`
 }
 
-func newLocalModelClassifier(modelID, generateURL string) localModelClassifier {
-	generateURL = strings.TrimSpace(generateURL)
-	if generateURL == "" {
-		generateURL = defaultOllamaGenerateURL
+func newLocalModelClassifier(modelID, endpointURL, api string) (localModelClassifier, error) {
+	api = strings.ToLower(strings.TrimSpace(api))
+	if api == "" {
+		api = localModelAPIOllama
+	}
+	endpointURL = strings.TrimSpace(endpointURL)
+	switch api {
+	case localModelAPIOllama:
+		if endpointURL == "" {
+			endpointURL = defaultOllamaGenerateURL
+		}
+	case localModelAPIOpenAI:
+		endpointURL = normalizeOpenAIChatURL(endpointURL)
+	default:
+		return localModelClassifier{}, fmt.Errorf("unsupported local model api %q", api)
 	}
 	return localModelClassifier{
 		modelID:       strings.TrimSpace(modelID),
 		promptVersion: localModelPromptVersion,
-		generateURL:   generateURL,
+		api:           api,
+		endpointURL:   endpointURL,
 		client:        &http.Client{Timeout: 10 * time.Minute},
-	}
+	}, nil
 }
 
 func (c localModelClassifier) classify(ctx context.Context, imagePath string) (localModelResult, error) {
@@ -81,6 +97,32 @@ func (c localModelClassifier) classify(ctx context.Context, imagePath string) (l
 		return localModelResult{}, fmt.Errorf("read local image: %w", err)
 	}
 	sum := sha256.Sum256(data)
+	var rawResponse string
+	switch c.api {
+	case localModelAPIOllama:
+		rawResponse, err = c.classifyOllama(ctx, data)
+	case localModelAPIOpenAI:
+		rawResponse, err = c.classifyOpenAI(ctx, data)
+	default:
+		err = fmt.Errorf("unsupported local model api %q", c.api)
+	}
+	if err != nil {
+		return localModelResult{}, err
+	}
+	payload, err := parseModelPayload(rawResponse)
+	if err != nil {
+		return localModelResult{}, err
+	}
+	return localModelResult{
+		Payload:      payload,
+		RawResponse:  strings.TrimSpace(rawResponse),
+		ImageBytes:   int64(len(data)),
+		ImageSHA256:  hex.EncodeToString(sum[:]),
+		Observations: observationsFromPayload(payload),
+	}, nil
+}
+
+func (c localModelClassifier) classifyOllama(ctx context.Context, data []byte) (string, error) {
 	requestBody, err := json.Marshal(ollamaGenerateRequest{
 		Model:  c.modelID,
 		Prompt: repoPrompts.LocalMultimodalObservationsV1,
@@ -91,39 +133,119 @@ func (c localModelClassifier) classify(ctx context.Context, imagePath string) (l
 		},
 	})
 	if err != nil {
-		return localModelResult{}, err
+		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.generateURL, bytes.NewReader(requestBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpointURL, bytes.NewReader(requestBody))
 	if err != nil {
-		return localModelResult{}, err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return localModelResult{}, fmt.Errorf("call local model: %w", err)
+		return "", fmt.Errorf("call local model: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return localModelResult{}, fmt.Errorf("local model returned %s", resp.Status)
+		return "", fmt.Errorf("local model returned %s", resp.Status)
 	}
 	var generated ollamaGenerateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&generated); err != nil {
-		return localModelResult{}, fmt.Errorf("decode local model response: %w", err)
+		return "", fmt.Errorf("decode local model response: %w", err)
 	}
 	if strings.TrimSpace(generated.Error) != "" {
-		return localModelResult{}, errors.New(generated.Error)
+		return "", errors.New(generated.Error)
 	}
-	payload, err := parseModelPayload(generated.Response)
+	return generated.Response, nil
+}
+
+type openAIChatCompletionRequest struct {
+	Model       string              `json:"model"`
+	Messages    []openAIChatMessage `json:"messages"`
+	Temperature float64             `json:"temperature"`
+	MaxTokens   int                 `json:"max_tokens,omitempty"`
+}
+
+type openAIChatMessage struct {
+	Role    string                  `json:"role"`
+	Content []openAIChatMessagePart `json:"content"`
+}
+
+type openAIChatMessagePart struct {
+	Type     string                  `json:"type"`
+	Text     string                  `json:"text,omitempty"`
+	ImageURL *openAIChatImageURLPart `json:"image_url,omitempty"`
+}
+
+type openAIChatImageURLPart struct {
+	URL string `json:"url"`
+}
+
+type openAIChatCompletionResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+func (c localModelClassifier) classifyOpenAI(ctx context.Context, data []byte) (string, error) {
+	mediaType := http.DetectContentType(data)
+	requestBody, err := json.Marshal(openAIChatCompletionRequest{
+		Model: c.modelID,
+		Messages: []openAIChatMessage{{
+			Role: "user",
+			Content: []openAIChatMessagePart{
+				{Type: "text", Text: repoPrompts.LocalMultimodalObservationsV1},
+				{Type: "image_url", ImageURL: &openAIChatImageURLPart{URL: "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)}},
+			},
+		}},
+		Temperature: 0.1,
+		MaxTokens:   800,
+	})
 	if err != nil {
-		return localModelResult{}, err
+		return "", err
 	}
-	return localModelResult{
-		Payload:      payload,
-		RawResponse:  strings.TrimSpace(generated.Response),
-		ImageBytes:   int64(len(data)),
-		ImageSHA256:  hex.EncodeToString(sum[:]),
-		Observations: observationsFromPayload(payload),
-	}, nil
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpointURL, bytes.NewReader(requestBody))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("call local model: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return "", fmt.Errorf("local model returned %s", resp.Status)
+	}
+	var completion openAIChatCompletionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&completion); err != nil {
+		return "", fmt.Errorf("decode local model response: %w", err)
+	}
+	if completion.Error != nil && strings.TrimSpace(completion.Error.Message) != "" {
+		return "", errors.New(completion.Error.Message)
+	}
+	if len(completion.Choices) == 0 {
+		return "", errors.New("local model returned no choices")
+	}
+	return completion.Choices[0].Message.Content, nil
+}
+
+func normalizeOpenAIChatURL(value string) string {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	if value == "" {
+		return defaultOpenAIChatURL
+	}
+	if strings.HasSuffix(value, "/v1/chat/completions") || strings.HasSuffix(value, "/chat/completions") {
+		return value
+	}
+	if strings.HasSuffix(value, "/v1") {
+		return value + "/chat/completions"
+	}
+	return value + "/v1/chat/completions"
 }
 
 func parseModelPayload(raw string) (map[string]any, error) {
@@ -254,6 +376,7 @@ func writeLocalModelClassification(ctx context.Context, tx *sql.Tx, input classi
 	evidenceJSON, err := jsonText(map[string]any{
 		"classifier":        localModelClassifierSource,
 		"model_id":          classifier.modelID,
+		"model_api":         classifier.api,
 		"prompt_version":    classifier.promptVersion,
 		"image_bytes":       result.ImageBytes,
 		"image_sha256":      result.ImageSHA256,
@@ -321,6 +444,7 @@ func writeModelRun(ctx context.Context, tx *sql.Tx, runID string, classifier loc
 	metadataJSON, err := jsonText(map[string]any{
 		"content_classified": contentClassified,
 		"failures":           failures,
+		"model_api":          classifier.api,
 		"local_only":         true,
 	})
 	if err != nil {

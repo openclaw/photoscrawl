@@ -24,6 +24,10 @@ func TestControlManifest(t *testing.T) {
 	if !slices.Contains(manifest.Capabilities, "search") || manifest.Commands["query"].Mutates {
 		t.Fatalf("search contract = %#v", manifest)
 	}
+	export := manifest.Commands["export"]
+	if !slices.Contains(manifest.Capabilities, "export") || !export.Mutates || !slices.Contains(export.Argv, filepath.Join(paths.ShareDir, "exports")+string(filepath.Separator)) {
+		t.Fatalf("export contract = %#v", export)
+	}
 	if manifest.Privacy.ExportsSecrets || !slices.Contains(manifest.Privacy.LocalOnlyScopes, "apple-photos") {
 		t.Fatalf("privacy = %#v", manifest.Privacy)
 	}

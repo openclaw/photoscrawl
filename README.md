@@ -28,10 +28,12 @@ go run ./cmd/photoscrawl status --json
 go run ./cmd/photoscrawl crawl --library "$HOME/Pictures/Photos Library.photoslibrary" --json
 go run ./cmd/photoscrawl classify --limit 100 --json
 go run ./cmd/photoscrawl classify --local-model gemma4:e4b --limit 20 --json
+go run ./cmd/photoscrawl classify --local-model photoscrawl-qwen3-vl-8b --local-model-api openai --local-model-url http://127.0.0.1:1234/v1 --limit 20 --json
 go run ./cmd/photoscrawl search --query "drone beach portugal" --json
 go run ./cmd/photoscrawl open --id asset:<id> --json
 go run ./cmd/photoscrawl neighbors --id asset:<id> --json
 go run ./cmd/photoscrawl evidence --row-id asset:<id> --json
+go run ./cmd/photoscrawl export --id asset:<id> --output /tmp/photo-export --json
 go run ./cmd/photoscrawl place-context --input <private-eval-run>/metadata/E001.json --json
 go run ./cmd/photoscrawl place-card --input <crawlkit-cache-dir>/place-context/<key>.json
 go run ./cmd/photoscrawl place-backfill --json
@@ -58,6 +60,15 @@ source. If PhotoKit is unavailable or denied, the POC falls back to a read-only
 local package media paths for derivatives/renders/originals when they exist, so
 content classification can use local files without changing Photos or iCloud
 state. Every imported asset is queued for `classify`.
+
+`export` materializes one image asset into a caller-provided file or directory
+outside the Photos library package. It uses an indexed local original when one is
+available, otherwise asks PhotoKit for the original; if PhotoKit is denied but an
+indexed local package resource is readable, it falls back to that copy and
+reports `"original": false`. This is the retrieval path for agents: use
+`search`/`open` for discovery, then `export --id asset:<id> --output
+<safe-path> --json` to create an attachable file without reading protected
+Photos package paths directly.
 
 `classify` drains that queue into evidence-backed local metadata observations.
 With `--local-model <ollama-model>`, it also sends already-local image bytes to a

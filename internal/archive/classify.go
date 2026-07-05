@@ -21,6 +21,7 @@ type ClassifyOptions struct {
 	All           bool
 	Limit         int
 	LocalModel    string
+	LocalModelAPI string
 	LocalModelURL string
 	Now           func() time.Time
 }
@@ -116,7 +117,10 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 	localModel := strings.TrimSpace(opts.LocalModel)
 	var classifier *localModelClassifier
 	if localModel != "" {
-		localClassifier := newLocalModelClassifier(localModel, opts.LocalModelURL)
+		localClassifier, err := newLocalModelClassifier(localModel, opts.LocalModelURL, opts.LocalModelAPI)
+		if err != nil {
+			return ClassifyResult{}, err
+		}
 		classifier = &localClassifier
 		result.Classifier = metadataClassifierSource + "+" + localModelClassifierSource
 		result.ModelID = localModel
@@ -162,6 +166,9 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 				result.WaitingForLocalContent++
 			}
 			if classifier == nil || !hasImage {
+				if classifier != nil && input.hasUnavailableLocalModelContent(hasImage) {
+					return updateClassificationQueue(ctx, tx, input.QueueID, "content_unavailable", "local_model_no_image_content", now().UTC())
+				}
 				return nil
 			}
 			if contentErr != nil {
@@ -199,7 +206,7 @@ select q.id, q.asset_id, q.source_library_id, q.needs_download,
 from classification_queue q
 join asset a on a.id = q.asset_id
 where q.state in (` + classifyQueueStates(includeMetadataClassified) + `)
-order by a.creation_date desc, q.id
+order by case q.state when 'pending' then 0 else 1 end, a.creation_date desc, q.id
 `
 	args := []any{}
 	if limit > 0 {
@@ -462,6 +469,16 @@ func (input classifyInput) hasLocalContent() bool {
 		}
 	}
 	return false
+}
+
+func (input classifyInput) hasUnavailableLocalModelContent(hasImage bool) bool {
+	if hasImage || !input.hasLocalContent() {
+		return false
+	}
+	if input.MediaType != "image" {
+		return true
+	}
+	return !input.NeedsDownload
 }
 
 func (input classifyInput) keywordText() string {
