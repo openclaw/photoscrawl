@@ -179,11 +179,12 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 			result.Processed++
 			result.MetadataClassified++
 			result.VisualObservationsWritten += written
-			if !input.hasLocalContent() {
+			contentUnavailable := classifier != nil && !hasImage && input.hasUnavailableLocalModelContent(hasImage)
+			if !input.hasLocalContent() && !contentUnavailable {
 				result.WaitingForLocalContent++
 			}
 			if classifier == nil || !hasImage {
-				if classifier != nil && input.hasUnavailableLocalModelContent(hasImage) {
+				if contentUnavailable {
 					return updateClassificationQueue(ctx, tx, input.QueueID, "content_unavailable", "local_model_no_image_content", now().UTC())
 				}
 				return nil

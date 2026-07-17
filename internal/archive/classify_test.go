@@ -274,7 +274,7 @@ func TestClassifyLocalModelTerminatesRemoteNonImageRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Processed != 1 || first.ContentClassified != 0 || first.ContentClassificationFailures != 0 {
+	if first.Processed != 1 || first.WaitingForLocalContent != 0 || first.ContentClassified != 0 || first.ContentClassificationFailures != 0 {
 		t.Fatalf("first classify result = %#v", first)
 	}
 	second, err := Classify(ctx, paths, ClassifyOptions{
