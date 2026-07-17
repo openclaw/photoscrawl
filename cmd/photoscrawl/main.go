@@ -124,7 +124,9 @@ func run(ctx context.Context, args []string) error {
 		dbPath := fs.String("db", "", "photos.sqlite path")
 		all := fs.Bool("all", false, "classify all pending assets")
 		limit := fs.Int("limit", 100, "max pending assets to classify")
-		localModel := fs.String("local-model", "", "local Ollama vision model to use for content observations")
+		localModel := fs.String("local-model", "", "local vision model to use for content observations")
+		localModelAPI := fs.String("local-model-api", "", "local model API: ollama or openai")
+		localModelURL := fs.String("local-model-url", "", "local model endpoint URL")
 		jsonFlag := fs.Bool("json", false, "write JSON")
 		formatFlag := fs.String("format", "", "output format")
 		if err := fs.Parse(args[1:]); err != nil {
@@ -137,7 +139,13 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		result, err := archive.Classify(ctx, paths, archive.ClassifyOptions{All: *all, Limit: *limit, LocalModel: *localModel})
+		result, err := archive.Classify(ctx, paths, archive.ClassifyOptions{
+			All:           *all,
+			Limit:         *limit,
+			LocalModel:    *localModel,
+			LocalModelAPI: *localModelAPI,
+			LocalModelURL: *localModelURL,
+		})
 		if err != nil {
 			return err
 		}

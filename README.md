@@ -28,6 +28,7 @@ go run ./cmd/photoscrawl status --json
 go run ./cmd/photoscrawl crawl --library "$HOME/Pictures/Photos Library.photoslibrary" --json
 go run ./cmd/photoscrawl classify --limit 100 --json
 go run ./cmd/photoscrawl classify --local-model gemma4:e4b --limit 20 --json
+go run ./cmd/photoscrawl classify --local-model photoscrawl-qwen3-vl-8b --local-model-api openai --local-model-url http://127.0.0.1:1234/v1 --limit 20 --json
 go run ./cmd/photoscrawl search --query "drone beach portugal" --json
 go run ./cmd/photoscrawl open --id asset:<id> --json
 go run ./cmd/photoscrawl neighbors --id asset:<id> --json
@@ -60,12 +61,17 @@ content classification can use local files without changing Photos or iCloud
 state. Every imported asset is queued for `classify`.
 
 `classify` drains that queue into evidence-backed local metadata observations.
-With `--local-model <ollama-model>`, it also sends already-local image bytes to a
-local Ollama vision model and stores typed candidate observations:
+With `--local-model <model>`, it also sends already-local image bytes to a local
+Ollama or OpenAI-compatible vision server and stores typed candidate
+observations:
 scene summaries, visible-text summaries, place-type/name/venue candidates,
 objects/foods, anonymous people presence, privacy hints, cluster terms, and
 uncertainties. These are evidence-backed model observations, not durable
 people/place/trip truth.
+
+Local-model endpoints must resolve entirely to loopback addresses. Redirects
+are checked under the same rule. Evidence records the actual response endpoint
+and that image bytes were transmitted over the loopback interface.
 
 `neighbors` returns source-level adjacent assets only. It does not create trips,
 people, places, or clusters. Current reasons are deterministic archive facts:
