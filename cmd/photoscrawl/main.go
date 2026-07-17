@@ -217,34 +217,6 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return output.Write(os.Stdout, format, "evidence", result)
-	case "export":
-		fs := flag.NewFlagSet("export", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		dbPath := fs.String("db", "", "photos.sqlite path")
-		id := fs.String("id", "", "asset id")
-		outputPath := fs.String("output", "", "destination file path or directory")
-		allowICloud := fs.Bool("allow-icloud-downloads", false, "allow PhotoKit to download the original from iCloud")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if *dbPath != "" {
-			paths.Database = *dbPath
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
-		if err != nil {
-			return err
-		}
-		result, err := archive.Export(ctx, paths, archive.ExportOptions{
-			ID:                   *id,
-			Output:               *outputPath,
-			AllowICloudDownloads: *allowICloud,
-		})
-		if err != nil {
-			return err
-		}
-		return output.Write(os.Stdout, format, "export", result)
 	case "neighbors":
 		fs := flag.NewFlagSet("neighbors", flag.ContinueOnError)
 		fs.SetOutput(os.Stderr)
@@ -382,7 +354,7 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage() error {
-	return output.UsageError{Err: errors.New("usage: photoscrawl <metadata|init|status|crawl|classify|search|open|neighbors|evidence|export|place-context|place-card|place-backfill|eval-card>")}
+	return output.UsageError{Err: errors.New("usage: photoscrawl <metadata|init|status|crawl|classify|search|open|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
 }
 
 func splitList(value string) []string {

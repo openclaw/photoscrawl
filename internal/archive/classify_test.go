@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/openclaw/crawlkit/store"
 	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
@@ -106,6 +107,9 @@ func TestClassifyLocalModelWritesTypedObservations(t *testing.T) {
 	if result.ContentClassified != 1 || result.ContentObservationsWritten == 0 || result.ContentClassificationFailures != 0 || result.WaitingForLocalContent != 0 {
 		t.Fatalf("classify result = %#v", result)
 	}
+	if result.LocalModelAPI != localModelAPIOllama || result.LocalModelRequestedEndpoint != server.URL || len(result.LocalModelResponseEndpoints) != 1 || result.LocalModelResponseEndpoints[0] != server.URL || result.LocalModelNetworkScope != "loopback" || !result.TransmitsImageBytes || result.LocalModelHTTPRequestAttempts != 1 || result.LocalModelHTTPResponses != 1 {
+		t.Fatalf("local model provenance = %#v", result)
+	}
 
 	search, err := Search(ctx, paths, SearchOptions{Query: "satay", Limit: 5})
 	if err != nil {
@@ -127,6 +131,34 @@ func TestClassifyLocalModelWritesTypedObservations(t *testing.T) {
 	}
 	if len(evidence.Evidence) == 0 {
 		t.Fatal("expected local model evidence")
+	}
+	var foundProvenance bool
+	for _, row := range evidence.Evidence {
+		if row["source"] != localModelClassifierSource {
+			continue
+		}
+		var value map[string]any
+		if err := json.Unmarshal([]byte(row["value_json"].(string)), &value); err != nil {
+			t.Fatal(err)
+		}
+		if value["endpoint"] == server.URL && value["network_scope"] == "loopback" && value["image_transmitted"] == true && value["transmitted_image_bytes"] == float64(len("fixture image bytes")) {
+			foundProvenance = true
+		}
+	}
+	if !foundProvenance {
+		t.Fatalf("evidence provenance = %#v", evidence.Evidence)
+	}
+	db, err := store.OpenReadOnly(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var runMetadata string
+	if err := db.DB().QueryRowContext(ctx, `select metadata_json from model_run where id = ?`, result.ModelRunID).Scan(&runMetadata); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(runMetadata, `"requested_endpoint":"`+server.URL+`"`) || !strings.Contains(runMetadata, `"response_endpoints":["`+server.URL+`"]`) || !strings.Contains(runMetadata, `"network_scope":"loopback"`) || !strings.Contains(runMetadata, `"http_request_attempts":1`) || !strings.Contains(runMetadata, `"http_responses_received":1`) {
+		t.Fatalf("model run metadata = %s", runMetadata)
 	}
 }
 
@@ -182,7 +214,7 @@ func TestLocalModelOpenAIChatCompletion(t *testing.T) {
 	}))
 	defer server.Close()
 
-	classifier, err := newLocalModelClassifier("fixture-openai-vision", server.URL, localModelAPIOpenAI)
+	classifier, err := newLocalModelClassifier(ctx, "fixture-openai-vision", server.URL, localModelAPIOpenAI)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,21 +222,17 @@ func TestLocalModelOpenAIChatCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Payload["scene_summary"] != "A plate of food." || len(result.Observations) == 0 {
+	if result.Payload["scene_summary"] != "A plate of food." || len(result.Observations) == 0 || result.Endpoint != server.URL+"/v1/chat/completions" || result.HTTPRequests != 1 || result.HTTPResponses != 1 {
 		t.Fatalf("result = %#v", result)
 	}
 }
 
-func TestClassifyLocalModelSkipsRowsWithoutImageInput(t *testing.T) {
+func TestClassifyLocalModelTerminatesRemoteNonImageRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	paths := testPaths(t)
 	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
 	if err := mkdirLibrary(libraryPath); err != nil {
-		t.Fatal(err)
-	}
-	videoPath := filepath.Join(t.TempDir(), "fixture.mov")
-	if err := os.WriteFile(videoPath, []byte("fixture video bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	provider := fakeProvider{snapshot: photos.LibrarySnapshot{
@@ -213,7 +241,7 @@ func TestClassifyLocalModelSkipsRowsWithoutImageInput(t *testing.T) {
 		AuthorizationStatus: "authorized",
 		Assets: []photos.Asset{
 			{
-				LocalIdentifier: "fixture-video-asset",
+				LocalIdentifier: "fixture-remote-video-asset",
 				MediaType:       "video",
 				MediaSubtypes:   "0",
 				CreationDate:    "2026-05-27T12:00:00Z",
@@ -224,9 +252,8 @@ func TestClassifyLocalModelSkipsRowsWithoutImageInput(t *testing.T) {
 						Type:             "video",
 						UTI:              "com.apple.quicktime-movie",
 						OriginalFilename: "fixture.mov",
-						LocalPath:        videoPath,
-						Availability:     "local",
-						AvailableLocally: true,
+						Availability:     "remote",
+						NeedsDownload:    true,
 					},
 				},
 			},

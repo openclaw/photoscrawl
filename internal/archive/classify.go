@@ -27,20 +27,27 @@ type ClassifyOptions struct {
 }
 
 type ClassifyResult struct {
-	Database                      string `json:"database"`
-	Classifier                    string `json:"classifier"`
-	ModelID                       string `json:"model_id"`
-	InputVersion                  string `json:"input_version"`
-	Limit                         int    `json:"limit"`
-	Processed                     int    `json:"processed"`
-	MetadataClassified            int    `json:"metadata_classified"`
-	WaitingForLocalContent        int    `json:"waiting_for_local_content"`
-	VisualObservationsWritten     int    `json:"visual_observations_written"`
-	LocalModel                    string `json:"local_model,omitempty"`
-	ModelRunID                    string `json:"model_run_id,omitempty"`
-	ContentClassified             int    `json:"content_classified"`
-	ContentObservationsWritten    int    `json:"content_observations_written"`
-	ContentClassificationFailures int    `json:"content_classification_failures"`
+	Database                      string   `json:"database"`
+	Classifier                    string   `json:"classifier"`
+	ModelID                       string   `json:"model_id"`
+	InputVersion                  string   `json:"input_version"`
+	Limit                         int      `json:"limit"`
+	Processed                     int      `json:"processed"`
+	MetadataClassified            int      `json:"metadata_classified"`
+	WaitingForLocalContent        int      `json:"waiting_for_local_content"`
+	VisualObservationsWritten     int      `json:"visual_observations_written"`
+	LocalModel                    string   `json:"local_model,omitempty"`
+	ModelRunID                    string   `json:"model_run_id,omitempty"`
+	ContentClassified             int      `json:"content_classified"`
+	ContentObservationsWritten    int      `json:"content_observations_written"`
+	ContentClassificationFailures int      `json:"content_classification_failures"`
+	LocalModelAPI                 string   `json:"local_model_api,omitempty"`
+	LocalModelRequestedEndpoint   string   `json:"local_model_requested_endpoint,omitempty"`
+	LocalModelResponseEndpoints   []string `json:"local_model_response_endpoints,omitempty"`
+	LocalModelNetworkScope        string   `json:"local_model_network_scope,omitempty"`
+	TransmitsImageBytes           bool     `json:"transmits_image_bytes,omitempty"`
+	LocalModelHTTPRequestAttempts int      `json:"local_model_http_request_attempts,omitempty"`
+	LocalModelHTTPResponses       int      `json:"local_model_http_responses,omitempty"`
 }
 
 type classifyInput struct {
@@ -117,7 +124,7 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 	localModel := strings.TrimSpace(opts.LocalModel)
 	var classifier *localModelClassifier
 	if localModel != "" {
-		localClassifier, err := newLocalModelClassifier(localModel, opts.LocalModelURL, opts.LocalModelAPI)
+		localClassifier, err := newLocalModelClassifier(ctx, localModel, opts.LocalModelURL, opts.LocalModelAPI)
 		if err != nil {
 			return ClassifyResult{}, err
 		}
@@ -125,6 +132,10 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 		result.Classifier = metadataClassifierSource + "+" + localModelClassifierSource
 		result.ModelID = localModel
 		result.LocalModel = localModel
+		result.LocalModelAPI = localClassifier.api
+		result.LocalModelRequestedEndpoint = localClassifier.endpointURL
+		result.LocalModelNetworkScope = "loopback"
+		result.TransmitsImageBytes = true
 		result.ModelRunID = stableID("model_run", localModelClassifierSource, localModel, localModelPromptVersion, now().UTC().Format(time.RFC3339Nano))
 	}
 
@@ -140,12 +151,18 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 	if err != nil {
 		return ClassifyResult{}, err
 	}
+	responseEndpoints := map[string]struct{}{}
 	for _, input := range inputs {
 		var contentResult *localModelResult
 		var contentErr error
 		imagePath, hasImage := input.contentImagePath()
 		if classifier != nil && hasImage {
 			modelResult, err := classifier.classify(ctx, imagePath)
+			result.LocalModelHTTPRequestAttempts += modelResult.HTTPRequests
+			result.LocalModelHTTPResponses += modelResult.HTTPResponses
+			for _, endpoint := range modelResult.ResponseEndpoints {
+				responseEndpoints[endpoint] = struct{}{}
+			}
 			if err != nil {
 				contentErr = err
 			} else {
@@ -188,8 +205,9 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 		}
 	}
 	if classifier != nil {
+		result.LocalModelResponseEndpoints = sortedEndpointSet(responseEndpoints)
 		err := db.WithTx(ctx, func(tx *sql.Tx) error {
-			return writeModelRun(ctx, tx, result.ModelRunID, *classifier, len(inputs), result.ContentClassified, result.ContentClassificationFailures, now().UTC())
+			return writeModelRun(ctx, tx, result.ModelRunID, *classifier, responseEndpoints, len(inputs), result.LocalModelHTTPRequestAttempts, result.LocalModelHTTPResponses, result.ContentClassified, result.ContentClassificationFailures, now().UTC())
 		})
 		if err != nil {
 			return ClassifyResult{}, err
@@ -472,11 +490,14 @@ func (input classifyInput) hasLocalContent() bool {
 }
 
 func (input classifyInput) hasUnavailableLocalModelContent(hasImage bool) bool {
-	if hasImage || !input.hasLocalContent() {
+	if hasImage {
 		return false
 	}
 	if input.MediaType != "image" {
 		return true
+	}
+	if !input.hasLocalContent() {
+		return false
 	}
 	return !input.NeedsDownload
 }

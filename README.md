@@ -33,7 +33,6 @@ go run ./cmd/photoscrawl search --query "drone beach portugal" --json
 go run ./cmd/photoscrawl open --id asset:<id> --json
 go run ./cmd/photoscrawl neighbors --id asset:<id> --json
 go run ./cmd/photoscrawl evidence --row-id asset:<id> --json
-go run ./cmd/photoscrawl export --id asset:<id> --output /tmp/photo-export --json
 go run ./cmd/photoscrawl place-context --input <private-eval-run>/metadata/E001.json --json
 go run ./cmd/photoscrawl place-card --input <crawlkit-cache-dir>/place-context/<key>.json
 go run ./cmd/photoscrawl place-backfill --json
@@ -61,22 +60,18 @@ local package media paths for derivatives/renders/originals when they exist, so
 content classification can use local files without changing Photos or iCloud
 state. Every imported asset is queued for `classify`.
 
-`export` materializes one image asset into a caller-provided file or directory
-outside the Photos library package. It uses an indexed local original when one is
-available, otherwise asks PhotoKit for the original; if PhotoKit is denied but an
-indexed local package resource is readable, it falls back to that copy and
-reports `"original": false`. This is the retrieval path for agents: use
-`search`/`open` for discovery, then `export --id asset:<id> --output
-<safe-path> --json` to create an attachable file without reading protected
-Photos package paths directly.
-
 `classify` drains that queue into evidence-backed local metadata observations.
-With `--local-model <ollama-model>`, it also sends already-local image bytes to a
-local Ollama vision model and stores typed candidate observations:
+With `--local-model <model>`, it also sends already-local image bytes to a local
+Ollama or OpenAI-compatible vision server and stores typed candidate
+observations:
 scene summaries, visible-text summaries, place-type/name/venue candidates,
 objects/foods, anonymous people presence, privacy hints, cluster terms, and
 uncertainties. These are evidence-backed model observations, not durable
 people/place/trip truth.
+
+Local-model endpoints must resolve entirely to loopback addresses. Redirects
+are checked under the same rule. Evidence records the actual response endpoint
+and that image bytes were transmitted over the loopback interface.
 
 `neighbors` returns source-level adjacent assets only. It does not create trips,
 people, places, or clusters. Current reasons are deterministic archive facts:
