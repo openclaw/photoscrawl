@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -14,6 +15,8 @@ import (
 	"github.com/openclaw/photoscrawl/internal/photos"
 	"github.com/openclaw/photoscrawl/internal/place"
 )
+
+var version = "dev"
 
 func main() {
 	if err := run(context.Background(), os.Args[1:]); err != nil {
@@ -30,11 +33,19 @@ func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return usage()
 	}
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-v") {
+		return writeVersion(os.Stdout)
+	}
 	paths, err := archive.DefaultPaths()
 	if err != nil {
 		return err
 	}
 	switch args[0] {
+	case "version":
+		if len(args) != 1 {
+			return output.UsageError{Err: errors.New("version takes no arguments")}
+		}
+		return writeVersion(os.Stdout)
 	case "metadata":
 		fs := flag.NewFlagSet("metadata", flag.ContinueOnError)
 		fs.SetOutput(os.Stderr)
@@ -359,7 +370,12 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage() error {
-	return output.UsageError{Err: errors.New("usage: photoscrawl <metadata|init|status|crawl|classify|search|open|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
+	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|classify|search|open|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
+}
+
+func writeVersion(w io.Writer) error {
+	_, err := fmt.Fprintln(w, version)
+	return err
 }
 
 func splitList(value string) []string {

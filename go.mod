@@ -3,14 +3,14 @@ module github.com/openclaw/photoscrawl
 go 1.26.5
 
 require (
-	github.com/openclaw/crawlkit v0.14.2
+	github.com/openclaw/crawlkit v0.14.3
 	modernc.org/sqlite v1.54.0
 )
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/mattn/go-isatty v0.0.22 // indirect
+	github.com/mattn/go-isatty v0.0.23 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

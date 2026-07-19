@@ -1,0 +1,36 @@
+version: 2
+
+project_name: photoscrawl
+
+builds:
+  - id: photoscrawl
+    main: ./cmd/photoscrawl
+    binary: "{{ .Os }}_{{ .Arch }}/photoscrawl"
+    no_unique_dist_dir: true
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: bundles
+    ids:
+      - photoscrawl
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    strip_binary_directory: true
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  disable: true

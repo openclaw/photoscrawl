@@ -19,6 +19,20 @@ evidence supports each result.
 - Metadata for all assets, local classification for high-signal coverage.
 - Store observations and evidence, not final people/trip/place truth.
 
+## Installation
+
+The first release supports macOS on Apple silicon and Intel. `photoscrawl` uses
+native Objective-C/CGO bridges to PhotoKit, CoreLocation, MapKit, CoreImage,
+CoreGraphics, and ImageIO, so v0.1.x release archives are intentionally
+Darwin-only. Download the archive for your architecture from GitHub Releases,
+extract `photoscrawl`, and place it on your `PATH`.
+
+```sh
+photoscrawl --version
+```
+
+There is no Homebrew formula in the debut release.
+
 ## First Commands
 
 ```sh
