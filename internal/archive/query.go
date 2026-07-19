@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/openclaw/crawlkit/store"
 )
 
 type SearchOptions struct {
@@ -62,7 +60,7 @@ func Search(ctx context.Context, paths Paths, opts SearchOptions) (SearchResult,
 	if limit > 100 {
 		limit = 100
 	}
-	db, err := store.OpenReadOnly(ctx, paths.Database)
+	db, err := openArchiveReadOnly(ctx, paths.Database)
 	if err != nil {
 		return SearchResult{}, err
 	}
@@ -74,7 +72,7 @@ select asset.id, asset.media_type, asset.creation_date, asset_fts.title,
        snippet(asset_fts, 2, '[', ']', ' ... ', 12) as snippet
 from asset_fts
 join asset on asset.id = asset_fts.id
-where asset_fts match ?
+where asset_fts match ? and asset.deleted_at is null
 order by rank
 limit ?
 `, fts, limit)
@@ -103,7 +101,7 @@ select asset.id, observation_fts.id, asset.media_type, asset.creation_date, obse
        snippet(observation_fts, 3, '[', ']', ' ... ', 12) as snippet
 from observation_fts
 join asset on asset.id = observation_fts.asset_id
-where observation_fts match ?
+where observation_fts match ? and asset.deleted_at is null
 order by rank
 limit ?
 `, fts, observationLimit)
@@ -131,7 +129,7 @@ func Open(ctx context.Context, paths Paths, rowID string) (OpenResult, error) {
 	if rowID == "" {
 		return OpenResult{}, errors.New("id is required")
 	}
-	db, err := store.OpenReadOnly(ctx, paths.Database)
+	db, err := openArchiveReadOnly(ctx, paths.Database)
 	if err != nil {
 		return OpenResult{}, err
 	}
@@ -140,7 +138,7 @@ func Open(ctx context.Context, paths Paths, rowID string) (OpenResult, error) {
 	asset, err := oneRow(ctx, db.DB(), `
 select id, local_identifier, media_type, media_subtypes, creation_date, modification_date, added_date,
        timezone_name, width, height, duration_seconds, favorite, hidden, burst_identifier,
-       represents_burst, source_library_id, metadata_json
+       represents_burst, source_library_id, metadata_json, deleted_at, deletion_source, deletion_reason
 from asset
 where id = ?
 `, rowID)
@@ -151,7 +149,8 @@ where id = ?
 		return OpenResult{}, err
 	}
 	resources, err := rows(ctx, db.DB(), `
-select id, resource_type, uti, original_filename, local_path, file_size, sha256, available_locally, needs_download
+select id, source_identifier, resource_type, uti, original_filename, local_path, file_size, sha256, available_locally, needs_download,
+       deleted_at, deletion_source, deletion_reason
 from asset_resource
 where asset_id = ?
 order by resource_type, original_filename
@@ -254,7 +253,7 @@ func Evidence(ctx context.Context, paths Paths, rowID string) (EvidenceResult, e
 	if rowID == "" {
 		return EvidenceResult{}, errors.New("row id is required")
 	}
-	db, err := store.OpenReadOnly(ctx, paths.Database)
+	db, err := openArchiveReadOnly(ctx, paths.Database)
 	if err != nil {
 		return EvidenceResult{}, err
 	}

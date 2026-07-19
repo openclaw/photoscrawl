@@ -20,11 +20,7 @@ func Init(ctx context.Context, paths Paths) (InitResult, error) {
 	if err := os.MkdirAll(filepath.Dir(paths.Database), 0o700); err != nil {
 		return InitResult{}, err
 	}
-	db, err := store.Open(ctx, store.Options{
-		Path:          paths.Database,
-		Schema:        Schema,
-		SchemaVersion: SchemaVersion,
-	})
+	db, err := openArchiveStore(ctx, paths.Database)
 	if err != nil {
 		return InitResult{}, err
 	}
@@ -57,11 +53,7 @@ func Status(ctx context.Context, paths Paths) (control.Status, error) {
 }
 
 func counts(ctx context.Context, dbPath string) ([]control.Count, string, string, []string, error) {
-	db, err := store.Open(ctx, store.Options{
-		Path:          dbPath,
-		Schema:        Schema,
-		SchemaVersion: SchemaVersion,
-	})
+	db, err := openArchiveReadOnly(ctx, dbPath)
 	if err != nil {
 		return nil, "", "", nil, err
 	}
@@ -108,7 +100,7 @@ func usefulCounts(ctx context.Context, db *sql.DB) ([]control.Count, error) {
 		label  string
 		query  string
 	}{
-		{"asset.media_type", "assets media type", `select media_type, count(*) from asset group by media_type order by count(*) desc, media_type`},
+		{"asset.media_type", "assets media type", `select media_type, count(*) from asset where deleted_at is null group by media_type order by count(*) desc, media_type`},
 		{"resource.availability", "resources availability", `
 select case
   when available_locally <> 0 then 'local'
@@ -116,6 +108,7 @@ select case
   else 'unknown'
 end as availability, count(*)
 from asset_resource
+where deleted_at is null and asset_id in (select id from asset where deleted_at is null)
 group by availability
 order by count(*) desc, availability
 `},
@@ -123,18 +116,21 @@ order by count(*) desc, availability
 		{"observation.type", "observation type", `
 select observation_type, count(*)
 from visual_observation
+join asset on asset.id = visual_observation.asset_id and asset.deleted_at is null
 group by observation_type
 order by count(*) desc, observation_type
 `},
 		{"model_observation.type", "model observation type", `
 select observation_type, count(*)
 from model_observation
+join asset on asset.id = model_observation.asset_id and asset.deleted_at is null
 group by observation_type
 order by count(*) desc, observation_type
 `},
 		{"observation_term.type", "observation term type", `
 select term_type, count(*)
 from observation_term
+join asset on asset.id = observation_term.asset_id and asset.deleted_at is null
 group by term_type
 order by count(*) desc, term_type
 `},
@@ -151,20 +147,23 @@ order by count(*) desc, term_type
 		label string
 		query string
 	}{
-		{"asset.with_location", "assets with location", `select count(distinct asset_id) from location_observation`},
-		{"asset.without_location", "assets without location", `select count(*) from asset where id not in (select asset_id from location_observation)`},
+		{"asset.deleted", "deleted assets", `select count(*) from asset where deleted_at is not null`},
+		{"asset.active", "active assets", `select count(*) from asset where deleted_at is null`},
+		{"resource.deleted", "deleted resources", `select count(*) from asset_resource where deleted_at is not null`},
+		{"asset.with_location", "assets with location", `select count(distinct location_observation.asset_id) from location_observation join asset on asset.id = location_observation.asset_id where asset.deleted_at is null`},
+		{"asset.without_location", "assets without location", `select count(*) from asset where deleted_at is null and id not in (select asset_id from location_observation)`},
 		{"asset.with_observation", "assets with local observations", `select count(distinct asset_id) from (
   select asset_id from visual_observation
   union
   select asset_id from model_observation
-)`},
-		{"asset.without_observation", "assets without local observations", `select count(*) from asset where id not in (
+) where asset_id in (select id from asset where deleted_at is null)`},
+		{"asset.without_observation", "assets without local observations", `select count(*) from asset where deleted_at is null and id not in (
   select asset_id from visual_observation
   union
   select asset_id from model_observation
 )`},
-		{"asset.with_local_resource", "assets with local resource", `select count(distinct asset_id) from asset_resource where available_locally <> 0`},
-		{"asset.needing_download", "assets needing download", `select count(distinct asset_id) from asset_resource where needs_download <> 0`},
+		{"asset.with_local_resource", "assets with local resource", `select count(distinct asset_resource.asset_id) from asset_resource join asset on asset.id = asset_resource.asset_id where asset_resource.deleted_at is null and asset.deleted_at is null and available_locally <> 0`},
+		{"asset.needing_download", "assets needing download", `select count(distinct asset_resource.asset_id) from asset_resource join asset on asset.id = asset_resource.asset_id where asset_resource.deleted_at is null and asset.deleted_at is null and needs_download <> 0`},
 	}
 	for _, scalar := range scalarQueries {
 		var value int64
@@ -200,24 +199,24 @@ func groupedCounts(ctx context.Context, db *sql.DB, prefix, labelPrefix, query s
 
 func statusSummary(ctx context.Context, db *sql.DB) (string, error) {
 	var assets, located, observations, pending int64
-	if err := db.QueryRowContext(ctx, `select count(*) from asset`).Scan(&assets); err != nil {
+	if err := db.QueryRowContext(ctx, `select count(*) from asset where deleted_at is null`).Scan(&assets); err != nil {
 		return "", err
 	}
-	if err := db.QueryRowContext(ctx, `select count(distinct asset_id) from location_observation`).Scan(&located); err != nil {
+	if err := db.QueryRowContext(ctx, `select count(distinct location_observation.asset_id) from location_observation join asset on asset.id = location_observation.asset_id where asset.deleted_at is null`).Scan(&located); err != nil {
 		return "", err
 	}
 	if err := db.QueryRowContext(ctx, `select count(distinct asset_id) from (
   select asset_id from visual_observation
   union
   select asset_id from model_observation
-)`).Scan(&observations); err != nil {
+) where asset_id in (select id from asset where deleted_at is null)`).Scan(&observations); err != nil {
 		return "", err
 	}
 	if err := db.QueryRowContext(ctx, `select count(*) from classification_queue where state = 'pending'`).Scan(&pending); err != nil {
 		return "", err
 	}
 	if assets == 0 {
-		return "photos.sqlite is initialized but has no crawled assets", nil
+		return "photos.sqlite is initialized but has no active crawled assets", nil
 	}
 	return fmt.Sprintf("%d assets; %d with raw GPS; %d with local observations; %d pending classification", assets, located, observations, pending), nil
 }

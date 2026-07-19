@@ -35,8 +35,8 @@ func TestSQLiteSnapshotProviderReadsSyntheticLibrary(t *testing.T) {
 	if snapshot.Provider != "photos_sqlite_snapshot" {
 		t.Fatalf("provider = %q", snapshot.Provider)
 	}
-	if len(snapshot.Assets) != 1 {
-		t.Fatalf("assets = %d, want 1", len(snapshot.Assets))
+	if len(snapshot.Assets) != 2 {
+		t.Fatalf("assets = %d, want 2", len(snapshot.Assets))
 	}
 	asset := snapshot.Assets[0]
 	if asset.MediaType != "image" || asset.CreationDate != "2026-05-28T10:00:00Z" {
@@ -48,8 +48,15 @@ func TestSQLiteSnapshotProviderReadsSyntheticLibrary(t *testing.T) {
 	if len(asset.Resources) != 1 || !asset.Resources[0].NeedsDownload || asset.Resources[0].Availability != "remote" {
 		t.Fatalf("resources = %#v", asset.Resources)
 	}
+	if asset.Resources[0].SourceIdentifier != "sqlite_internal_resource:100" {
+		t.Fatalf("resource source identifier = %q", asset.Resources[0].SourceIdentifier)
+	}
 	if len(asset.Albums) != 1 || asset.Albums[0].AlbumTitle != "Synthetic Album" {
 		t.Fatalf("albums = %#v", asset.Albums)
+	}
+	deleted := snapshot.Assets[1]
+	if deleted.DeletedAt != "2026-05-28T11:00:00Z" || deleted.DeletionSource != "photos_sqlite_snapshot" || deleted.DeletionReason != "trashed_in_photos_library" {
+		t.Fatalf("deleted asset tombstone = %#v", deleted)
 	}
 }
 
@@ -65,6 +72,56 @@ func TestFallbackProviderUsesSecondaryAfterPrimaryError(t *testing.T) {
 	}
 	if snapshot.Provider != "secondary" || snapshot.Metadata["source_strategy"] != "fallback_after_primary_error" {
 		t.Fatalf("snapshot = %#v", snapshot)
+	}
+}
+
+func TestSQLiteSnapshotProviderMarksMissingTrashDateForObservedAtFallback(t *testing.T) {
+	t.Parallel()
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	dbPath := filepath.Join(libraryPath, "database", "Photos.sqlite")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(context.Background(), store.Options{Path: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := createSyntheticPhotosDB(db.DB()); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.DB().Exec(`alter table ZASSET drop column ZTRASHEDDATE`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.DB().Exec(`update ZASSET set ZTRASHEDSTATE = 1 where Z_PK = 1`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := SQLiteSnapshotProvider{}.Snapshot(context.Background(), libraryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := snapshot.Assets[0]
+	if asset.DeletedAt != "" || asset.DeletionReason != "trashed_in_photos_library" || asset.Metadata["deletion_timestamp_source"] != "crawl_observed_at" {
+		t.Fatalf("fallback tombstone = %#v", asset)
+	}
+}
+
+func TestProviderByNameSelectsSQLiteForScratchLibraries(t *testing.T) {
+	t.Parallel()
+	provider, err := ProviderByName("sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := provider.(SQLiteSnapshotProvider); !ok {
+		t.Fatalf("provider = %T, want SQLiteSnapshotProvider", provider)
+	}
+	if _, err := ProviderByName("unknown"); err == nil {
+		t.Fatal("unknown provider should fail")
 	}
 }
 
@@ -99,9 +156,10 @@ func createSyntheticPhotosDB(db *sql.DB) error {
 			ZAVALANCHEUUID varchar,
 			ZLATITUDE float,
 			ZLONGITUDE float,
-			ZUNIFORMTYPEIDENTIFIER varchar,
-			ZFILENAME varchar,
-			ZTRASHEDSTATE integer
+				ZUNIFORMTYPEIDENTIFIER varchar,
+				ZFILENAME varchar,
+				ZTRASHEDSTATE integer,
+				ZTRASHEDDATE timestamp
 		)`,
 		`create table ZADDITIONALASSETATTRIBUTES (
 			ZASSET integer,
@@ -110,7 +168,8 @@ func createSyntheticPhotosDB(db *sql.DB) error {
 			ZORIGINALFILENAME varchar
 		)`,
 		`create table ZINTERNALRESOURCE (
-			ZASSET integer,
+				Z_PK integer primary key,
+				ZASSET integer,
 			ZRESOURCETYPE integer,
 			ZCOMPACTUTI varchar,
 			ZDATALENGTH integer,
@@ -140,15 +199,22 @@ func createSyntheticPhotosDB(db *sql.DB) error {
 	}
 	created := coreDataSeconds("2026-05-28T10:00:00Z")
 	if _, err := db.Exec(`
-insert into ZASSET(Z_PK, ZUUID, ZKIND, ZKINDSUBTYPE, ZDATECREATED, ZMODIFICATIONDATE, ZADDEDDATE, ZWIDTH, ZHEIGHT, ZDURATION, ZFAVORITE, ZHIDDEN, ZAVALANCHEUUID, ZLATITUDE, ZLONGITUDE, ZUNIFORMTYPEIDENTIFIER, ZFILENAME, ZTRASHEDSTATE)
-values (1, 'fixture-uuid-1', 0, 0, ?, ?, ?, 4032, 3024, 0, 1, 0, '', 52.3676, 4.9041, 'public.heic', 'synthetic.heic', 0)
-`, created, created, created); err != nil {
+	insert into ZASSET(Z_PK, ZUUID, ZKIND, ZKINDSUBTYPE, ZDATECREATED, ZMODIFICATIONDATE, ZADDEDDATE, ZWIDTH, ZHEIGHT, ZDURATION, ZFAVORITE, ZHIDDEN, ZAVALANCHEUUID, ZLATITUDE, ZLONGITUDE, ZUNIFORMTYPEIDENTIFIER, ZFILENAME, ZTRASHEDSTATE, ZTRASHEDDATE)
+	values (1, 'fixture-uuid-1', 0, 0, ?, ?, ?, 4032, 3024, 0, 1, 0, '', 52.3676, 4.9041, 'public.heic', 'synthetic.heic', 0, null)
+	`, created, created, created); err != nil {
+		return err
+	}
+	deleted := coreDataSeconds("2026-05-28T11:00:00Z")
+	if _, err := db.Exec(`
+	insert into ZASSET(Z_PK, ZUUID, ZKIND, ZKINDSUBTYPE, ZDATECREATED, ZMODIFICATIONDATE, ZADDEDDATE, ZWIDTH, ZHEIGHT, ZDURATION, ZFAVORITE, ZHIDDEN, ZAVALANCHEUUID, ZLATITUDE, ZLONGITUDE, ZUNIFORMTYPEIDENTIFIER, ZFILENAME, ZTRASHEDSTATE, ZTRASHEDDATE)
+	values (2, 'fixture-uuid-deleted', 0, 0, ?, ?, ?, 1024, 768, 0, 0, 0, '', 0, 0, 'public.jpeg', 'deleted.jpeg', 1, ?)
+	`, created, created, created, deleted); err != nil {
 		return err
 	}
 	if _, err := db.Exec(`insert into ZADDITIONALASSETATTRIBUTES(ZASSET, ZTIMEZONENAME, ZGPSHORIZONTALACCURACY, ZORIGINALFILENAME) values (1, 'Europe/Amsterdam', 8.25, 'synthetic.heic')`); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`insert into ZINTERNALRESOURCE(ZASSET, ZRESOURCETYPE, ZCOMPACTUTI, ZDATALENGTH, ZSTABLEHASH, ZFINGERPRINT, ZLOCALAVAILABILITY, ZREMOTEAVAILABILITY, ZVERSION) values (1, 0, 'public.heic', 12345, 'stable-hash', '', 0, 1, 1)`); err != nil {
+	if _, err := db.Exec(`insert into ZINTERNALRESOURCE(Z_PK, ZASSET, ZRESOURCETYPE, ZCOMPACTUTI, ZDATALENGTH, ZSTABLEHASH, ZFINGERPRINT, ZLOCALAVAILABILITY, ZREMOTEAVAILABILITY, ZVERSION) values (100, 1, 0, 'public.heic', 12345, 'stable-hash', '', 0, 1, 1)`); err != nil {
 		return err
 	}
 	if _, err := db.Exec(`insert into ZGENERICALBUM(Z_PK, ZUUID, ZTITLE, ZKIND, ZCLOUDALBUMSUBTYPE, ZTRASHEDSTATE) values (10, 'album-uuid-1', 'Synthetic Album', 2, 0, 0)`); err != nil {

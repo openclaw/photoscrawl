@@ -26,6 +26,7 @@ go run ./cmd/photoscrawl metadata --json
 go run ./cmd/photoscrawl init --json
 go run ./cmd/photoscrawl status --json
 go run ./cmd/photoscrawl crawl --library "$HOME/Pictures/Photos Library.photoslibrary" --json
+go run ./cmd/photoscrawl crawl --provider sqlite --library "/path/to/scratch.photoslibrary" --json
 go run ./cmd/photoscrawl classify --limit 100 --json
 go run ./cmd/photoscrawl classify --local-model gemma4:e4b --limit 20 --json
 go run ./cmd/photoscrawl classify --local-model photoscrawl-qwen3-vl-8b --local-model-api openai --local-model-url http://127.0.0.1:1234/v1 --limit 20 --json
@@ -59,6 +60,12 @@ source. If PhotoKit is unavailable or denied, the POC falls back to a read-only
 local package media paths for derivatives/renders/originals when they exist, so
 content classification can use local files without changing Photos or iCloud
 state. Every imported asset is queued for `classify`.
+
+Crawls merge into the archive. An asset missing from a later enumeration stays
+live; only an explicit provider deletion signal creates a tombstone. Asset
+tombstones retain their reason and also tombstone archived resource rows such as
+derivatives and thumbnails. A later explicit live record restores the asset and
+the resources present in that record without discarding other archive history.
 
 `classify` drains that queue into evidence-backed local metadata observations.
 With `--local-model <model>`, it also sends already-local image bytes to a local

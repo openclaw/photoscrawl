@@ -98,6 +98,7 @@ func run(ctx context.Context, args []string) error {
 		fs.SetOutput(os.Stderr)
 		dbPath := fs.String("db", "", "photos.sqlite path")
 		libraryPath := fs.String("library", "", "Photos Library.photoslibrary path")
+		providerName := fs.String("provider", "auto", "photos provider: auto or sqlite")
 		jsonFlag := fs.Bool("json", false, "write JSON")
 		formatFlag := fs.String("format", "", "output format")
 		if err := fs.Parse(args[1:]); err != nil {
@@ -110,9 +111,13 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		provider, err := photos.ProviderByName(*providerName)
+		if err != nil {
+			return output.UsageError{Err: err}
+		}
 		result, err := archive.Crawl(ctx, paths, archive.CrawlOptions{
 			LibraryPath: *libraryPath,
-			Provider:    photos.NewProvider(),
+			Provider:    provider,
 		})
 		if err != nil {
 			return err

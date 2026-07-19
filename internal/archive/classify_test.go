@@ -66,6 +66,7 @@ func TestClassifyLocalModelWritesTypedObservations(t *testing.T) {
 				Height:          80,
 				Resources: []photos.Resource{
 					{
+						SourceIdentifier: "fixture-local-photo",
 						Type:             "photo",
 						UTI:              "public.jpeg",
 						OriginalFilename: "fixture.jpeg",
@@ -249,6 +250,7 @@ func TestClassifyLocalModelTerminatesRemoteNonImageRows(t *testing.T) {
 				Height:          80,
 				Resources: []photos.Resource{
 					{
+						SourceIdentifier: "fixture-remote-video",
 						Type:             "video",
 						UTI:              "com.apple.quicktime-movie",
 						OriginalFilename: "fixture.mov",
@@ -312,6 +314,7 @@ func TestClassifyLocalModelKeepsRemoteImagesRetryable(t *testing.T) {
 				Height:          80,
 				Resources: []photos.Resource{
 					{
+						SourceIdentifier: "fixture-remote-photo",
 						Type:             "photo",
 						UTI:              "public.jpeg",
 						OriginalFilename: "fixture.jpeg",
@@ -386,6 +389,7 @@ func TestClassifyLocalModelPrioritizesPendingRowsBeforeWaitingRows(t *testing.T)
 				Height:          80,
 				Resources: []photos.Resource{
 					{
+						SourceIdentifier: "newer-remote-photo",
 						Type:             "photo",
 						UTI:              "public.jpeg",
 						OriginalFilename: "remote.jpeg",
@@ -403,6 +407,7 @@ func TestClassifyLocalModelPrioritizesPendingRowsBeforeWaitingRows(t *testing.T)
 				Height:          80,
 				Resources: []photos.Resource{
 					{
+						SourceIdentifier: "older-local-photo",
 						Type:             "photo",
 						UTI:              "public.jpeg",
 						OriginalFilename: "local.jpeg",

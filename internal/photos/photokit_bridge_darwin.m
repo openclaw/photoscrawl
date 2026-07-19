@@ -189,6 +189,7 @@ static NSArray *pcResources(PHAsset *asset) {
   NSMutableArray *out = [NSMutableArray array];
   for (PHAssetResource *resource in [PHAssetResource assetResourcesForAsset:asset]) {
     NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+    entry[@"source_identifier"] = [NSString stringWithFormat:@"photokit_resource_type:%ld", (long)resource.type];
     entry[@"type"] = pcResourceType(resource.type);
     entry[@"uti"] = pcString(resource.uniformTypeIdentifier);
     entry[@"original_filename"] = pcString(resource.originalFilename);
