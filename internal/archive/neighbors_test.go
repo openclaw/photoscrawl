@@ -93,7 +93,7 @@ func fakeNeighborSnapshot() photos.LibrarySnapshot {
 					HorizontalAccuracy: &accuracy,
 				},
 				Resources: []photos.Resource{
-					{Type: "photo", UTI: "public.heic", OriginalFilename: "Screenshot Neighbor One.heic", Availability: "local", StableHash: "same-fixture-resource-hash", AvailableLocally: true},
+					{SourceIdentifier: "neighbor-one-photo", Type: "photo", UTI: "public.heic", OriginalFilename: "Screenshot Neighbor One.heic", Availability: "local", StableHash: "same-fixture-resource-hash", AvailableLocally: true},
 				},
 				Albums: []photos.AlbumMembership{
 					{AlbumID: "fixture-shared-album", AlbumTitle: "Shared Fixture Album", AlbumKind: "album:fixture"},
@@ -117,7 +117,7 @@ func fakeNeighborSnapshot() photos.LibrarySnapshot {
 					HorizontalAccuracy: &accuracy,
 				},
 				Resources: []photos.Resource{
-					{Type: "photo", UTI: "public.heic", OriginalFilename: "Screenshot Neighbor Two.heic", Availability: "local", StableHash: "same-fixture-resource-hash", AvailableLocally: true},
+					{SourceIdentifier: "neighbor-two-photo", Type: "photo", UTI: "public.heic", OriginalFilename: "Screenshot Neighbor Two.heic", Availability: "local", StableHash: "same-fixture-resource-hash", AvailableLocally: true},
 				},
 				Albums: []photos.AlbumMembership{
 					{AlbumID: "fixture-shared-album", AlbumTitle: "Shared Fixture Album", AlbumKind: "album:fixture"},

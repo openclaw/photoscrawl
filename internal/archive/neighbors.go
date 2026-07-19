@@ -8,8 +8,6 @@ import (
 	"math"
 	"sort"
 	"strings"
-
-	"github.com/openclaw/crawlkit/store"
 )
 
 const (
@@ -65,13 +63,13 @@ func Neighbors(ctx context.Context, paths Paths, opts NeighborOptions) (Neighbor
 		limit = 100
 	}
 
-	db, err := store.OpenReadOnly(ctx, paths.Database)
+	db, err := openArchiveReadOnly(ctx, paths.Database)
 	if err != nil {
 		return NeighborResult{}, err
 	}
 	defer db.Close()
 
-	if _, err := oneRow(ctx, db.DB(), `select id from asset where id = ?`, id); errors.Is(err, sql.ErrNoRows) {
+	if _, err := oneRow(ctx, db.DB(), `select id from asset where id = ? and deleted_at is null`, id); errors.Is(err, sql.ErrNoRows) {
 		return NeighborResult{}, fmt.Errorf("asset not found: %s", id)
 	} else if err != nil {
 		return NeighborResult{}, err
@@ -122,7 +120,7 @@ from asset source
 join asset target on target.burst_identifier = source.burst_identifier and target.id <> source.id
 left join evidence_ref source_evidence on source_evidence.asset_id = source.id and source_evidence.evidence_kind = 'asset_metadata'
 left join evidence_ref target_evidence on target_evidence.asset_id = target.id and target_evidence.evidence_kind = 'asset_metadata'
-where source.id = ? and trim(source.burst_identifier) <> ''
+where source.id = ? and source.deleted_at is null and target.deleted_at is null and trim(source.burst_identifier) <> ''
 order by target.creation_date, target.id
 limit ?
 `, id, limit)
@@ -159,7 +157,7 @@ join album_membership target_membership on target_membership.album_id = source_m
 join asset target on target.id = target_membership.asset_id
 left join evidence_ref source_evidence on source_evidence.asset_id = source_membership.asset_id and source_evidence.evidence_kind = 'album_membership' and source_evidence.pointer = 'album:' || source_membership.album_id
 left join evidence_ref target_evidence on target_evidence.asset_id = target_membership.asset_id and target_evidence.evidence_kind = 'album_membership' and target_evidence.pointer = 'album:' || target_membership.album_id
-where source_membership.asset_id = ?
+where source_membership.asset_id = ? and target.deleted_at is null
 order by target.creation_date, target.id
 limit ?
 `, id, limit)
@@ -195,7 +193,11 @@ select distinct target.id, target.media_type, target.creation_date, target_resou
 from asset_resource source_resource
 join asset_resource target_resource on target_resource.sha256 = source_resource.sha256 and target_resource.asset_id <> source_resource.asset_id
 join asset target on target.id = target_resource.asset_id
-where source_resource.asset_id = ? and trim(source_resource.sha256) <> ''
+where source_resource.asset_id = ?
+  and source_resource.deleted_at is null
+  and target_resource.deleted_at is null
+  and target.deleted_at is null
+  and trim(source_resource.sha256) <> ''
 order by target.creation_date, target.id
 limit ?
 `, id, limit)
@@ -233,6 +235,8 @@ join asset target on target.id <> source.id
 left join evidence_ref source_evidence on source_evidence.asset_id = source.id and source_evidence.evidence_kind = 'asset_metadata'
 left join evidence_ref target_evidence on target_evidence.asset_id = target.id and target_evidence.evidence_kind = 'asset_metadata'
 where source.id = ?
+  and source.deleted_at is null
+  and target.deleted_at is null
   and trim(source.creation_date) <> ''
   and trim(target.creation_date) <> ''
   and `+delta+` <= ?
@@ -274,6 +278,7 @@ from location_observation source_location
 join location_observation target_location on target_location.asset_id <> source_location.asset_id
 join asset target on target.id = target_location.asset_id
 where source_location.asset_id = ?
+  and target.deleted_at is null
   and abs(target_location.latitude - source_location.latitude) <= ?
   and abs(target_location.longitude - source_location.longitude) <= ?
 order by latitude_delta + longitude_delta, target.creation_date, target.id
@@ -320,6 +325,7 @@ join visual_observation target_observation on target_observation.observation_typ
   and target_observation.asset_id <> source_observation.asset_id
 join asset target on target.id = target_observation.asset_id
 where source_observation.asset_id = ?
+  and target.deleted_at is null
   and source_observation.observation_type = 'document_signal'
 order by shared_confidence desc, target.creation_date, target.id
 limit ?

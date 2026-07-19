@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/openclaw/crawlkit/store"
 )
 
 const (
@@ -104,11 +102,7 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 		limit = 1000
 	}
 
-	db, err := store.Open(ctx, store.Options{
-		Path:          paths.Database,
-		Schema:        Schema,
-		SchemaVersion: SchemaVersion,
-	})
+	db, err := openArchiveStore(ctx, paths.Database)
 	if err != nil {
 		return ClassifyResult{}, err
 	}
@@ -225,6 +219,7 @@ select q.id, q.asset_id, q.source_library_id, q.needs_download,
 from classification_queue q
 join asset a on a.id = q.asset_id
 where q.state in (` + classifyQueueStates(includeMetadataClassified) + `)
+  and a.deleted_at is null
 order by case q.state when 'pending' then 0 else 1 end, a.creation_date desc, q.id
 `
 	args := []any{}
@@ -287,6 +282,7 @@ func loadClassifyResources(ctx context.Context, tx *sql.Tx, assetID string) ([]c
 select id, resource_type, uti, original_filename, local_path, available_locally, needs_download
 from asset_resource
 where asset_id = ?
+  and deleted_at is null
 order by resource_type, original_filename
 `, assetID)
 	if err != nil {

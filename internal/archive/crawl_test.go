@@ -2,8 +2,10 @@ package archive
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,6 +149,282 @@ func TestCrawlExpandsHomeInLibraryPath(t *testing.T) {
 	}
 }
 
+func TestCrawlResourceIdentityDoesNotDependOnEnumerationPosition(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := fakeSnapshot(false, false)
+	snapshot.Assets[0].Resources = append(snapshot.Assets[0].Resources, photos.Resource{
+		SourceIdentifier: "fixture-thumbnail", Type: "thumbnail", UTI: "public.jpeg", OriginalFilename: "thumb.jpg", Availability: "local", AvailableLocally: true,
+	})
+	provider := fakeProvider{snapshot: snapshot}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-07-18T09:00:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thumbnailID string
+	if err := db.DB().QueryRowContext(ctx, `select id from asset_resource where resource_type = 'thumbnail'`).Scan(&thumbnailID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot.Assets[0].Resources = snapshot.Assets[0].Resources[1:]
+	snapshot.Assets[0].Resources[0].OriginalFilename = "renamed-thumb.jpg"
+	snapshot.Assets[0].Resources[0].UTI = "public.heic"
+	provider.snapshot = snapshot
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-07-18T09:30:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	db, err = openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var resources, sourceIdentifiers int
+	var mergedThumbnailID, mergedFilename string
+	if err := db.DB().QueryRowContext(ctx, `select count(*), count(distinct source_identifier) from asset_resource`).Scan(&resources, &sourceIdentifiers); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB().QueryRowContext(ctx, `select id, original_filename from asset_resource where resource_type = 'thumbnail'`).Scan(&mergedThumbnailID, &mergedFilename); err != nil {
+		t.Fatal(err)
+	}
+	if resources != 2 || sourceIdentifiers != 2 || mergedThumbnailID != thumbnailID || mergedFilename != "renamed-thumb.jpg" {
+		t.Fatalf("resource merge = rows %d identities %d thumbnail %q/%q filename %q", resources, sourceIdentifiers, mergedThumbnailID, thumbnailID, mergedFilename)
+	}
+}
+
+func TestCrawlRejectsMissingOrDuplicateResourceSourceIdentifiers(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		resources []photos.Resource
+		want      string
+	}{
+		{name: "missing", resources: []photos.Resource{{Type: "photo"}}, want: "missing a stable source identifier"},
+		{name: "duplicate", resources: []photos.Resource{{SourceIdentifier: "same", Type: "photo"}, {SourceIdentifier: "same", Type: "thumbnail"}}, want: "duplicate resource source identifier"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := fakeSnapshot(false, false)
+			snapshot.Assets[0].Resources = test.resources
+			paths := testPaths(t)
+			_, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: fakeProvider{snapshot: snapshot}, Now: fixedClock("2026-07-18T09:00:00Z")})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("crawl error = %v, want %q", err, test.want)
+			}
+			if _, statErr := os.Stat(paths.Database); !os.IsNotExist(statErr) {
+				t.Fatalf("invalid snapshot created database: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestCrawlAppliesOnlyExplicitAssetTombstonesAndRestoresLiveRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	provider := fakeProvider{snapshot: fakeSnapshot(false, true)}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-07-18T10:00:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Classify(ctx, paths, ClassifyOptions{All: true, Now: fixedClock("2026-07-18T10:05:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	partial := fakeSnapshot(true, false)
+	partial.Assets[0].Resources = nil
+	partial.Assets[0].Albums = nil
+	provider.snapshot = partial
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-07-18T10:10:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	mergedSearch, err := Search(ctx, paths, SearchOptions{Query: "beach", Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mergedSearch.Results) != 1 {
+		t.Fatalf("partial merge dropped retained album from search: %#v", mergedSearch.Results)
+	}
+	db, err := openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deletedID, missingID string
+	if err := db.DB().QueryRowContext(ctx, `select id from asset where local_identifier = 'fixture-asset-1'`).Scan(&deletedID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	var retainedNeedsDownload int
+	if err := db.DB().QueryRowContext(ctx, `select needs_download from classification_queue where asset_id = ?`, deletedID).Scan(&retainedNeedsDownload); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if retainedNeedsDownload != 1 {
+		db.Close()
+		t.Fatalf("partial merge dropped retained resource queue state: needs_download=%d", retainedNeedsDownload)
+	}
+	if err := db.DB().QueryRowContext(ctx, `select id from asset where local_identifier = 'fixture-asset-2'`).Scan(&missingID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.DB().ExecContext(ctx, `
+insert into asset_resource(id, asset_id, source_identifier, resource_type, uti, original_filename, local_path, file_size, sha256, available_locally, needs_download)
+values ('fixture-thumbnail', ?, 'fixture-thumbnail-source', 'thumbnail', 'public.jpeg', 'thumb.jpg', '/tmp/thumb.jpg', 12, 'thumb-hash', 1, 0)
+`, deletedID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tombstone := fakeSnapshot(false, false)
+	tombstone.Assets[0].DeletedAt = ""
+	tombstone.Assets[0].DeletionSource = "fixture-explicit-feed"
+	tombstone.Assets[0].DeletionReason = "trashed_in_photos_library"
+	tombstone.Assets[0].Metadata = map[string]any{"deletion_timestamp_source": "crawl_observed_at"}
+	provider.snapshot = tombstone
+	result, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-07-18T11:00:00Z")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AssetsDeleted != 1 || result.AssetsRestored != 0 || result.PreviouslySeenMissing != 1 {
+		t.Fatalf("tombstone crawl = deleted %d restored %d missing %d", result.AssetsDeleted, result.AssetsRestored, result.PreviouslySeenMissing)
+	}
+	db, err = openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var deletedAt, source, reason string
+	if err := db.DB().QueryRowContext(ctx, `select deleted_at, deletion_source, deletion_reason from asset where id = ?`, deletedID).Scan(&deletedAt, &source, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if deletedAt != "2026-07-18T11:00:00Z" || source != "fixture-explicit-feed" || reason != "trashed_in_photos_library" {
+		t.Fatalf("asset tombstone = %q %q %q", deletedAt, source, reason)
+	}
+	var timestampSource string
+	if err := db.DB().QueryRowContext(ctx, `select json_extract(value_json, '$.deletion_timestamp_source') from evidence_ref where asset_id = ? and evidence_kind = 'asset_tombstone'`, deletedID).Scan(&timestampSource); err != nil {
+		t.Fatal(err)
+	}
+	if timestampSource != "crawl_observed_at" {
+		t.Fatalf("tombstone timestamp source = %q", timestampSource)
+	}
+	var tombstonedResources int
+	if err := db.DB().QueryRowContext(ctx, `select count(*) from asset_resource where asset_id = ? and deleted_at is not null and deletion_reason = 'parent_asset_deleted'`, deletedID).Scan(&tombstonedResources); err != nil {
+		t.Fatal(err)
+	}
+	if tombstonedResources != 2 {
+		t.Fatalf("tombstoned resources = %d, want 2", tombstonedResources)
+	}
+	var missingDeleted sql.NullString
+	var missingResources int
+	if err := db.DB().QueryRowContext(ctx, `select deleted_at from asset where id = ?`, missingID).Scan(&missingDeleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB().QueryRowContext(ctx, `select count(*) from asset_resource where asset_id = ? and deleted_at is null`, missingID).Scan(&missingResources); err != nil {
+		t.Fatal(err)
+	}
+	if missingDeleted.Valid || missingResources != 1 {
+		t.Fatalf("not-seen asset changed: deleted=%v live resources=%d", missingDeleted, missingResources)
+	}
+	var observations int
+	if err := db.DB().QueryRowContext(ctx, `select count(*) from visual_observation where asset_id = ?`, deletedID).Scan(&observations); err != nil {
+		t.Fatal(err)
+	}
+	if observations == 0 {
+		t.Fatal("tombstone erased archived observations")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tombstone.Assets[0].DeletedAt = "2026-07-18T11:30:00Z"
+	tombstone.Assets[0].DeletionReason = "later_duplicate_delete"
+	provider.snapshot = tombstone
+	result, err = Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-07-18T11:45:00Z")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AssetsDeleted != 0 {
+		t.Fatalf("repeat tombstone counted as a new deletion: %+v", result)
+	}
+	db, err = openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB().QueryRowContext(ctx, `select deleted_at, deletion_reason from asset where id = ?`, deletedID).Scan(&deletedAt, &reason); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	var thumbnailDeletedAt string
+	if err := db.DB().QueryRowContext(ctx, `select deleted_at from asset_resource where id = 'fixture-thumbnail'`).Scan(&thumbnailDeletedAt); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if deletedAt != "2026-07-18T11:00:00Z" || reason != "trashed_in_photos_library" || thumbnailDeletedAt != "2026-07-18T11:00:00Z" {
+		db.Close()
+		t.Fatalf("repeat tombstone replaced first evidence: asset=%q reason=%q thumbnail=%q", deletedAt, reason, thumbnailDeletedAt)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	search, err := Search(ctx, paths, SearchOptions{Query: "beach", Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(search.Results) != 0 {
+		t.Fatalf("tombstoned asset remained searchable: %#v", search.Results)
+	}
+
+	provider.snapshot = fakeSnapshot(true, false)
+	result, err = Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-07-18T12:00:00Z")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AssetsRestored != 1 || result.AssetsDeleted != 0 {
+		t.Fatalf("restore crawl = restored %d deleted %d", result.AssetsRestored, result.AssetsDeleted)
+	}
+	db, err = openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var restoredDeleted sql.NullString
+	if err := db.DB().QueryRowContext(ctx, `select deleted_at from asset where id = ?`, deletedID).Scan(&restoredDeleted); err != nil {
+		t.Fatal(err)
+	}
+	var liveResources, retainedTombstones int
+	if err := db.DB().QueryRowContext(ctx, `select count(*) from asset_resource where asset_id = ? and deleted_at is null`, deletedID).Scan(&liveResources); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB().QueryRowContext(ctx, `select count(*) from asset_resource where asset_id = ? and deleted_at is not null`, deletedID).Scan(&retainedTombstones); err != nil {
+		t.Fatal(err)
+	}
+	if restoredDeleted.Valid || liveResources != 1 || retainedTombstones != 1 {
+		t.Fatalf("restored asset = deleted %v live resources %d retained tombstones %d", restoredDeleted, liveResources, retainedTombstones)
+	}
+}
+
 func testPaths(t *testing.T) Paths {
 	t.Helper()
 	root := t.TempDir()
@@ -212,7 +490,7 @@ func fakeSnapshot(changed, includeSecond bool) photos.LibrarySnapshot {
 					HorizontalAccuracy: &accuracy,
 				},
 				Resources: []photos.Resource{
-					{Type: "photo", UTI: "public.heic", OriginalFilename: "Screenshot Beach Fixture.heic", Availability: "remote", NeedsDownload: true},
+					{SourceIdentifier: "fixture-photo", Type: "photo", UTI: "public.heic", OriginalFilename: "Screenshot Beach Fixture.heic", Availability: "remote", NeedsDownload: true},
 				},
 				Albums: []photos.AlbumMembership{
 					{AlbumID: "fixture-album-1", AlbumTitle: "Beach", AlbumKind: "album:1:2"},
@@ -233,7 +511,7 @@ func fakeSnapshot(changed, includeSecond bool) photos.LibrarySnapshot {
 			Height:           1080,
 			DurationSeconds:  7.5,
 			Resources: []photos.Resource{
-				{Type: "video", UTI: "public.mpeg-4", OriginalFilename: "kitchen-fixture.mp4", Availability: "local", AvailableLocally: true},
+				{SourceIdentifier: "fixture-video", Type: "video", UTI: "public.mpeg-4", OriginalFilename: "kitchen-fixture.mp4", Availability: "local", AvailableLocally: true},
 			},
 			Albums: []photos.AlbumMembership{
 				{AlbumID: "fixture-album-2", AlbumTitle: "Kitchen", AlbumKind: "album:1:2"},
