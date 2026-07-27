@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Update Go dependencies, including `go-isatty` v0.0.24 and `x/sys` v0.47.0.
+- Standardize the Makefile's build, check, snapshot, and fail-closed release targets across the crawler repositories.
 
 ## 0.1.0 - 2026-07-18
 

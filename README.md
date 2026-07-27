@@ -33,6 +33,33 @@ photoscrawl --version
 
 There is no Homebrew formula in the debut release.
 
+## Development
+
+The Makefile exposes the same core targets as the other OpenClaw crawler
+repositories:
+
+```sh
+make help
+make build
+make check
+make snapshot
+```
+
+`make snapshot` builds local GoReleaser artifacts without credentials and never
+publishes them.
+
+## Releases
+
+Official releases run only through the manual **Release (unified)** GitHub
+Actions workflow, which signs and notarizes the Darwin artifacts before
+publishing them:
+
+```sh
+gh workflow run release-unified.yml --repo openclaw/photoscrawl -f version=X.Y.Z
+```
+
+`make release` refuses local publishing and prints that exact command.
+
 ## First Commands
 
 ```sh
