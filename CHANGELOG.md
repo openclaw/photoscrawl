@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Update Go dependencies, including `go-isatty` v0.0.24, `x/sys` v0.47.0, and `modernc.org/libc` v1.74.3.
+
 ## 0.1.0 - 2026-07-18
 
 ### Highlights
