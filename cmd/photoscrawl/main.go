@@ -211,6 +211,29 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return output.Write(os.Stdout, format, "open", result)
+	case "export":
+		fs := flag.NewFlagSet("export", flag.ContinueOnError)
+		fs.SetOutput(os.Stderr)
+		dbPath := fs.String("db", "", "photos.sqlite path")
+		id := fs.String("id", "", "asset id")
+		outputDir := fs.String("output", "", "destination directory")
+		jsonFlag := fs.Bool("json", false, "write JSON")
+		formatFlag := fs.String("format", "", "output format")
+		if err := fs.Parse(args[1:]); err != nil {
+			return output.UsageError{Err: err}
+		}
+		if *dbPath != "" {
+			paths.Database = *dbPath
+		}
+		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		if err != nil {
+			return err
+		}
+		result, err := archive.Export(ctx, paths, *id, *outputDir)
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "export", result)
 	case "evidence":
 		fs := flag.NewFlagSet("evidence", flag.ContinueOnError)
 		fs.SetOutput(os.Stderr)
@@ -370,7 +393,7 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage() error {
-	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|classify|search|open|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
+	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|classify|search|open|export|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
 }
 
 func writeVersion(w io.Writer) error {

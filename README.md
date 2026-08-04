@@ -73,6 +73,7 @@ go run ./cmd/photoscrawl classify --local-model gemma4:e4b --limit 20 --json
 go run ./cmd/photoscrawl classify --local-model photoscrawl-qwen3-vl-8b --local-model-api openai --local-model-url http://127.0.0.1:1234/v1 --limit 20 --json
 go run ./cmd/photoscrawl search --query "drone beach portugal" --json
 go run ./cmd/photoscrawl open --id asset:<id> --json
+go run ./cmd/photoscrawl export --id asset:<id> --output /path/to/export --json
 go run ./cmd/photoscrawl neighbors --id asset:<id> --json
 go run ./cmd/photoscrawl evidence --row-id asset:<id> --json
 go run ./cmd/photoscrawl place-context --input <private-eval-run>/metadata/E001.json --json
@@ -84,12 +85,6 @@ go run ./cmd/photoscrawl eval-card --library "$HOME/Pictures/Photos Library.phot
 Default runtime paths come from crawlkit platform dirs. The primary database is
 `photos.sqlite` under the crawlkit data dir; provider caches and exported
 originals use the crawlkit cache dir.
-
-Planned crawl-family commands:
-
-```sh
-photoscrawl export --format lifecrawler --json
-```
 
 `crawl` tries PhotoKit first for metadata. PhotoKit enumerates the active system
 Photos library; the `--library` path is validated and recorded as the requested
