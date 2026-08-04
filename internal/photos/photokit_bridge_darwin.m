@@ -283,69 +283,79 @@ char *photoscrawl_photokit_snapshot(const char *libraryPath, char **errorOut) {
     if (errorOut != NULL) {
       *errorOut = NULL;
     }
-    if (!@available(macOS 10.15, *)) {
-      pcSetError(errorOut, @"PhotoKit crawl requires macOS 10.15 or newer");
+    @try {
+      if (!@available(macOS 10.15, *)) {
+        pcSetError(errorOut, @"PhotoKit crawl requires macOS 10.15 or newer");
+        return NULL;
+      }
+
+      NSString *path = libraryPath == NULL ? @"" : [NSString stringWithUTF8String:libraryPath];
+      BOOL isDirectory = NO;
+      if (path.length == 0 || ![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDirectory] || !isDirectory) {
+        pcSetError(errorOut, [NSString stringWithFormat:@"Photos library path does not exist or is not a directory: %@", path]);
+        return NULL;
+      }
+
+      PHAuthorizationStatus status = pcEnsureAuthorized();
+      if (status != PHAuthorizationStatusAuthorized && status != PHAuthorizationStatusLimited) {
+        pcSetError(errorOut, [NSString stringWithFormat:@"Photos access is %@ for this process", pcAuthorizationStatus(status)]);
+        return NULL;
+      }
+
+      PHFetchOptions *options = [[PHFetchOptions alloc] init];
+      options.includeHiddenAssets = YES;
+      options.wantsIncrementalChangeDetails = NO;
+      options.includeAssetSourceTypes = PHAssetSourceTypeUserLibrary |
+          PHAssetSourceTypeCloudShared | PHAssetSourceTypeiTunesSynced;
+      if (@available(macOS 10.15, *)) {
+        options.includeAllBurstAssets = YES;
+      }
+      options.sortDescriptors = @[
+        [NSSortDescriptor sortDescriptorWithKey:@"creationDate" ascending:YES]
+      ];
+
+      PHFetchResult<PHAsset *> *fetch = [PHAsset fetchAssetsWithOptions:options];
+      NSMutableArray *assets = [NSMutableArray arrayWithCapacity:fetch.count];
+      [fetch enumerateObjectsUsingBlock:^(PHAsset *asset, NSUInteger idx, BOOL *stop) {
+        [assets addObject:pcAssetDictionary(asset)];
+      }];
+      [assets sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+        return [pcString(left[@"local_identifier"]) compare:pcString(right[@"local_identifier"])];
+      }];
+
+      NSBundle *photosBundle = [NSBundle bundleWithIdentifier:@"com.apple.Photos"];
+      NSString *photosVersion = [photosBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+      NSMutableDictionary *snapshot = [NSMutableDictionary dictionary];
+      snapshot[@"library_path"] = path;
+      snapshot[@"provider"] = @"photokit";
+      snapshot[@"photos_version"] = pcString(photosVersion);
+      snapshot[@"authorization_status"] = pcAuthorizationStatus(status);
+      snapshot[@"metadata"] = @{
+        @"source": @"PHPhotoLibrary.sharedPhotoLibrary",
+        @"requested_library_path": path,
+        @"library_path_note": @"PhotoKit enumerates the active system Photos library; this path is recorded as the requested source."
+      };
+      snapshot[@"assets"] = assets;
+
+      NSError *jsonError = nil;
+      NSData *data = [NSJSONSerialization dataWithJSONObject:snapshot options:0 error:&jsonError];
+      if (data == nil) {
+        pcSetError(errorOut, [NSString stringWithFormat:@"encode PhotoKit snapshot: %@", jsonError.localizedDescription]);
+        return NULL;
+      }
+      char *json = malloc(data.length + 1);
+      if (json == NULL) {
+        pcSetError(errorOut, @"allocate PhotoKit JSON snapshot");
+        return NULL;
+      }
+      memcpy(json, data.bytes, data.length);
+      json[data.length] = '\0';
+      return json;
+    } @catch (NSException *exception) {
+      pcSetError(errorOut, [NSString stringWithFormat:@"PhotoKit snapshot failed with %@: %@",
+          pcString(exception.name), pcString(exception.reason)]);
       return NULL;
     }
-
-    NSString *path = libraryPath == NULL ? @"" : [NSString stringWithUTF8String:libraryPath];
-    BOOL isDirectory = NO;
-    if (path.length == 0 || ![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDirectory] || !isDirectory) {
-      pcSetError(errorOut, [NSString stringWithFormat:@"Photos library path does not exist or is not a directory: %@", path]);
-      return NULL;
-    }
-
-    PHAuthorizationStatus status = pcEnsureAuthorized();
-    if (status != PHAuthorizationStatusAuthorized && status != PHAuthorizationStatusLimited) {
-      pcSetError(errorOut, [NSString stringWithFormat:@"Photos access is %@ for this process", pcAuthorizationStatus(status)]);
-      return NULL;
-    }
-
-    PHFetchOptions *options = [[PHFetchOptions alloc] init];
-    options.includeHiddenAssets = YES;
-    options.wantsIncrementalChangeDetails = NO;
-    if (@available(macOS 10.15, *)) {
-      options.includeAllBurstAssets = YES;
-    }
-    options.sortDescriptors = @[
-      [NSSortDescriptor sortDescriptorWithKey:@"creationDate" ascending:YES],
-      [NSSortDescriptor sortDescriptorWithKey:@"localIdentifier" ascending:YES]
-    ];
-
-    PHFetchResult<PHAsset *> *fetch = [PHAsset fetchAssetsWithOptions:options];
-    NSMutableArray *assets = [NSMutableArray arrayWithCapacity:fetch.count];
-    [fetch enumerateObjectsUsingBlock:^(PHAsset *asset, NSUInteger idx, BOOL *stop) {
-      [assets addObject:pcAssetDictionary(asset)];
-    }];
-
-    NSBundle *photosBundle = [NSBundle bundleWithIdentifier:@"com.apple.Photos"];
-    NSString *photosVersion = [photosBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
-    NSMutableDictionary *snapshot = [NSMutableDictionary dictionary];
-    snapshot[@"library_path"] = path;
-    snapshot[@"provider"] = @"photokit";
-    snapshot[@"photos_version"] = pcString(photosVersion);
-    snapshot[@"authorization_status"] = pcAuthorizationStatus(status);
-    snapshot[@"metadata"] = @{
-      @"source": @"PHPhotoLibrary.sharedPhotoLibrary",
-      @"requested_library_path": path,
-      @"library_path_note": @"PhotoKit enumerates the active system Photos library; this path is recorded as the requested source."
-    };
-    snapshot[@"assets"] = assets;
-
-    NSError *jsonError = nil;
-    NSData *data = [NSJSONSerialization dataWithJSONObject:snapshot options:0 error:&jsonError];
-    if (data == nil) {
-      pcSetError(errorOut, [NSString stringWithFormat:@"encode PhotoKit snapshot: %@", jsonError.localizedDescription]);
-      return NULL;
-    }
-    char *json = malloc(data.length + 1);
-    if (json == NULL) {
-      pcSetError(errorOut, @"allocate PhotoKit JSON snapshot");
-      return NULL;
-    }
-    memcpy(json, data.bytes, data.length);
-    json[data.length] = '\0';
-    return json;
   }
 }
 
