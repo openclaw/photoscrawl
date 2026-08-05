@@ -207,7 +207,11 @@ static NSInteger pcOriginalResourceRank(PHAssetResourceType type) {
   switch (type) {
     case PHAssetResourceTypeFullSizePhoto:
       return 1;
+    case PHAssetResourceTypeFullSizeVideo:
+      return 1;
     case PHAssetResourceTypePhoto:
+      return 2;
+    case PHAssetResourceTypeVideo:
       return 2;
     case PHAssetResourceTypeAlternatePhoto:
       return 3;
@@ -390,7 +394,7 @@ int photoscrawl_export_original_resource(const char *localIdentifier, const char
     }
     PHAssetResource *resource = pcPreferredOriginalResource(asset);
     if (resource == nil) {
-      pcSetError(errorOut, @"PhotoKit asset has no image original resource");
+      pcSetError(errorOut, @"PhotoKit asset has no supported original resource");
       return 0;
     }
 

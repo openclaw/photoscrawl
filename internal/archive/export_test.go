@@ -50,6 +50,40 @@ func TestExportOriginalUsesPhotoKitAndSafeOriginalFilename(t *testing.T) {
 	}
 }
 
+func TestExportOriginalUsesPreferredVideoResourceFilename(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := fakeSnapshot(false, false)
+	snapshot.Assets[0].MediaType = "video"
+	snapshot.Assets[0].Resources = []photos.Resource{
+		{SourceIdentifier: "fixture-video", Type: "video", UTI: "com.apple.quicktime-movie", OriginalFilename: "Fixture Video.mov"},
+		{SourceIdentifier: "fixture-full-size-video", Type: "full_size_video", UTI: "public.mpeg-4", OriginalFilename: "Fixture Full Size Video.mp4"},
+	}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: fakeProvider{snapshot: snapshot}}); err != nil {
+		t.Fatal(err)
+	}
+
+	assetID := stableID("asset", stableID("source_library", libraryPath), "fixture-asset-1")
+	outputDir := filepath.Join(t.TempDir(), "exports")
+	var gotDestination string
+	result, err := exportOriginal(ctx, paths, assetID, outputDir, func(_ context.Context, _, destinationPath string, _ bool) error {
+		gotDestination = destinationPath
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath := filepath.Join(outputDir, "Fixture Full Size Video.mp4")
+	if gotDestination != wantPath || result.Path != wantPath {
+		t.Fatalf("video export path = call %q result %q, want %q", gotDestination, result.Path, wantPath)
+	}
+}
+
 func TestExportOriginalFallsBackToAssetHexFilename(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

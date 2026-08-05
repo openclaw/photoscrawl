@@ -52,8 +52,13 @@ select asset.local_identifier,
          where asset_resource.asset_id = asset.id
            and asset_resource.deleted_at is null
            and trim(asset_resource.original_filename) <> ''
-           and asset_resource.resource_type in ('original', 'photo')
-         order by case asset_resource.resource_type when 'original' then 0 else 1 end,
+           and asset_resource.resource_type in ('original', 'photo', 'full_size_video', 'video')
+         order by case asset_resource.resource_type
+                    when 'original' then 0
+                    when 'photo' then 1
+                    when 'full_size_video' then 2
+                    else 3
+                  end,
                   asset_resource.id
          limit 1
        )
