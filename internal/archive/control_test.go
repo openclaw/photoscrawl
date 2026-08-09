@@ -24,6 +24,9 @@ func TestControlManifest(t *testing.T) {
 	if !slices.Contains(manifest.Capabilities, "search") || manifest.Commands["query"].Mutates {
 		t.Fatalf("search contract = %#v", manifest)
 	}
+	if !slices.Contains(manifest.Capabilities, "timeline") || manifest.Commands["timeline"].Mutates {
+		t.Fatalf("timeline contract = %#v", manifest)
+	}
 	if manifest.Privacy.ExportsSecrets || !slices.Contains(manifest.Privacy.LocalOnlyScopes, "apple-photos") {
 		t.Fatalf("privacy = %#v", manifest.Privacy)
 	}

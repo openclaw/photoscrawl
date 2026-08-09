@@ -17,7 +17,7 @@ func ControlManifest(paths Paths) control.Manifest {
 		DefaultLogs:     paths.LogDir,
 		DefaultShare:    paths.ShareDir,
 	}
-	manifest.Capabilities = []string{"metadata", "status", "init", "search"}
+	manifest.Capabilities = []string{"metadata", "status", "init", "search", "timeline"}
 	manifest.Privacy = control.Privacy{
 		ExportsSecrets: false,
 		LocalOnlyScopes: []string{
@@ -33,6 +33,7 @@ func ControlManifest(paths Paths) control.Manifest {
 		"status":   {Title: "Status", Argv: []string{"photoscrawl", "status", "--json"}, JSON: true},
 		"init":     {Title: "Initialize archive", Argv: []string{"photoscrawl", "init", "--json"}, JSON: true, Mutates: true},
 		"query":    {Title: "Search", Argv: []string{"photoscrawl", "search", "--json", "--query"}, JSON: true},
+		"timeline": {Title: "Timeline", Argv: []string{"photoscrawl", "timeline", "--json", "--from", "<from>", "--to", "<to>"}, JSON: true},
 	}
 	return manifest
 }

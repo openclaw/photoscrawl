@@ -165,6 +165,32 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return output.Write(os.Stdout, format, "search", result)
+	case "timeline":
+		fs := flag.NewFlagSet("timeline", flag.ContinueOnError)
+		fs.SetOutput(os.Stderr)
+		dbPath := fs.String("db", "", "photos.sqlite path")
+		from := fs.String("from", "", "inclusive ISO 8601 timestamp with offset")
+		to := fs.String("to", "", "exclusive ISO 8601 timestamp with offset")
+		jsonFlag := fs.Bool("json", false, "write JSON")
+		formatFlag := fs.String("format", "", "output format")
+		if err := fs.Parse(args[1:]); err != nil {
+			return output.UsageError{Err: err}
+		}
+		if fs.NArg() != 0 {
+			return output.UsageError{Err: errors.New("timeline takes flags only")}
+		}
+		if *dbPath != "" {
+			paths.Database = *dbPath
+		}
+		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		if err != nil {
+			return err
+		}
+		result, err := archive.Timeline(ctx, paths, archive.TimelineOptions{From: *from, To: *to})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "timeline", result)
 	case "open":
 		fs := flag.NewFlagSet("open", flag.ContinueOnError)
 		fs.SetOutput(os.Stderr)
@@ -346,7 +372,7 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage() error {
-	return output.UsageError{Err: errors.New("usage: photoscrawl <metadata|init|status|crawl|classify|search|open|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
+	return output.UsageError{Err: errors.New("usage: photoscrawl <metadata|init|status|crawl|classify|search|timeline|open|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
 }
 
 func splitList(value string) []string {

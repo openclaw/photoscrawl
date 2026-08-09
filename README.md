@@ -29,6 +29,7 @@ go run ./cmd/photoscrawl crawl --library "$HOME/Pictures/Photos Library.photosli
 go run ./cmd/photoscrawl classify --limit 100 --json
 go run ./cmd/photoscrawl classify --local-model gemma4:e4b --limit 20 --json
 go run ./cmd/photoscrawl search --query "drone beach portugal" --json
+go run ./cmd/photoscrawl timeline --from 2026-05-27T00:00:00Z --to 2026-05-28T00:00:00Z --json
 go run ./cmd/photoscrawl open --id asset:<id> --json
 go run ./cmd/photoscrawl neighbors --id asset:<id> --json
 go run ./cmd/photoscrawl evidence --row-id asset:<id> --json
@@ -71,6 +72,11 @@ people/place/trip truth.
 people, places, or clusters. Current reasons are deterministic archive facts:
 same burst id, same album id, same resource hash, nearby creation time, nearby
 raw GPS, and shared local observation labels.
+
+`timeline` returns raw geotagged asset observations for one explicit half-open
+time range. It preserves the asset and location-observation identifiers and
+reports upstream horizontal accuracy when available. It does not infer stops,
+routes, trips, or events.
 
 `place-context` enriches one asset's own latitude/longitude/accuracy/time into
 address hierarchy and candidate nearby POIs. Apple's network-backed
@@ -117,7 +123,7 @@ Today the POC sees useful source facts and optional local multimodal observation
 - quality observations for model failures such as prompt leakage;
 - status coverage counts for GPS, observations, local resources, remote
   resources, classification queue state, and observation types;
-- search/open/evidence/neighbors JSON that points every claim back to source
+- search/timeline/open/evidence/neighbors JSON that points every claim back to source
   rows or evidence ids.
 
 It does not create durable identities, trips, places, relationships, embeddings,
@@ -151,7 +157,7 @@ Build `photos.sqlite` with:
 - Vision/Core ML observations: labels, OCR, faces, barcodes, screenshot/document
   markers, quality/similarity signals where useful;
 - evidence refs for every observation;
-- JSON status/search/open/neighbors/evidence commands.
+- JSON status/search/timeline/open/neighbors/evidence commands.
 
 Out of scope for v1:
 

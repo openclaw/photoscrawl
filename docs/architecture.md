@@ -94,6 +94,7 @@ The first query layer is object/evidence traversal:
 
 - `status`: archive health and counts.
 - `search`: FTS over assets and observations.
+- `timeline`: raw geotagged asset observations in an explicit time range.
 - `open`: asset/resource/observation detail with evidence.
 - `neighbors`: albums, locations, faces, same resource hash, same burst/live
   photo, similar image, nearby time/place candidates.
