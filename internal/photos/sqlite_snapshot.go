@@ -53,7 +53,15 @@ func (SQLiteSnapshotProvider) Snapshot(ctx context.Context, libraryPath string) 
 }
 
 func sqliteAssets(ctx context.Context, db *sql.DB, resources map[int64][]Resource, albums map[int64][]AlbumMembership) ([]Asset, error) {
-	rows, err := db.QueryContext(ctx, `
+	trashDateExpression := "null"
+	hasTrashDate, err := sqliteColumnExists(ctx, db, "ZASSET", "ZTRASHEDDATE")
+	if err != nil {
+		return nil, err
+	}
+	if hasTrashDate {
+		trashDateExpression = "cast(a.ZTRASHEDDATE as real)"
+	}
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
 select a.Z_PK,
        coalesce(a.ZUUID, ''),
        coalesce(a.ZKIND, -1),
@@ -68,18 +76,19 @@ select a.Z_PK,
        coalesce(a.ZFAVORITE, 0),
        coalesce(a.ZHIDDEN, 0),
        coalesce(a.ZAVALANCHEUUID, ''),
-       cast(a.ZLATITUDE as real),
-       cast(a.ZLONGITUDE as real),
-       cast(aa.ZGPSHORIZONTALACCURACY as real),
+	       cast(a.ZLATITUDE as real),
+	       cast(a.ZLONGITUDE as real),
+	       cast(aa.ZGPSHORIZONTALACCURACY as real),
        coalesce(a.ZUNIFORMTYPEIDENTIFIER, ''),
        coalesce(a.ZFILENAME, ''),
-       coalesce(aa.ZORIGINALFILENAME, '')
+       coalesce(aa.ZORIGINALFILENAME, ''),
+       coalesce(a.ZTRASHEDSTATE, 0),
+       %s
 from ZASSET a
 left join ZADDITIONALASSETATTRIBUTES aa on aa.ZASSET = a.Z_PK
-where coalesce(a.ZTRASHEDSTATE, 0) = 0
-  and coalesce(a.ZUUID, '') <> ''
+where coalesce(a.ZUUID, '') <> ''
 order by a.ZDATECREATED, a.ZUUID
-`)
+`, trashDateExpression))
 	if err != nil {
 		return nil, fmt.Errorf("query sqlite assets: %w", err)
 	}
@@ -109,6 +118,8 @@ order by a.ZDATECREATED, a.ZUUID
 			&row.uti,
 			&row.filename,
 			&row.originalFilename,
+			&row.trashedState,
+			&row.trashedDate,
 		); err != nil {
 			return nil, err
 		}
@@ -148,6 +159,16 @@ order by a.ZDATECREATED, a.ZUUID
 				HorizontalAccuracy: accuracy,
 			}
 		}
+		if row.trashedState != 0 {
+			asset.DeletedAt = coreDataTime(row.trashedDate)
+			asset.DeletionSource = "photos_sqlite_snapshot"
+			asset.DeletionReason = "trashed_in_photos_library"
+			if asset.DeletedAt == "" {
+				asset.Metadata["deletion_timestamp_source"] = "crawl_observed_at"
+			} else {
+				asset.Metadata["deletion_timestamp_source"] = "ZTRASHEDDATE"
+			}
+		}
 		assets = append(assets, asset)
 	}
 	if err := rows.Err(); err != nil {
@@ -158,7 +179,8 @@ order by a.ZDATECREATED, a.ZUUID
 
 func sqliteResources(ctx context.Context, db *sql.DB) (map[int64][]Resource, error) {
 	rows, err := db.QueryContext(ctx, `
-select r.ZASSET,
+select r.Z_PK,
+       r.ZASSET,
        coalesce(r.ZRESOURCETYPE, -1),
        coalesce(r.ZCOMPACTUTI, a.ZUNIFORMTYPEIDENTIFIER, ''),
        coalesce(aa.ZORIGINALFILENAME, a.ZFILENAME, ''),
@@ -180,14 +202,15 @@ order by r.ZASSET, r.ZRESOURCETYPE, r.ZVERSION
 
 	out := map[int64][]Resource{}
 	for rows.Next() {
-		var assetPK, resourceType, fileSize, localAvailability, remoteAvailability, version int64
+		var resourcePK, assetPK, resourceType, fileSize, localAvailability, remoteAvailability, version int64
 		var uti, originalFilename, stableHash string
-		if err := rows.Scan(&assetPK, &resourceType, &uti, &originalFilename, &fileSize, &stableHash, &localAvailability, &remoteAvailability, &version); err != nil {
+		if err := rows.Scan(&resourcePK, &assetPK, &resourceType, &uti, &originalFilename, &fileSize, &stableHash, &localAvailability, &remoteAvailability, &version); err != nil {
 			return nil, err
 		}
 		availableLocally := localAvailability > 0
 		needsDownload := !availableLocally && remoteAvailability > 0
 		out[assetPK] = append(out[assetPK], Resource{
+			SourceIdentifier: fmt.Sprintf("sqlite_internal_resource:%d", resourcePK),
 			Type:             fmt.Sprintf("internal_resource:%d", resourceType),
 			UTI:              uti,
 			OriginalFilename: originalFilename,
@@ -268,6 +291,28 @@ type sqliteAssetRow struct {
 	uti                string
 	filename           string
 	originalFilename   string
+	trashedState       int64
+	trashedDate        sql.NullFloat64
+}
+
+func sqliteColumnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.QueryContext(ctx, "pragma table_info("+store.QuoteIdent(table)+")")
+	if err != nil {
+		return false, fmt.Errorf("inspect sqlite table %s: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func sqliteMediaType(kind int64) string {

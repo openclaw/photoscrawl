@@ -14,7 +14,6 @@ import (
 
 	crawlconfig "github.com/openclaw/crawlkit/config"
 	"github.com/openclaw/crawlkit/state"
-	"github.com/openclaw/crawlkit/store"
 	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
@@ -33,6 +32,8 @@ type CrawlResult struct {
 	AssetsNew             int    `json:"assets_new"`
 	AssetsChanged         int    `json:"assets_changed"`
 	AssetsUnchanged       int    `json:"assets_unchanged"`
+	AssetsDeleted         int    `json:"assets_deleted"`
+	AssetsRestored        int    `json:"assets_restored"`
 	ResourcesSeen         int    `json:"resources_seen"`
 	AlbumMembershipsSeen  int    `json:"album_memberships_seen"`
 	LocationsSeen         int    `json:"locations_seen"`
@@ -72,12 +73,11 @@ func Crawl(ctx context.Context, paths Paths, opts CrawlOptions) (CrawlResult, er
 	if err := photos.AttachLocalMediaPaths(&snapshot, absLibraryPath); err != nil {
 		return CrawlResult{}, fmt.Errorf("resolve local Photos media paths: %w", err)
 	}
+	if err := validateSnapshotResourceSourceIdentifiers(snapshot); err != nil {
+		return CrawlResult{}, err
+	}
 
-	db, err := store.Open(ctx, store.Options{
-		Path:          paths.Database,
-		Schema:        Schema,
-		SchemaVersion: SchemaVersion,
-	})
+	db, err := openArchiveStore(ctx, paths.Database)
 	if err != nil {
 		return CrawlResult{}, err
 	}
@@ -161,12 +161,16 @@ values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		if strings.TrimSpace(asset.LocalIdentifier) == "" {
 			continue
 		}
+		asset, deleted, err := c.normalizeAssetDeletion(asset)
+		if err != nil {
+			return err
+		}
 		assetID := stableID("asset", sourceID, asset.LocalIdentifier)
 		fingerprint, err := assetFingerprint(asset)
 		if err != nil {
 			return err
 		}
-		previousFingerprint, seenBefore, err := c.previousAssetFingerprint(ctx, sourceID, assetID)
+		previousFingerprint, previouslyDeleted, seenBefore, err := c.previousAssetState(ctx, sourceID, assetID)
 		if err != nil {
 			return err
 		}
@@ -178,7 +182,13 @@ values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		default:
 			c.result.AssetsUnchanged++
 		}
-		if err := c.upsertAsset(ctx, tx, sourceID, snapshotID, assetID, fingerprint, seenBefore, asset); err != nil {
+		if deleted && !previouslyDeleted {
+			c.result.AssetsDeleted++
+		}
+		if !deleted && previouslyDeleted {
+			c.result.AssetsRestored++
+		}
+		if err := c.upsertAsset(ctx, tx, sourceID, snapshotID, assetID, fingerprint, deleted, asset); err != nil {
 			return err
 		}
 	}
@@ -210,57 +220,79 @@ where source_library_id = ? and last_seen_snapshot_id <> ?
 	return nil
 }
 
-func (c *crawlImporter) upsertAsset(ctx context.Context, tx *sql.Tx, sourceID, snapshotID, assetID, fingerprint string, seenBefore bool, asset photos.Asset) error {
+func (c *crawlImporter) upsertAsset(ctx context.Context, tx *sql.Tx, sourceID, snapshotID, assetID, fingerprint string, deleted bool, asset photos.Asset) error {
 	metadataJSON, err := jsonText(asset.Metadata)
 	if err != nil {
 		return err
 	}
-	if _, err := c.stmts.asset.ExecContext(ctx, assetID, asset.LocalIdentifier, asset.MediaType, asset.MediaSubtypes, asset.CreationDate, asset.ModificationDate, asset.AddedDate, asset.TimezoneName, asset.Width, asset.Height, asset.DurationSeconds, boolInt(asset.Favorite), boolInt(asset.Hidden), asset.BurstIdentifier, boolInt(asset.RepresentsBurst), sourceID, metadataJSON); err != nil {
+	assetArgs := []any{assetID, asset.LocalIdentifier, asset.MediaType, asset.MediaSubtypes, asset.CreationDate, asset.ModificationDate, asset.AddedDate, asset.TimezoneName, asset.Width, asset.Height, asset.DurationSeconds, boolInt(asset.Favorite), boolInt(asset.Hidden), asset.BurstIdentifier, boolInt(asset.RepresentsBurst), sourceID, metadataJSON}
+	assetStatement := c.stmts.assetLive
+	if deleted {
+		assetStatement = c.stmts.assetTombstone
+		assetArgs = append(assetArgs, asset.DeletedAt, asset.DeletionSource, asset.DeletionReason)
+	}
+	if _, err := assetStatement.ExecContext(ctx, assetArgs...); err != nil {
 		return fmt.Errorf("upsert asset %s: %w", assetID, err)
 	}
-
-	if seenBefore {
-		if err := resetAssetDerivedRows(ctx, tx, assetID); err != nil {
-			return err
+	evidenceKind := "asset_metadata"
+	evidencePointer := "asset:" + asset.LocalIdentifier
+	deletionTimestampSource := ""
+	if deleted {
+		evidenceKind = "asset_tombstone"
+		evidencePointer += "/tombstone:" + asset.DeletedAt
+		if value, ok := asset.Metadata["deletion_timestamp_source"].(string); ok {
+			deletionTimestampSource = strings.TrimSpace(value)
 		}
 	}
-	if err := c.insertEvidence(ctx, tx, assetID, "asset_metadata", c.snapshot.Provider, "asset:"+asset.LocalIdentifier, map[string]any{
-		"media_type":        asset.MediaType,
-		"media_subtypes":    asset.MediaSubtypes,
-		"creation_date":     asset.CreationDate,
-		"modification_date": asset.ModificationDate,
-		"favorite":          asset.Favorite,
-		"hidden":            asset.Hidden,
-		"width":             asset.Width,
-		"height":            asset.Height,
+	if err := c.insertEvidence(ctx, tx, assetID, evidenceKind, c.snapshot.Provider, evidencePointer, map[string]any{
+		"media_type":                asset.MediaType,
+		"media_subtypes":            asset.MediaSubtypes,
+		"creation_date":             asset.CreationDate,
+		"modification_date":         asset.ModificationDate,
+		"favorite":                  asset.Favorite,
+		"hidden":                    asset.Hidden,
+		"width":                     asset.Width,
+		"height":                    asset.Height,
+		"deleted_at":                asset.DeletedAt,
+		"deletion_source":           asset.DeletionSource,
+		"deletion_reason":           asset.DeletionReason,
+		"deletion_timestamp_source": deletionTimestampSource,
 	}); err != nil {
 		return err
 	}
-	for i, resource := range asset.Resources {
-		if err := c.insertResource(ctx, tx, assetID, asset.LocalIdentifier, i, resource); err != nil {
+	for resourceIndex, resource := range asset.Resources {
+		if err := c.insertResource(ctx, tx, assetID, asset.LocalIdentifier, resourceIndex, resource, deleted, asset); err != nil {
 			return err
 		}
 	}
-	for _, album := range asset.Albums {
-		if err := c.insertAlbum(ctx, tx, assetID, album); err != nil {
-			return err
+	if !deleted {
+		for _, album := range asset.Albums {
+			if err := c.insertAlbum(ctx, tx, assetID, album); err != nil {
+				return err
+			}
+		}
+		if asset.Location != nil {
+			if err := c.insertLocation(ctx, tx, assetID, asset.LocalIdentifier, *asset.Location); err != nil {
+				return err
+			}
 		}
 	}
-	if asset.Location != nil {
-		if err := c.insertLocation(ctx, tx, assetID, asset.LocalIdentifier, *asset.Location); err != nil {
+	if deleted {
+		if err := c.tombstoneAssetSubordinates(ctx, tx, assetID, asset); err != nil {
 			return err
 		}
-	}
-	if err := c.insertFTS(ctx, tx, assetID, asset); err != nil {
-		return err
-	}
-	if err := c.upsertClassifyQueue(ctx, tx, sourceID, assetID, asset); err != nil {
-		return err
+	} else {
+		if err := c.insertFTS(ctx, tx, assetID, asset); err != nil {
+			return err
+		}
+		if err := c.upsertClassifyQueue(ctx, tx, sourceID, assetID); err != nil {
+			return err
+		}
 	}
 	return c.upsertSeenAsset(ctx, tx, sourceID, assetID, snapshotID, fingerprint)
 }
 
-func (c *crawlImporter) insertResource(ctx context.Context, tx *sql.Tx, assetID, localIdentifier string, index int, resource photos.Resource) error {
+func (c *crawlImporter) insertResource(ctx context.Context, tx *sql.Tx, assetID, localIdentifier string, resourceIndex int, resource photos.Resource, deleted bool, asset photos.Asset) error {
 	evidenceValue := map[string]any{
 		"availability":      resource.Availability,
 		"available_locally": resource.AvailableLocally,
@@ -270,11 +302,85 @@ func (c *crawlImporter) insertResource(ctx context.Context, tx *sql.Tx, assetID,
 		"local_path":        resource.LocalPath,
 		"metadata":          resource.Metadata,
 	}
-	resourceID := stableID("asset_resource", assetID, fmt.Sprintf("%06d", index), resource.Type, resource.UTI, resource.OriginalFilename)
-	if _, err := c.stmts.resource.ExecContext(ctx, resourceID, assetID, resource.Type, resource.UTI, resource.OriginalFilename, resource.LocalPath, resource.FileSize, resource.StableHash, boolInt(resource.AvailableLocally), boolInt(resource.NeedsDownload)); err != nil {
+	sourceIdentifier := strings.TrimSpace(resource.SourceIdentifier)
+	resourceID, err := resolveResourceID(ctx, tx, assetID, sourceIdentifier, resourceIndex, resource)
+	if err != nil {
+		return err
+	}
+	args := []any{resourceID, assetID, sourceIdentifier, resource.Type, resource.UTI, resource.OriginalFilename, resource.LocalPath, resource.FileSize, resource.StableHash, boolInt(resource.AvailableLocally), boolInt(resource.NeedsDownload)}
+	statement := c.stmts.resource
+	evidenceKind := "asset_resource"
+	pointer := "asset:" + localIdentifier + "/resource:" + resourceID
+	if deleted {
+		statement = c.stmts.resourceTombstone
+		args = append(args, asset.DeletedAt, asset.DeletionSource)
+		evidenceKind = "asset_resource_tombstone"
+		pointer += "/tombstone:" + asset.DeletedAt
+	}
+	if _, err := statement.ExecContext(ctx, args...); err != nil {
 		return fmt.Errorf("insert asset resource: %w", err)
 	}
-	return c.insertEvidence(ctx, tx, assetID, "asset_resource", c.snapshot.Provider, "asset:"+localIdentifier+"/resource:"+resourceID, evidenceValue)
+	return c.insertEvidence(ctx, tx, assetID, evidenceKind, c.snapshot.Provider, pointer, evidenceValue)
+}
+
+func validateSnapshotResourceSourceIdentifiers(snapshot photos.LibrarySnapshot) error {
+	for _, asset := range snapshot.Assets {
+		seen := make(map[string]struct{}, len(asset.Resources))
+		for _, resource := range asset.Resources {
+			sourceIdentifier := strings.TrimSpace(resource.SourceIdentifier)
+			if sourceIdentifier == "" {
+				return fmt.Errorf("asset %q resource %q is missing a stable source identifier", asset.LocalIdentifier, resource.Type)
+			}
+			if _, exists := seen[sourceIdentifier]; exists {
+				return fmt.Errorf("asset %q has duplicate resource source identifier %q", asset.LocalIdentifier, sourceIdentifier)
+			}
+			seen[sourceIdentifier] = struct{}{}
+		}
+	}
+	return nil
+}
+
+func resolveResourceID(ctx context.Context, tx *sql.Tx, assetID, sourceIdentifier string, resourceIndex int, resource photos.Resource) (string, error) {
+	var resourceID string
+	err := tx.QueryRowContext(ctx, `
+select id from asset_resource
+where asset_id = ? and source_identifier = ?
+limit 1
+`, assetID, sourceIdentifier).Scan(&resourceID)
+	if err == nil {
+		return resourceID, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("resolve asset resource source identity: %w", err)
+	}
+	legacyID := stableID("asset_resource", assetID, fmt.Sprintf("%06d", resourceIndex), resource.Type, resource.UTI, resource.OriginalFilename)
+	err = tx.QueryRowContext(ctx, `
+select id from asset_resource
+where id = ? and asset_id = ? and coalesce(source_identifier, '') = ''
+`, legacyID, assetID).Scan(&resourceID)
+	if err == nil {
+		return resourceID, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("resolve positional legacy asset resource identity: %w", err)
+	}
+	err = tx.QueryRowContext(ctx, `
+select id from asset_resource
+where asset_id = ?
+  and coalesce(source_identifier, '') = ''
+  and resource_type = ?
+  and uti = ?
+  and original_filename = ?
+order by id
+limit 1
+`, assetID, resource.Type, resource.UTI, resource.OriginalFilename).Scan(&resourceID)
+	if err == nil {
+		return resourceID, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("resolve legacy asset resource identity: %w", err)
+	}
+	return stableID("asset_resource", assetID, sourceIdentifier), nil
 }
 
 func (c *crawlImporter) insertAlbum(ctx context.Context, tx *sql.Tx, assetID string, album photos.AlbumMembership) error {
@@ -311,15 +417,78 @@ func (c *crawlImporter) insertFTS(ctx context.Context, tx *sql.Tx, assetID strin
 		asset.BurstIdentifier,
 		fmt.Sprintf("%dx%d", asset.Width, asset.Height),
 	}
-	for _, resource := range asset.Resources {
-		bodyParts = append(bodyParts, resource.Type, resource.UTI, resource.OriginalFilename)
+	resourceRows, err := tx.QueryContext(ctx, `
+select resource_type, uti, original_filename
+from asset_resource
+where asset_id = ? and deleted_at is null
+order by resource_type, original_filename, id
+`, assetID)
+	if err != nil {
+		return fmt.Errorf("load merged asset resources for fts: %w", err)
 	}
-	for _, album := range asset.Albums {
-		bodyParts = append(bodyParts, album.AlbumTitle, album.AlbumKind)
+	for resourceRows.Next() {
+		var resourceType, uti, filename string
+		if err := resourceRows.Scan(&resourceType, &uti, &filename); err != nil {
+			resourceRows.Close()
+			return err
+		}
+		bodyParts = append(bodyParts, resourceType, uti, filename)
+	}
+	if err := resourceRows.Close(); err != nil {
+		return err
+	}
+	if err := resourceRows.Err(); err != nil {
+		return err
+	}
+	albumRows, err := tx.QueryContext(ctx, `
+select album_title, album_kind
+from album_membership
+where asset_id = ?
+order by album_title, album_kind, id
+`, assetID)
+	if err != nil {
+		return fmt.Errorf("load merged album memberships for fts: %w", err)
+	}
+	for albumRows.Next() {
+		var title, kind string
+		if err := albumRows.Scan(&title, &kind); err != nil {
+			albumRows.Close()
+			return err
+		}
+		bodyParts = append(bodyParts, title, kind)
+	}
+	if err := albumRows.Close(); err != nil {
+		return err
+	}
+	if err := albumRows.Err(); err != nil {
+		return err
 	}
 	body := strings.Join(nonEmpty(bodyParts...), " ")
+	if _, err := c.stmts.deleteFTS.ExecContext(ctx, assetID); err != nil {
+		return fmt.Errorf("clear asset fts: %w", err)
+	}
 	if _, err := c.stmts.fts.ExecContext(ctx, assetID, title, body); err != nil {
 		return fmt.Errorf("insert asset fts: %w", err)
+	}
+	return nil
+}
+
+func (c *crawlImporter) tombstoneAssetSubordinates(ctx context.Context, tx *sql.Tx, assetID string, asset photos.Asset) error {
+	if _, err := tx.ExecContext(ctx, `
+update asset_resource
+set deleted_at = coalesce(deleted_at, ?),
+    deletion_source = coalesce(nullif(deletion_source, ''), ?),
+    deletion_reason = coalesce(nullif(deletion_reason, ''), 'parent_asset_deleted')
+where asset_id = ?
+`, asset.DeletedAt, asset.DeletionSource, assetID); err != nil {
+		return fmt.Errorf("tombstone asset resources: %w", err)
+	}
+	if _, err := c.stmts.deleteFTS.ExecContext(ctx, assetID); err != nil {
+		return fmt.Errorf("clear tombstoned asset fts: %w", err)
+	}
+	queueID := stableID("classification_queue", assetID)
+	if _, err := c.stmts.queue.ExecContext(ctx, queueID, assetID, stableID("source_library", c.libraryPath), "deleted", "parent_asset_deleted", 0, c.completedAt.Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("retire classification queue: %w", err)
 	}
 	return nil
 }
@@ -343,16 +512,36 @@ func (c *crawlImporter) upsertSeenAsset(ctx context.Context, tx *sql.Tx, sourceI
 	return nil
 }
 
-func (c *crawlImporter) upsertClassifyQueue(ctx context.Context, tx *sql.Tx, sourceID, assetID string, asset photos.Asset) error {
+func (c *crawlImporter) upsertClassifyQueue(ctx context.Context, tx *sql.Tx, sourceID, assetID string) error {
 	hasLocalContent := false
 	needsDownload := false
-	for _, resource := range asset.Resources {
-		if resource.AvailableLocally || strings.TrimSpace(resource.LocalPath) != "" {
+	rows, err := tx.QueryContext(ctx, `
+select available_locally, local_path, needs_download
+from asset_resource
+where asset_id = ? and deleted_at is null
+`, assetID)
+	if err != nil {
+		return fmt.Errorf("load merged resources for classification queue: %w", err)
+	}
+	for rows.Next() {
+		var availableLocally, resourceNeedsDownload int
+		var localPath string
+		if err := rows.Scan(&availableLocally, &localPath, &resourceNeedsDownload); err != nil {
+			rows.Close()
+			return err
+		}
+		if availableLocally != 0 || strings.TrimSpace(localPath) != "" {
 			hasLocalContent = true
 		}
-		if resource.NeedsDownload {
+		if resourceNeedsDownload != 0 {
 			needsDownload = true
 		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
 	}
 	needsDownload = needsDownload && !hasLocalContent
 	queueID := stableID("classification_queue", assetID)
@@ -366,45 +555,41 @@ func (c *crawlImporter) upsertClassifyQueue(ctx context.Context, tx *sql.Tx, sou
 	return nil
 }
 
-func resetAssetDerivedRows(ctx context.Context, tx *sql.Tx, assetID string) error {
-	tables := []string{
-		"asset_resource", "album_membership", "location_observation",
-		"visual_observation", "text_observation", "face_observation",
-		"model_observation", "observation_term",
-		"asset_fts", "observation_fts", "edge", "evidence_ref",
-	}
-	for _, table := range tables {
-		column := "asset_id"
-		if table == "asset_fts" {
-			column = "id"
-		}
-		query := "delete from " + store.QuoteIdent(table) + " where " + store.QuoteIdent(column) + " = ?"
-		if table == "edge" {
-			query = "delete from edge where from_id = ? or to_id = ?"
-		}
-		var err error
-		if table == "edge" {
-			_, err = tx.ExecContext(ctx, query, assetID, assetID)
-		} else {
-			_, err = tx.ExecContext(ctx, query, assetID)
-		}
-		if err != nil {
-			return fmt.Errorf("clear %s for asset: %w", table, err)
-		}
-	}
-	return nil
-}
-
-func (c *crawlImporter) previousAssetFingerprint(ctx context.Context, sourceID, assetID string) (string, bool, error) {
+func (c *crawlImporter) previousAssetState(ctx context.Context, sourceID, assetID string) (string, bool, bool, error) {
 	var fingerprint string
-	err := c.stmts.previousFingerprint.QueryRowContext(ctx, sourceID, assetID).Scan(&fingerprint)
+	var deletedAt sql.NullString
+	err := c.stmts.previousFingerprint.QueryRowContext(ctx, sourceID, assetID).Scan(&fingerprint, &deletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return "", false, false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("read previous asset state: %w", err)
+		return "", false, false, fmt.Errorf("read previous asset state: %w", err)
 	}
-	return fingerprint, true, nil
+	return fingerprint, deletedAt.Valid, true, nil
+}
+
+func (c *crawlImporter) normalizeAssetDeletion(asset photos.Asset) (photos.Asset, bool, error) {
+	deletedAt := strings.TrimSpace(asset.DeletedAt)
+	reason := strings.TrimSpace(asset.DeletionReason)
+	source := strings.TrimSpace(asset.DeletionSource)
+	if deletedAt == "" && reason == "" && source == "" {
+		return asset, false, nil
+	}
+	if reason == "" {
+		return photos.Asset{}, false, fmt.Errorf("asset %q tombstone has no deletion reason", asset.LocalIdentifier)
+	}
+	if deletedAt == "" {
+		deletedAt = c.completedAt.Format(time.RFC3339Nano)
+	} else if _, err := time.Parse(time.RFC3339Nano, deletedAt); err != nil {
+		return photos.Asset{}, false, fmt.Errorf("asset %q tombstone deleted_at: %w", asset.LocalIdentifier, err)
+	}
+	if source == "" {
+		source = c.snapshot.Provider
+	}
+	asset.DeletedAt = deletedAt
+	asset.DeletionSource = source
+	asset.DeletionReason = reason
+	return asset, true, nil
 }
 
 func snapshotCounts(snapshot photos.LibrarySnapshot) (resources, albums, locations int) {

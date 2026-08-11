@@ -1,6 +1,6 @@
 package archive
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 const Schema = `
 create table if not exists source_library (
@@ -71,12 +71,16 @@ create table if not exists asset (
   burst_identifier text not null,
   represents_burst integer not null,
   source_library_id text not null references source_library(id),
-  metadata_json text not null
+  metadata_json text not null,
+  deleted_at text,
+  deletion_source text,
+  deletion_reason text
 );
 
 create table if not exists asset_resource (
   id text primary key,
   asset_id text not null references asset(id),
+  source_identifier text not null,
   resource_type text not null,
   uti text not null,
   original_filename text not null,
@@ -84,7 +88,10 @@ create table if not exists asset_resource (
   file_size integer not null,
   sha256 text not null,
   available_locally integer not null,
-  needs_download integer not null
+  needs_download integer not null,
+  deleted_at text,
+  deletion_source text,
+  deletion_reason text
 );
 
 create table if not exists album_membership (

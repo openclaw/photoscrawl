@@ -53,4 +53,5 @@ jobs:
       - name: Build
         run: |
           mkdir -p bin
-          GOWORK=off go build -trimpath -o bin/photoscrawl ./cmd/photoscrawl
+          GOWORK=off go build -trimpath -ldflags "-X main.version=ci" -o bin/photoscrawl ./cmd/photoscrawl
+          test "$(bin/photoscrawl --version)" = "ci"

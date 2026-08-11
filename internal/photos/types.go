@@ -30,6 +30,9 @@ type Asset struct {
 	Hidden           bool              `json:"hidden"`
 	BurstIdentifier  string            `json:"burst_identifier"`
 	RepresentsBurst  bool              `json:"represents_burst"`
+	DeletedAt        string            `json:"deleted_at,omitempty"`
+	DeletionSource   string            `json:"deletion_source,omitempty"`
+	DeletionReason   string            `json:"deletion_reason,omitempty"`
 	Location         *Location         `json:"location,omitempty"`
 	Resources        []Resource        `json:"resources,omitempty"`
 	Albums           []AlbumMembership `json:"albums,omitempty"`
@@ -37,6 +40,7 @@ type Asset struct {
 }
 
 type Resource struct {
+	SourceIdentifier string         `json:"source_identifier,omitempty"`
 	Type             string         `json:"type"`
 	UTI              string         `json:"uti"`
 	OriginalFilename string         `json:"original_filename"`

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -14,6 +15,8 @@ import (
 	"github.com/openclaw/photoscrawl/internal/photos"
 	"github.com/openclaw/photoscrawl/internal/place"
 )
+
+var version = "dev"
 
 func main() {
 	if err := run(context.Background(), os.Args[1:]); err != nil {
@@ -30,11 +33,19 @@ func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return usage()
 	}
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-v") {
+		return writeVersion(os.Stdout)
+	}
 	paths, err := archive.DefaultPaths()
 	if err != nil {
 		return err
 	}
 	switch args[0] {
+	case "version":
+		if len(args) != 1 {
+			return output.UsageError{Err: errors.New("version takes no arguments")}
+		}
+		return writeVersion(os.Stdout)
 	case "metadata":
 		fs := flag.NewFlagSet("metadata", flag.ContinueOnError)
 		fs.SetOutput(os.Stderr)
@@ -98,6 +109,7 @@ func run(ctx context.Context, args []string) error {
 		fs.SetOutput(os.Stderr)
 		dbPath := fs.String("db", "", "photos.sqlite path")
 		libraryPath := fs.String("library", "", "Photos Library.photoslibrary path")
+		providerName := fs.String("provider", "auto", "photos provider: auto or sqlite")
 		jsonFlag := fs.Bool("json", false, "write JSON")
 		formatFlag := fs.String("format", "", "output format")
 		if err := fs.Parse(args[1:]); err != nil {
@@ -110,9 +122,13 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		provider, err := photos.ProviderByName(*providerName)
+		if err != nil {
+			return output.UsageError{Err: err}
+		}
 		result, err := archive.Crawl(ctx, paths, archive.CrawlOptions{
 			LibraryPath: *libraryPath,
-			Provider:    photos.NewProvider(),
+			Provider:    provider,
 		})
 		if err != nil {
 			return err
@@ -124,7 +140,9 @@ func run(ctx context.Context, args []string) error {
 		dbPath := fs.String("db", "", "photos.sqlite path")
 		all := fs.Bool("all", false, "classify all pending assets")
 		limit := fs.Int("limit", 100, "max pending assets to classify")
-		localModel := fs.String("local-model", "", "local Ollama vision model to use for content observations")
+		localModel := fs.String("local-model", "", "local vision model to use for content observations")
+		localModelAPI := fs.String("local-model-api", "", "local model API: ollama or openai")
+		localModelURL := fs.String("local-model-url", "", "local model endpoint URL")
 		jsonFlag := fs.Bool("json", false, "write JSON")
 		formatFlag := fs.String("format", "", "output format")
 		if err := fs.Parse(args[1:]); err != nil {
@@ -137,7 +155,13 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		result, err := archive.Classify(ctx, paths, archive.ClassifyOptions{All: *all, Limit: *limit, LocalModel: *localModel})
+		result, err := archive.Classify(ctx, paths, archive.ClassifyOptions{
+			All:           *all,
+			Limit:         *limit,
+			LocalModel:    *localModel,
+			LocalModelAPI: *localModelAPI,
+			LocalModelURL: *localModelURL,
+		})
 		if err != nil {
 			return err
 		}
@@ -213,6 +237,29 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return output.Write(os.Stdout, format, "open", result)
+	case "export":
+		fs := flag.NewFlagSet("export", flag.ContinueOnError)
+		fs.SetOutput(os.Stderr)
+		dbPath := fs.String("db", "", "photos.sqlite path")
+		id := fs.String("id", "", "asset id")
+		outputDir := fs.String("output", "", "destination directory")
+		jsonFlag := fs.Bool("json", false, "write JSON")
+		formatFlag := fs.String("format", "", "output format")
+		if err := fs.Parse(args[1:]); err != nil {
+			return output.UsageError{Err: err}
+		}
+		if *dbPath != "" {
+			paths.Database = *dbPath
+		}
+		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		if err != nil {
+			return err
+		}
+		result, err := archive.Export(ctx, paths, *id, *outputDir)
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "export", result)
 	case "evidence":
 		fs := flag.NewFlagSet("evidence", flag.ContinueOnError)
 		fs.SetOutput(os.Stderr)
@@ -372,7 +419,12 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage() error {
-	return output.UsageError{Err: errors.New("usage: photoscrawl <metadata|init|status|crawl|classify|search|timeline|open|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
+	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|classify|search|timeline|open|export|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
+}
+
+func writeVersion(w io.Writer) error {
+	_, err := fmt.Fprintln(w, version)
+	return err
 }
 
 func splitList(value string) []string {

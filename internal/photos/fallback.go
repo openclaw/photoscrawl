@@ -3,7 +3,19 @@ package photos
 import (
 	"context"
 	"fmt"
+	"strings"
 )
+
+func ProviderByName(name string) (Provider, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "auto":
+		return NewProvider(), nil
+	case "sqlite":
+		return SQLiteSnapshotProvider{}, nil
+	default:
+		return nil, fmt.Errorf("unknown photos provider %q (want auto or sqlite)", name)
+	}
+}
 
 type FallbackProvider struct {
 	Primary   Provider

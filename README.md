@@ -19,6 +19,47 @@ evidence supports each result.
 - Metadata for all assets, local classification for high-signal coverage.
 - Store observations and evidence, not final people/trip/place truth.
 
+## Installation
+
+The first release supports macOS on Apple silicon and Intel. `photoscrawl` uses
+native Objective-C/CGO bridges to PhotoKit, CoreLocation, MapKit, CoreImage,
+CoreGraphics, and ImageIO, so v0.1.x release archives are intentionally
+Darwin-only. Download the archive for your architecture from GitHub Releases,
+extract `photoscrawl`, and place it on your `PATH`.
+
+```sh
+photoscrawl --version
+```
+
+There is no Homebrew formula in the debut release.
+
+## Development
+
+The Makefile exposes the same core targets as the other OpenClaw crawler
+repositories:
+
+```sh
+make help
+make build
+make check
+make snapshot
+```
+
+`make snapshot` builds local GoReleaser artifacts without credentials and never
+publishes them.
+
+## Releases
+
+Official releases run only through the manual **Release (unified)** GitHub
+Actions workflow, which signs and notarizes the Darwin artifacts before
+publishing them:
+
+```sh
+gh workflow run release-unified.yml --repo openclaw/photoscrawl -f version=X.Y.Z
+```
+
+`make release` refuses local publishing and prints that exact command.
+
 ## First Commands
 
 ```sh
@@ -26,11 +67,14 @@ go run ./cmd/photoscrawl metadata --json
 go run ./cmd/photoscrawl init --json
 go run ./cmd/photoscrawl status --json
 go run ./cmd/photoscrawl crawl --library "$HOME/Pictures/Photos Library.photoslibrary" --json
+go run ./cmd/photoscrawl crawl --provider sqlite --library "/path/to/scratch.photoslibrary" --json
 go run ./cmd/photoscrawl classify --limit 100 --json
 go run ./cmd/photoscrawl classify --local-model gemma4:e4b --limit 20 --json
+go run ./cmd/photoscrawl classify --local-model photoscrawl-qwen3-vl-8b --local-model-api openai --local-model-url http://127.0.0.1:1234/v1 --limit 20 --json
 go run ./cmd/photoscrawl search --query "drone beach portugal" --json
 go run ./cmd/photoscrawl timeline --from 2026-05-27T00:00:00Z --to 2026-05-28T00:00:00Z --json
 go run ./cmd/photoscrawl open --id asset:<id> --json
+go run ./cmd/photoscrawl export --id asset:<id> --output /path/to/export --json
 go run ./cmd/photoscrawl neighbors --id asset:<id> --json
 go run ./cmd/photoscrawl evidence --row-id asset:<id> --json
 go run ./cmd/photoscrawl place-context --input <private-eval-run>/metadata/E001.json --json
@@ -43,12 +87,6 @@ Default runtime paths come from crawlkit platform dirs. The primary database is
 `photos.sqlite` under the crawlkit data dir; provider caches and exported
 originals use the crawlkit cache dir.
 
-Planned crawl-family commands:
-
-```sh
-photoscrawl export --format lifecrawler --json
-```
-
 `crawl` tries PhotoKit first for metadata. PhotoKit enumerates the active system
 Photos library; the `--library` path is validated and recorded as the requested
 source. If PhotoKit is unavailable or denied, the POC falls back to a read-only
@@ -60,13 +98,24 @@ local package media paths for derivatives/renders/originals when they exist, so
 content classification can use local files without changing Photos or iCloud
 state. Every imported asset is queued for `classify`.
 
+Crawls merge into the archive. An asset missing from a later enumeration stays
+live; only an explicit provider deletion signal creates a tombstone. Asset
+tombstones retain their reason and also tombstone archived resource rows such as
+derivatives and thumbnails. A later explicit live record restores the asset and
+the resources present in that record without discarding other archive history.
+
 `classify` drains that queue into evidence-backed local metadata observations.
-With `--local-model <ollama-model>`, it also sends already-local image bytes to a
-local Ollama vision model and stores typed candidate observations:
+With `--local-model <model>`, it also sends already-local image bytes to a local
+Ollama or OpenAI-compatible vision server and stores typed candidate
+observations:
 scene summaries, visible-text summaries, place-type/name/venue candidates,
 objects/foods, anonymous people presence, privacy hints, cluster terms, and
 uncertainties. These are evidence-backed model observations, not durable
 people/place/trip truth.
+
+Local-model endpoints must resolve entirely to loopback addresses. Redirects
+are checked under the same rule. Evidence records the actual response endpoint
+and that image bytes were transmitted over the loopback interface.
 
 `neighbors` returns source-level adjacent assets only. It does not create trips,
 people, places, or clusters. Current reasons are deterministic archive facts:

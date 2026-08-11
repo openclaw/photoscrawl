@@ -109,11 +109,19 @@ func loadBackfillKeys(ctx context.Context, dbPath string) ([]backfillKey, int, e
 		return nil, 0, err
 	}
 	defer db.Close()
+	assetFilter := ""
+	hasDeletedAt, err := sqliteTableHasColumn(ctx, db, "asset", "deleted_at")
+	if err != nil {
+		return nil, 0, err
+	}
+	if hasDeletedAt {
+		assetFilter = "a.deleted_at is null and "
+	}
 	rows, err := db.QueryContext(ctx, `
 select a.id, a.creation_date, l.latitude, l.longitude, coalesce(l.horizontal_accuracy, 0)
 from location_observation l
 join asset a on a.id = l.asset_id
-where l.latitude != 0 or l.longitude != 0
+where `+assetFilter+`(l.latitude != 0 or l.longitude != 0)
 order by l.latitude, l.longitude, coalesce(l.horizontal_accuracy, 0), a.creation_date, a.id
 `)
 	if err != nil {
@@ -167,6 +175,26 @@ order by l.latitude, l.longitude, coalesce(l.horizontal_accuracy, 0), a.creation
 		keys[i].Index = i
 	}
 	return keys, locatedAssets, nil
+}
+
+func sqliteTableHasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.QueryContext(ctx, "pragma table_info(\""+table+"\")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func readOnlySQLiteDSN(path string) string {

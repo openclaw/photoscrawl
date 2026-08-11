@@ -67,4 +67,7 @@ func TestAttachLocalMediaPathsAddsSyntheticResource(t *testing.T) {
 	if resource.Type != "local_original" || resource.LocalPath != originalPath || !resource.AvailableLocally {
 		t.Fatalf("resource = %#v", resource)
 	}
+	if resource.SourceIdentifier != "photos_library_package:original" {
+		t.Fatalf("source identifier = %q", resource.SourceIdentifier)
+	}
 }

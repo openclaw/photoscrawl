@@ -70,6 +70,7 @@ func AttachLocalMediaPaths(snapshot *LibrarySnapshot, libraryPath string) error 
 		}
 		if !assigned && asset.MediaType == "image" {
 			asset.Resources = append(asset.Resources, Resource{
+				SourceIdentifier: "photos_library_package:" + candidate.Class,
 				Type:             "local_" + candidate.Class,
 				UTI:              utiForPath(candidate.Path),
 				OriginalFilename: filepath.Base(candidate.Path),
