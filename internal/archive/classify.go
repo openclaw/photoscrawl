@@ -272,7 +272,7 @@ order by case q.state when 'pending' then 0 else 1 end, a.creation_date desc, q.
 
 func classifyQueueStates(includeMetadataClassified bool) string {
 	if includeMetadataClassified {
-		return "'pending', 'metadata_classified'"
+		return "'pending', 'metadata_classified', 'content_failed'"
 	}
 	return "'pending'"
 }

@@ -163,6 +163,51 @@ func TestClassifyLocalModelWritesTypedObservations(t *testing.T) {
 	}
 }
 
+func TestClassifyLocalModelRetriesContentFailure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	imagePath := writeModelTestImage(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Retry-Proof") == "ready" {
+			openAIResponseHandler(w, r)
+			return
+		}
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	provider := fakeProvider{snapshot: photos.LibrarySnapshot{
+		Provider: "fake", PhotosVersion: "fixture", AuthorizationStatus: "authorized",
+		Assets: []photos.Asset{{
+			LocalIdentifier: "retry-local-model-asset", MediaType: "image", CreationDate: "2026-08-12T12:00:00Z",
+			Resources: []photos.Resource{{SourceIdentifier: "retry-photo", Type: "photo", UTI: "public.jpeg", LocalPath: imagePath, AvailableLocally: true}},
+		}},
+	}}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-08-12T12:05:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", LocalModelAPI: localModelAPIOpenAI, LocalModelURL: server.URL, Now: fixedClock("2026-08-12T12:10:00Z")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.ContentClassificationFailures != 1 {
+		t.Fatalf("failed classify = %#v", failed)
+	}
+
+	server.Config.Handler = http.HandlerFunc(openAIResponseHandler)
+	retried, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", LocalModelAPI: localModelAPIOpenAI, LocalModelURL: server.URL, Now: fixedClock("2026-08-12T12:15:00Z")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.ContentClassified != 1 || retried.ContentClassificationFailures != 0 {
+		t.Fatalf("retried classify = %#v", retried)
+	}
+}
+
 func TestPromptLeakageCreatesQualityIssue(t *testing.T) {
 	t.Parallel()
 	observations := observationsFromPayload(map[string]any{
