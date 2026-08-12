@@ -195,6 +195,7 @@ func run(ctx context.Context, args []string) error {
 		dbPath := fs.String("db", "", "photos.sqlite path")
 		from := fs.String("from", "", "inclusive ISO 8601 timestamp with offset")
 		to := fs.String("to", "", "exclusive ISO 8601 timestamp with offset")
+		includeUnlocated := fs.Bool("include-unlocated", false, "include assets without embedded coordinates")
 		jsonFlag := fs.Bool("json", false, "write JSON")
 		formatFlag := fs.String("format", "", "output format")
 		if err := fs.Parse(args[1:]); err != nil {
@@ -210,7 +211,7 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		result, err := archive.Timeline(ctx, paths, archive.TimelineOptions{From: *from, To: *to})
+		result, err := archive.Timeline(ctx, paths, archive.TimelineOptions{From: *from, To: *to, IncludeUnlocated: *includeUnlocated})
 		if err != nil {
 			return err
 		}

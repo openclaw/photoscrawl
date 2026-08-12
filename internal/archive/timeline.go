@@ -14,8 +14,9 @@ import (
 const preciseLocationAccuracyMeters = 100
 
 type TimelineOptions struct {
-	From string
-	To   string
+	From             string
+	To               string
+	IncludeUnlocated bool
 }
 
 type TimelineResult struct {
@@ -27,12 +28,12 @@ type TimelineResult struct {
 
 type TimelineObservation struct {
 	AssetID               string   `json:"asset_id"`
-	LocationObservationID string   `json:"location_observation_id"`
+	LocationObservationID string   `json:"location_observation_id,omitempty"`
 	SourceRef             string   `json:"source_ref"`
 	CreatedAt             string   `json:"created_at"`
 	MediaType             string   `json:"media_type"`
-	Latitude              float64  `json:"lat"`
-	Longitude             float64  `json:"lng"`
+	Latitude              *float64 `json:"lat,omitempty"`
+	Longitude             *float64 `json:"lng,omitempty"`
 	AccuracyMeters        *float64 `json:"accuracy_m,omitempty"`
 	IsPrecise             *bool    `json:"is_precise,omitempty"`
 }
@@ -58,12 +59,16 @@ func Timeline(ctx context.Context, paths Paths, opts TimelineOptions) (TimelineR
 	}
 	defer db.Close()
 
+	locationJoin := "join location_observation on location_observation.asset_id = asset.id"
+	if opts.IncludeUnlocated {
+		locationJoin = "left join location_observation on location_observation.asset_id = asset.id"
+	}
 	rows, err := db.DB().QueryContext(ctx, `
 select asset.id, location_observation.id, asset.creation_date, asset.media_type,
        location_observation.latitude, location_observation.longitude,
        location_observation.horizontal_accuracy
 from asset
-join location_observation on location_observation.asset_id = asset.id
+`+locationJoin+`
 where julianday(asset.creation_date) >= julianday(?)
   and julianday(asset.creation_date) < julianday(?)
   and not exists (
@@ -82,19 +87,28 @@ order by julianday(asset.creation_date), asset.creation_date, asset.id, location
 	result := TimelineResult{From: fromText, To: toText, Observations: []TimelineObservation{}}
 	for rows.Next() {
 		var observation TimelineObservation
-		var accuracy sql.NullFloat64
+		var locationID sql.NullString
+		var latitude, longitude, accuracy sql.NullFloat64
 		if err := rows.Scan(
 			&observation.AssetID,
-			&observation.LocationObservationID,
+			&locationID,
 			&observation.CreatedAt,
 			&observation.MediaType,
-			&observation.Latitude,
-			&observation.Longitude,
+			&latitude,
+			&longitude,
 			&accuracy,
 		); err != nil {
 			return TimelineResult{}, err
 		}
-		observation.SourceRef = observation.LocationObservationID
+		observation.SourceRef = observation.AssetID
+		if locationID.Valid {
+			observation.LocationObservationID = locationID.String
+			observation.SourceRef = locationID.String
+		}
+		if latitude.Valid && longitude.Valid {
+			observation.Latitude = &latitude.Float64
+			observation.Longitude = &longitude.Float64
+		}
 		if accuracy.Valid {
 			accuracyMeters := accuracy.Float64
 			isPrecise := accuracyMeters >= 0 && accuracyMeters <= preciseLocationAccuracyMeters

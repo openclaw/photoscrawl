@@ -72,8 +72,20 @@ func TestTimelineReturnsLocatedAssetsInHalfOpenRange(t *testing.T) {
 	if observation.CreatedAt != "2026-05-27T10:00:00Z" || observation.MediaType != "image" {
 		t.Fatalf("asset metadata = %#v", observation)
 	}
-	if observation.AccuracyMeters == nil || *observation.AccuracyMeters != accuracy || observation.IsPrecise == nil || !*observation.IsPrecise {
+	if observation.Latitude == nil || observation.Longitude == nil || observation.AccuracyMeters == nil || *observation.AccuracyMeters != accuracy || observation.IsPrecise == nil || !*observation.IsPrecise {
 		t.Fatalf("location quality = %#v", observation)
+	}
+
+	all, err := Timeline(ctx, paths, TimelineOptions{
+		From:             "2026-05-27T12:00:00+02:00",
+		To:               "2026-05-28T00:00:00+02:00",
+		IncludeUnlocated: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.Count != 2 || all.Observations[1].LocationObservationID != "" || all.Observations[1].Latitude != nil || all.Observations[1].SourceRef != all.Observations[1].AssetID {
+		t.Fatalf("timeline with unlocated assets = %#v", all.Observations)
 	}
 
 	empty, err := Timeline(ctx, paths, TimelineOptions{
