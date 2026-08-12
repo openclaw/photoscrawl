@@ -188,7 +188,8 @@ values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		if !deleted && previouslyDeleted {
 			c.result.AssetsRestored++
 		}
-		if err := c.upsertAsset(ctx, tx, sourceID, snapshotID, assetID, fingerprint, deleted, asset); err != nil {
+		needsClassification := !seenBefore || previousFingerprint != fingerprint || previouslyDeleted
+		if err := c.upsertAsset(ctx, tx, sourceID, snapshotID, assetID, fingerprint, deleted, needsClassification, asset); err != nil {
 			return err
 		}
 	}
@@ -220,7 +221,7 @@ where source_library_id = ? and last_seen_snapshot_id <> ?
 	return nil
 }
 
-func (c *crawlImporter) upsertAsset(ctx context.Context, tx *sql.Tx, sourceID, snapshotID, assetID, fingerprint string, deleted bool, asset photos.Asset) error {
+func (c *crawlImporter) upsertAsset(ctx context.Context, tx *sql.Tx, sourceID, snapshotID, assetID, fingerprint string, deleted, needsClassification bool, asset photos.Asset) error {
 	metadataJSON, err := jsonText(asset.Metadata)
 	if err != nil {
 		return err
@@ -285,8 +286,10 @@ func (c *crawlImporter) upsertAsset(ctx context.Context, tx *sql.Tx, sourceID, s
 		if err := c.insertFTS(ctx, tx, assetID, asset); err != nil {
 			return err
 		}
-		if err := c.upsertClassifyQueue(ctx, tx, sourceID, assetID); err != nil {
-			return err
+		if needsClassification {
+			if err := c.upsertClassifyQueue(ctx, tx, sourceID, assetID); err != nil {
+				return err
+			}
 		}
 	}
 	return c.upsertSeenAsset(ctx, tx, sourceID, assetID, snapshotID, fingerprint)

@@ -129,6 +129,55 @@ func TestCrawlImportsSnapshotAndTracksDelta(t *testing.T) {
 	}
 }
 
+func TestUnchangedCrawlPreservesCompletedClassification(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	provider := fakeProvider{snapshot: fakeSnapshot(false, false)}
+	if _, err := Crawl(ctx, paths, CrawlOptions{
+		LibraryPath: libraryPath,
+		Provider:    provider,
+		Now:         fixedClock("2026-08-12T08:00:00Z"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Classify(ctx, paths, ClassifyOptions{
+		All: true,
+		Now: fixedClock("2026-08-12T08:05:00Z"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Crawl(ctx, paths, CrawlOptions{
+		LibraryPath: libraryPath,
+		Provider:    provider,
+		Now:         fixedClock("2026-08-12T08:15:00Z"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AssetsUnchanged != len(provider.snapshot.Assets) || result.QueuedForClassify != 0 {
+		t.Fatalf("unchanged crawl = unchanged %d queued %d", result.AssetsUnchanged, result.QueuedForClassify)
+	}
+
+	db, err := openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var pending int
+	if err := db.DB().QueryRowContext(ctx, `select count(*) from classification_queue where state = 'pending'`).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Fatalf("unchanged crawl requeued %d classified assets", pending)
+	}
+}
+
 func TestCrawlExpandsHomeInLibraryPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
