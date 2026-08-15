@@ -426,16 +426,23 @@ int photoscrawl_export_original_resource(const char *localIdentifier, const char
 
     __block NSError *writeError = nil;
     __block BOOL timedOut = NO;
+    dispatch_queue_t stateQueue = dispatch_queue_create("photoscrawl.export.state", DISPATCH_QUEUE_SERIAL);
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
     [[PHAssetResourceManager defaultManager] writeDataForAssetResource:resource toFile:staging options:options completionHandler:^(NSError * _Nullable error) {
-      writeError = error;
-      if (timedOut) {
+      __block BOOL alreadyTimedOut = NO;
+      dispatch_sync(stateQueue, ^{
+        writeError = error;
+        alreadyTimedOut = timedOut;
+      });
+      if (alreadyTimedOut) {
         [[NSFileManager defaultManager] removeItemAtURL:staging error:nil];
       }
       dispatch_semaphore_signal(semaphore);
     }];
     if (dispatch_semaphore_wait(semaphore, pcBoundedWaitDeadline(timeoutNanoseconds)) != 0) {
-      timedOut = YES;
+      dispatch_sync(stateQueue, ^{
+        timedOut = YES;
+      });
       [[NSFileManager defaultManager] removeItemAtURL:staging error:nil];
       pcSetError(errorOut, @"export original resource timed out");
       return 0;
