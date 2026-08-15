@@ -127,7 +127,9 @@ func Backfill(ctx context.Context, opts BackfillOptions) (BackfillResult, error)
 			continue
 		}
 		if attempt > 1 {
-			time.Sleep(backfillRetryDelay(attempt))
+			if err := sleepContext(ctx, backfillRetryDelay(attempt)); err != nil {
+				return state.result, err
+			}
 		}
 		if err := runBackfillRound(ctx, jobs, attempt, state); err != nil {
 			return state.result, err
@@ -206,11 +208,17 @@ func (limiter *backfillLimiter) wait(ctx context.Context) error {
 	limiter.next = startAt.Add(limiter.interval)
 	limiter.mu.Unlock()
 
-	wait := time.Until(startAt)
-	if wait <= 0 {
+	return sleepContext(ctx, time.Until(startAt))
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if d <= 0 {
 		return nil
 	}
-	timer := time.NewTimer(wait)
+	timer := time.NewTimer(d)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
