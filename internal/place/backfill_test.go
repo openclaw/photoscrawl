@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -63,12 +64,45 @@ func TestBackfillRetryDelayKeepsBackoffSchedule(t *testing.T) {
 	}
 }
 
+func TestBackfillHonorsCancelDuringMultiKeyDispatch(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "photos.sqlite")
+	outDir := filepath.Join(dir, "backfill")
+	if err := writeBackfillFixtureDB(dbPath, 8); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		_, err := Backfill(ctx, BackfillOptions{DatabasePath: dbPath, OutputDir: outDir})
+		errCh <- err
+	}()
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Backfill error = %v, want context.Canceled", err)
+		}
+		if elapsed := time.Since(started); elapsed >= 2*time.Second {
+			t.Fatalf("Backfill ignored cancel during dispatch for %s", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Backfill did not return after cancel during multi-key dispatch")
+	}
+}
+
 func TestBackfillHonorsCancelDuringRetrySleep(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "photos.sqlite")
 	outDir := filepath.Join(dir, "backfill")
-	if err := writeBackfillFixtureDB(dbPath); err != nil {
+	if err := writeBackfillFixtureDB(dbPath, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := ensureBackfillDirs(outDir); err != nil {
@@ -104,13 +138,16 @@ func TestBackfillHonorsCancelDuringRetrySleep(t *testing.T) {
 	}
 }
 
-func writeBackfillFixtureDB(path string) error {
+func writeBackfillFixtureDB(path string, keys int) error {
+	if keys < 1 {
+		keys = 1
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	_, err = db.Exec(`
+	if _, err := db.Exec(`
 create table asset (id text primary key, creation_date text);
 create table location_observation (
   asset_id text,
@@ -118,8 +155,21 @@ create table location_observation (
   longitude real,
   horizontal_accuracy real
 );
-insert into asset values ('asset:1', '2026-05-30T12:00:00Z');
-insert into location_observation values ('asset:1', 52.379189, 4.899431, 8.5);
-`)
-	return err
+`); err != nil {
+		return err
+	}
+	for i := 0; i < keys; i++ {
+		id := fmt.Sprintf("asset:%d", i+1)
+		if _, err := db.Exec(`insert into asset values (?, '2026-05-30T12:00:00Z')`, id); err != nil {
+			return err
+		}
+		if _, err := db.Exec(
+			`insert into location_observation values (?, ?, 4.899431, 8.5)`,
+			id,
+			52.379189+float64(i)*0.01,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }

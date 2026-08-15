@@ -182,14 +182,23 @@ func runBackfillRound(ctx context.Context, jobs []backfillKey, attempt int, stat
 		}()
 	}
 	for _, key := range jobs {
-		if ctx.Err() != nil {
-			break
+		select {
+		case <-ctx.Done():
+			close(work)
+			wg.Wait()
+			if firstErr != nil {
+				return firstErr
+			}
+			return ctx.Err()
+		case work <- key:
 		}
-		work <- key
 	}
 	close(work)
 	wg.Wait()
-	return firstErr
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
 }
 
 type backfillLimiter struct {
