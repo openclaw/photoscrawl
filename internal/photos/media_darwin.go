@@ -7,6 +7,7 @@ package photos
 #include <stdlib.h>
 
 int photoscrawl_export_original_resource(const char *localIdentifier, const char *destinationPath, int allowNetwork, long long timeoutNanoseconds, char **errorOut);
+int photoscrawl_wait_bounded(long long timeoutNanoseconds);
 int photoscrawl_render_canonical_jpeg(const char *sourcePath, const char *destinationPath, double quality, char **errorOut);
 char *photoscrawl_image_metadata_json(const char *sourcePath, char **errorOut);
 */
@@ -18,6 +19,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"time"
 	"unsafe"
 )
 
@@ -113,4 +115,8 @@ func boolInt(value bool) C.int {
 		return 1
 	}
 	return 0
+}
+
+func waitBounded(timeout time.Duration) bool {
+	return C.photoscrawl_wait_bounded(C.longlong(originalExportTimeoutNanoseconds(timeout))) != 0
 }
