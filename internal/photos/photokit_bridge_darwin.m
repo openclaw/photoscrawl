@@ -146,6 +146,7 @@ static id pcJSONSafe(id value) {
 
 static PHAuthorizationStatus pcEnsureAuthorized(void) {
   __block PHAuthorizationStatus status;
+  const int64_t authorizationTimeout = 15 * NSEC_PER_SEC;
   if (@available(macOS 11.0, *)) {
     // macOS Photos exposes asset fetch access through ReadWrite; AddOnly cannot
     // enumerate the library. This bridge still only calls fetch/read APIs.
@@ -156,7 +157,9 @@ static PHAuthorizationStatus pcEnsureAuthorized(void) {
         status = requestedStatus;
         dispatch_semaphore_signal(semaphore);
       }];
-      dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+      if (dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, authorizationTimeout)) != 0) {
+        return PHAuthorizationStatusNotDetermined;
+      }
     }
     return status;
   }
@@ -168,7 +171,9 @@ static PHAuthorizationStatus pcEnsureAuthorized(void) {
       status = requestedStatus;
       dispatch_semaphore_signal(semaphore);
     }];
-    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+    if (dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, authorizationTimeout)) != 0) {
+      return PHAuthorizationStatusNotDetermined;
+    }
   }
   return status;
 }

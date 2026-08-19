@@ -26,6 +26,10 @@ func TestTimelineReturnsLocatedAssetsInHalfOpenRange(t *testing.T) {
 				TimezoneName:     "Europe/Amsterdam",
 				Width:            4032,
 				Height:           3024,
+				Metadata:         map[string]any{"source_type": 2},
+				Albums: []photos.AlbumMembership{
+					{AlbumID: "shared-trip", AlbumTitle: "Trip", AlbumKind: "album:1:101"},
+				},
 				Location: &photos.Location{
 					Latitude:           52.3676,
 					Longitude:          4.9041,
@@ -71,6 +75,9 @@ func TestTimelineReturnsLocatedAssetsInHalfOpenRange(t *testing.T) {
 	}
 	if observation.CreatedAt != "2026-05-27T10:00:00Z" || observation.MediaType != "image" {
 		t.Fatalf("asset metadata = %#v", observation)
+	}
+	if observation.SourceType != 2 || len(observation.Albums) != 1 || observation.Albums[0].Title != "Trip" {
+		t.Fatalf("source metadata = %#v", observation)
 	}
 	if observation.Latitude == nil || observation.Longitude == nil || observation.AccuracyMeters == nil || *observation.AccuracyMeters != accuracy || observation.IsPrecise == nil || !*observation.IsPrecise {
 		t.Fatalf("location quality = %#v", observation)
