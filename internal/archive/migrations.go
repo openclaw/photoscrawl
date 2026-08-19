@@ -37,6 +37,13 @@ func openArchiveStore(ctx context.Context, path string) (*store.Store, error) {
 		_ = db.Close()
 		return nil, errors.New("database is not a photoscrawl archive")
 	}
+	// A current archive must stay read/write without reopening a migration
+	// transaction. Classifiers and crawlers are separate bounded processes;
+	// taking a no-op write lock here made healthy crawls fail while a classifier
+	// was committing a batch.
+	if current == SchemaVersion && isArchive {
+		return db, nil
+	}
 	if _, err := db.DB().ExecContext(ctx, Schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply archive schema: %w", err)

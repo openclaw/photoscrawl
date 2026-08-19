@@ -401,6 +401,47 @@ func TestClassifyLocalModelKeepsRemoteImagesRetryable(t *testing.T) {
 	}
 }
 
+func TestClassifyLocalModelFinishesUnavailableImagesWithoutDownloadSignal(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	provider := fakeProvider{snapshot: photos.LibrarySnapshot{
+		Provider: "fake",
+		Assets: []photos.Asset{{
+			LocalIdentifier: "fixture-unavailable-image",
+			MediaType:       "image",
+			CreationDate:    "2026-05-27T12:00:00Z",
+			Resources: []photos.Resource{{
+				SourceIdentifier: "shared-photo",
+				Type:             "photo",
+				OriginalFilename: "shared.jpeg",
+				Availability:     "unknown",
+			}},
+		}},
+	}}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-05-28T10:00:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", Now: fixedClock("2026-05-28T10:15:00Z")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Processed != 1 || first.WaitingForLocalContent != 0 {
+		t.Fatalf("first classify result = %#v", first)
+	}
+	second, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", Now: fixedClock("2026-05-28T10:20:00Z")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Processed != 0 {
+		t.Fatalf("unavailable image stayed retryable = %#v", second)
+	}
+}
+
 func TestClassifyLocalModelPrioritizesPendingRowsBeforeWaitingRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

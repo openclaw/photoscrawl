@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -27,15 +28,23 @@ type TimelineResult struct {
 }
 
 type TimelineObservation struct {
-	AssetID               string   `json:"asset_id"`
-	LocationObservationID string   `json:"location_observation_id,omitempty"`
-	SourceRef             string   `json:"source_ref"`
-	CreatedAt             string   `json:"created_at"`
-	MediaType             string   `json:"media_type"`
-	Latitude              *float64 `json:"lat,omitempty"`
-	Longitude             *float64 `json:"lng,omitempty"`
-	AccuracyMeters        *float64 `json:"accuracy_m,omitempty"`
-	IsPrecise             *bool    `json:"is_precise,omitempty"`
+	AssetID               string          `json:"asset_id"`
+	LocationObservationID string          `json:"location_observation_id,omitempty"`
+	SourceRef             string          `json:"source_ref"`
+	CreatedAt             string          `json:"created_at"`
+	MediaType             string          `json:"media_type"`
+	SourceType            int             `json:"source_type"`
+	Albums                []TimelineAlbum `json:"albums,omitempty"`
+	Latitude              *float64        `json:"lat,omitempty"`
+	Longitude             *float64        `json:"lng,omitempty"`
+	AccuracyMeters        *float64        `json:"accuracy_m,omitempty"`
+	IsPrecise             *bool           `json:"is_precise,omitempty"`
+}
+
+type TimelineAlbum struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Kind  string `json:"kind"`
 }
 
 func Timeline(ctx context.Context, paths Paths, opts TimelineOptions) (TimelineResult, error) {
@@ -65,6 +74,12 @@ func Timeline(ctx context.Context, paths Paths, opts TimelineOptions) (TimelineR
 	}
 	rows, err := db.DB().QueryContext(ctx, `
 select asset.id, location_observation.id, asset.creation_date, asset.media_type,
+       coalesce(cast(json_extract(asset.metadata_json, '$.source_type') as integer), 0),
+       coalesce((
+         select json_group_array(json_object('id', album_id, 'title', album_title, 'kind', album_kind))
+         from album_membership
+         where album_membership.asset_id = asset.id
+       ), '[]'),
        location_observation.latitude, location_observation.longitude,
        location_observation.horizontal_accuracy
 from asset
@@ -88,17 +103,23 @@ order by julianday(asset.creation_date), asset.creation_date, asset.id, location
 	for rows.Next() {
 		var observation TimelineObservation
 		var locationID sql.NullString
+		var albumsJSON string
 		var latitude, longitude, accuracy sql.NullFloat64
 		if err := rows.Scan(
 			&observation.AssetID,
 			&locationID,
 			&observation.CreatedAt,
 			&observation.MediaType,
+			&observation.SourceType,
+			&albumsJSON,
 			&latitude,
 			&longitude,
 			&accuracy,
 		); err != nil {
 			return TimelineResult{}, err
+		}
+		if err := json.Unmarshal([]byte(albumsJSON), &observation.Albums); err != nil {
+			return TimelineResult{}, fmt.Errorf("decode timeline albums: %w", err)
 		}
 		observation.SourceRef = observation.AssetID
 		if locationID.Valid {

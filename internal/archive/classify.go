@@ -494,7 +494,10 @@ func (input classifyInput) hasUnavailableLocalModelContent(hasImage bool) bool {
 		return true
 	}
 	if !input.hasLocalContent() {
-		return false
+		// PhotoKit may know that an iCloud/shared asset is not local without
+		// marking it as downloadable in the metadata snapshot. Keeping such an
+		// item in metadata_classified makes the bounded runner select it forever.
+		return !input.NeedsDownload
 	}
 	return !input.NeedsDownload
 }
