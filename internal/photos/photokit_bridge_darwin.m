@@ -368,7 +368,22 @@ char *photoscrawl_photokit_snapshot(const char *libraryPath, char **errorOut) {
   }
 }
 
-int photoscrawl_export_original_resource(const char *localIdentifier, const char *destinationPath, int allowNetwork, char **errorOut) {
+static dispatch_time_t pcBoundedWaitDeadline(long long timeoutNanoseconds) {
+  if (timeoutNanoseconds <= 0) {
+    return DISPATCH_TIME_NOW;
+  }
+  return dispatch_time(DISPATCH_TIME_NOW, timeoutNanoseconds);
+}
+
+int photoscrawl_wait_bounded(long long timeoutNanoseconds) {
+  dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+  if (dispatch_semaphore_wait(semaphore, pcBoundedWaitDeadline(timeoutNanoseconds)) != 0) {
+    return 0;
+  }
+  return 1;
+}
+
+int photoscrawl_export_original_resource(const char *localIdentifier, const char *destinationPath, int allowNetwork, long long timeoutNanoseconds, char **errorOut) {
   @autoreleasepool {
     if (errorOut != NULL) {
       *errorOut = NULL;
@@ -407,21 +422,47 @@ int photoscrawl_export_original_resource(const char *localIdentifier, const char
     if (!pcEnsureParentDirectory(destination, errorOut)) {
       return 0;
     }
-    [[NSFileManager defaultManager] removeItemAtURL:destination error:nil];
+    NSString *stagingName = [NSString stringWithFormat:@".%@.photoscrawl-export-%@", path.lastPathComponent, NSUUID.UUID.UUIDString];
+    NSURL *staging = [[destination URLByDeletingLastPathComponent] URLByAppendingPathComponent:stagingName];
+    [[NSFileManager defaultManager] removeItemAtURL:staging error:nil];
 
     PHAssetResourceRequestOptions *options = [[PHAssetResourceRequestOptions alloc] init];
     options.networkAccessAllowed = allowNetwork ? YES : NO;
 
     __block NSError *writeError = nil;
+    __block BOOL timedOut = NO;
+    dispatch_queue_t stateQueue = dispatch_queue_create("photoscrawl.export.state", DISPATCH_QUEUE_SERIAL);
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-    [[PHAssetResourceManager defaultManager] writeDataForAssetResource:resource toFile:destination options:options completionHandler:^(NSError * _Nullable error) {
-      writeError = error;
+    [[PHAssetResourceManager defaultManager] writeDataForAssetResource:resource toFile:staging options:options completionHandler:^(NSError * _Nullable error) {
+      __block BOOL alreadyTimedOut = NO;
+      dispatch_sync(stateQueue, ^{
+        writeError = error;
+        alreadyTimedOut = timedOut;
+      });
+      if (alreadyTimedOut) {
+        [[NSFileManager defaultManager] removeItemAtURL:staging error:nil];
+      }
       dispatch_semaphore_signal(semaphore);
     }];
-    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+    if (dispatch_semaphore_wait(semaphore, pcBoundedWaitDeadline(timeoutNanoseconds)) != 0) {
+      dispatch_sync(stateQueue, ^{
+        timedOut = YES;
+      });
+      [[NSFileManager defaultManager] removeItemAtURL:staging error:nil];
+      pcSetError(errorOut, @"export original resource timed out");
+      return 0;
+    }
 
     if (writeError != nil) {
+      [[NSFileManager defaultManager] removeItemAtURL:staging error:nil];
       pcSetError(errorOut, [NSString stringWithFormat:@"export original resource: %@", writeError.localizedDescription]);
+      return 0;
+    }
+    NSError *moveError = nil;
+    [[NSFileManager defaultManager] removeItemAtURL:destination error:nil];
+    if (![[NSFileManager defaultManager] moveItemAtURL:staging toURL:destination error:&moveError]) {
+      [[NSFileManager defaultManager] removeItemAtURL:staging error:nil];
+      pcSetError(errorOut, [NSString stringWithFormat:@"promote exported original: %@", moveError.localizedDescription]);
       return 0;
     }
     return 1;
