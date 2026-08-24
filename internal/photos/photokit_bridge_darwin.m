@@ -485,27 +485,36 @@ int photoscrawl_export_image_preview(const char *localIdentifier, const char *de
                                              contentMode:PHImageContentModeAspectFit
                                                  options:options
                                            resultHandler:^(NSImage *result, NSDictionary *info) {
-      preview = result;
-      resultInfo = info;
+      [preview release];
+      preview = [result retain];
+      [resultInfo release];
+      resultInfo = [info retain];
     }];
 
-    NSError *requestError = resultInfo[PHImageErrorKey];
+    NSError *requestError = [resultInfo[PHImageErrorKey] retain];
+    BOOL cancelled = [resultInfo[PHImageCancelledKey] boolValue];
+    BOOL inCloud = [resultInfo[PHImageResultIsInCloudKey] boolValue];
+    [resultInfo release];
     if (requestError != nil) {
       pcSetError(errorOut, [NSString stringWithFormat:@"request PhotoKit preview: %@", requestError.localizedDescription]);
+      [requestError release];
+      [preview release];
       return 0;
     }
-    if ([resultInfo[PHImageCancelledKey] boolValue]) {
+    [requestError release];
+    if (cancelled) {
       pcSetError(errorOut, @"PhotoKit preview request was cancelled");
+      [preview release];
       return 0;
     }
     if (preview == nil) {
-      BOOL inCloud = [resultInfo[PHImageResultIsInCloudKey] boolValue];
       pcSetError(errorOut, inCloud ? @"PhotoKit preview requires iCloud network access" : @"PhotoKit returned no preview");
       return 0;
     }
 
     NSURL *destination = [NSURL fileURLWithPath:path];
     if (!pcEnsureParentDirectory(destination, errorOut)) {
+      [preview release];
       return 0;
     }
     [[NSFileManager defaultManager] removeItemAtURL:destination error:nil];
@@ -514,11 +523,13 @@ int photoscrawl_export_image_preview(const char *localIdentifier, const char *de
     CGImageRef cgImage = [preview CGImageForProposedRect:&proposedRect context:nil hints:nil];
     if (cgImage == nil) {
       pcSetError(errorOut, @"render PhotoKit preview");
+      [preview release];
       return 0;
     }
     CGImageDestinationRef imageDestination = CGImageDestinationCreateWithURL((__bridge CFURLRef)destination, CFSTR("public.jpeg"), 1, NULL);
     if (imageDestination == NULL) {
       pcSetError(errorOut, @"create PhotoKit preview destination");
+      [preview release];
       return 0;
     }
     NSDictionary *properties = @{
@@ -528,6 +539,7 @@ int photoscrawl_export_image_preview(const char *localIdentifier, const char *de
     CGImageDestinationAddImage(imageDestination, cgImage, (__bridge CFDictionaryRef)properties);
     BOOL ok = CGImageDestinationFinalize(imageDestination);
     CFRelease(imageDestination);
+    [preview release];
     if (!ok) {
       pcSetError(errorOut, @"write PhotoKit preview");
       return 0;
