@@ -84,6 +84,9 @@ func TestDerivedRuntimeDirs(t *testing.T) {
 	if got := paths.OriginalsCacheDir(); got != filepath.Join("cache", "photoscrawl", "originals") {
 		t.Fatalf("OriginalsCacheDir = %q", got)
 	}
+	if got := paths.ClassificationPreviewCacheDir(); got != filepath.Join("cache", "photoscrawl", "classification-previews") {
+		t.Fatalf("ClassificationPreviewCacheDir = %q", got)
+	}
 	if got := paths.PlaceContextCacheDir(); got != filepath.Join("cache", "photoscrawl", "place-context") {
 		t.Fatalf("PlaceContextCacheDir = %q", got)
 	}

@@ -71,6 +71,7 @@ go run ./cmd/photoscrawl crawl --provider sqlite --library "/path/to/scratch.pho
 go run ./cmd/photoscrawl classify --limit 100 --json
 go run ./cmd/photoscrawl classify --local-model gemma4:e4b --limit 20 --json
 go run ./cmd/photoscrawl classify --local-model photoscrawl-qwen3-vl-8b --local-model-api openai --local-model-url http://127.0.0.1:1234/v1 --limit 20 --json
+go run ./cmd/photoscrawl classify --local-model photoscrawl-qwen3-vl-8b --local-model-api openai --local-model-url http://127.0.0.1:1234/v1 --allow-icloud-downloads --limit 20 --json
 go run ./cmd/photoscrawl search --query "drone beach portugal" --json
 go run ./cmd/photoscrawl timeline --from 2026-05-27T00:00:00Z --to 2026-05-28T00:00:00Z --json
 go run ./cmd/photoscrawl open --id asset:<id> --json
@@ -105,13 +106,18 @@ derivatives and thumbnails. A later explicit live record restores the asset and
 the resources present in that record without discarding other archive history.
 
 `classify` drains that queue into evidence-backed local metadata observations.
-With `--local-model <model>`, it also sends already-local image bytes to a local
-Ollama or OpenAI-compatible vision server and stores typed candidate
+With `--local-model <model>`, it also sends image bytes to a local Ollama or
+OpenAI-compatible vision server and stores typed candidate
 observations:
 scene summaries, visible-text summaries, place-type/name/venue candidates,
 objects/foods, anonymous people presence, privacy hints, cluster terms, and
 uncertainties. These are evidence-backed model observations, not durable
 people/place/trip truth.
+
+By default, local-model classification only reads images already stored on the
+Mac. With `--allow-icloud-downloads`, missing images are requested from PhotoKit
+as bounded 1600-pixel JPEG previews. Each preview is removed after its model
+result is stored, so classification does not accumulate an originals archive.
 
 Local-model endpoints must resolve entirely to loopback addresses. Redirects
 are checked under the same rule. Evidence records the actual response endpoint
@@ -152,8 +158,9 @@ the tracked prompt files in `prompts/`, prepares canonical full-resolution JPEGs
 from originals, passes full metadata as a sidecar prompt input, and writes all
 private images, metadata, and model responses under the crawlkit data dir's
 `evals` subtree. If `--allow-icloud-downloads` is set, PhotoKit may download
-missing originals into the crawlkit cache dir's `originals` subtree; normal
-crawl/classify commands do not force iCloud downloads.
+missing originals into the crawlkit cache dir's `originals` subtree. `crawl`
+does not force iCloud downloads; `classify` does so only with its explicit
+`--allow-icloud-downloads` flag and uses temporary bounded previews.
 
 ## Current Useful Output
 
@@ -167,8 +174,8 @@ Today the POC sees useful source facts and optional local multimodal observation
 - metadata-only observations for media type, local content availability,
   geometry, burst membership, resource UTI/type, and weak
   screenshot/document/receipt candidates from filenames, albums, and metadata;
-- optional local model observations from already-local image derivatives or
-  originals, plus normalized terms for search and later clustering;
+- optional local model observations from local images or explicitly downloaded
+  temporary previews, plus normalized terms for search and later clustering;
 - quality observations for model failures such as prompt leakage;
 - status coverage counts for GPS, observations, local resources, remote
   resources, classification queue state, and observation types;

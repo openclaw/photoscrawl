@@ -5,8 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
 const (
@@ -16,12 +20,15 @@ const (
 )
 
 type ClassifyOptions struct {
-	All           bool
-	Limit         int
-	LocalModel    string
-	LocalModelAPI string
-	LocalModelURL string
-	Now           func() time.Time
+	All                  bool
+	Limit                int
+	LocalModel           string
+	LocalModelAPI        string
+	LocalModelURL        string
+	AllowICloudDownloads bool
+	PreviewMaxDimension  int
+	Now                  func() time.Time
+	previewExporter      func(context.Context, string, string, int, bool) error
 }
 
 type ClassifyResult struct {
@@ -46,11 +53,15 @@ type ClassifyResult struct {
 	TransmitsImageBytes           bool     `json:"transmits_image_bytes,omitempty"`
 	LocalModelHTTPRequestAttempts int      `json:"local_model_http_request_attempts,omitempty"`
 	LocalModelHTTPResponses       int      `json:"local_model_http_responses,omitempty"`
+	ICloudDownloadsAllowed        bool     `json:"icloud_downloads_allowed,omitempty"`
+	ICloudPreviewsDownloaded      int      `json:"icloud_previews_downloaded,omitempty"`
+	ICloudPreviewDownloadFailures int      `json:"icloud_preview_download_failures,omitempty"`
 }
 
 type classifyInput struct {
 	QueueID         string
 	AssetID         string
+	LocalIdentifier string
 	SourceLibraryID string
 	NeedsDownload   bool
 	MediaType       string
@@ -109,11 +120,12 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 	defer db.Close()
 
 	result := ClassifyResult{
-		Database:     paths.Database,
-		Classifier:   metadataClassifierSource,
-		ModelID:      metadataClassifierModelID,
-		InputVersion: metadataClassifierInputVersion,
-		Limit:        limit,
+		Database:               paths.Database,
+		Classifier:             metadataClassifierSource,
+		ModelID:                metadataClassifierModelID,
+		InputVersion:           metadataClassifierInputVersion,
+		Limit:                  limit,
+		ICloudDownloadsAllowed: opts.AllowICloudDownloads,
 	}
 	localModel := strings.TrimSpace(opts.LocalModel)
 	var classifier *localModelClassifier
@@ -150,6 +162,18 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 		var contentResult *localModelResult
 		var contentErr error
 		imagePath, hasImage := input.contentImagePath()
+		temporaryPreview := ""
+		if classifier != nil && !hasImage && opts.AllowICloudDownloads && input.MediaType == "image" {
+			previewPath, err := prepareClassificationPreview(ctx, paths, &input, opts)
+			if err != nil {
+				contentErr = err
+				result.ICloudPreviewDownloadFailures++
+			} else {
+				temporaryPreview = previewPath
+				result.ICloudPreviewsDownloaded++
+				imagePath, hasImage = input.contentImagePath()
+			}
+		}
 		if classifier != nil && hasImage {
 			modelResult, err := classifier.classify(ctx, imagePath)
 			result.LocalModelHTTPRequestAttempts += modelResult.HTTPRequests
@@ -173,19 +197,19 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 			result.Processed++
 			result.MetadataClassified++
 			result.VisualObservationsWritten += written
-			contentUnavailable := classifier != nil && !hasImage && input.hasUnavailableLocalModelContent(hasImage)
+			contentUnavailable := classifier != nil && contentErr == nil && !hasImage && input.hasUnavailableLocalModelContent(hasImage)
 			if !input.hasLocalContent() && !contentUnavailable {
 				result.WaitingForLocalContent++
+			}
+			if classifier != nil && contentErr != nil {
+				result.ContentClassificationFailures++
+				return updateClassificationQueue(ctx, tx, input.QueueID, "content_failed", truncateReason(contentErr.Error()), now().UTC())
 			}
 			if classifier == nil || !hasImage {
 				if contentUnavailable {
 					return updateClassificationQueue(ctx, tx, input.QueueID, "content_unavailable", "local_model_no_image_content", now().UTC())
 				}
 				return nil
-			}
-			if contentErr != nil {
-				result.ContentClassificationFailures++
-				return updateClassificationQueue(ctx, tx, input.QueueID, "content_failed", truncateReason(contentErr.Error()), now().UTC())
 			}
 			contentWritten, err := writeLocalModelClassification(ctx, tx, input, *classifier, *contentResult, now().UTC())
 			if err != nil {
@@ -195,6 +219,12 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 			result.ContentObservationsWritten += contentWritten
 			return nil
 		})
+		if temporaryPreview != "" {
+			removeErr := os.Remove(temporaryPreview)
+			if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) && err == nil {
+				err = fmt.Errorf("remove classification preview: %w", removeErr)
+			}
+		}
 		if err != nil {
 			return ClassifyResult{}, err
 		}
@@ -213,7 +243,7 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 
 func loadClassifyInputs(ctx context.Context, tx *sql.Tx, limit int, includeMetadataClassified bool) ([]classifyInput, error) {
 	query := `
-select q.id, q.asset_id, q.source_library_id, q.needs_download,
+select q.id, q.asset_id, a.local_identifier, q.source_library_id, q.needs_download,
        a.media_type, a.media_subtypes, a.creation_date, a.width, a.height,
        a.favorite, a.hidden, a.burst_identifier, a.metadata_json
 from classification_queue q
@@ -240,6 +270,7 @@ order by case q.state when 'pending' then 0 else 1 end, a.creation_date desc, q.
 		if err := rows.Scan(
 			&input.QueueID,
 			&input.AssetID,
+			&input.LocalIdentifier,
 			&input.SourceLibraryID,
 			&needsDownload,
 			&input.MediaType,
@@ -268,6 +299,48 @@ order by case q.state when 'pending' then 0 else 1 end, a.creation_date desc, q.
 		inputs = append(inputs, input)
 	}
 	return inputs, rows.Err()
+}
+
+func prepareClassificationPreview(ctx context.Context, paths Paths, input *classifyInput, opts ClassifyOptions) (string, error) {
+	exporter := opts.previewExporter
+	if exporter == nil {
+		exporter = photos.ExportImagePreview
+	}
+	maxDimension := opts.PreviewMaxDimension
+	if maxDimension <= 0 {
+		maxDimension = 1600
+	}
+	cacheDir := paths.ClassificationPreviewCacheDir()
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		return "", fmt.Errorf("create classification preview cache: %w", err)
+	}
+	previewName := strings.TrimPrefix(stableID("classification_preview", input.AssetID), "classification_preview:") + ".jpg"
+	previewPath := filepath.Join(cacheDir, previewName)
+	if info, err := os.Stat(previewPath); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+		input.Resources = append(input.Resources, classificationPreviewResource(previewPath))
+		return previewPath, nil
+	}
+	if err := exporter(ctx, input.LocalIdentifier, previewPath, maxDimension, true); err != nil {
+		_ = os.Remove(previewPath)
+		return "", fmt.Errorf("download PhotoKit preview: %w", err)
+	}
+	info, err := os.Stat(previewPath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		_ = os.Remove(previewPath)
+		return "", errors.New("download PhotoKit preview: exporter returned no image")
+	}
+	input.Resources = append(input.Resources, classificationPreviewResource(previewPath))
+	return previewPath, nil
+}
+
+func classificationPreviewResource(path string) classifyResource {
+	return classifyResource{
+		ResourceType:     "classification_preview",
+		UTI:              "public.jpeg",
+		OriginalFilename: filepath.Base(path),
+		LocalPath:        path,
+		AvailableLocally: true,
+	}
 }
 
 func classifyQueueStates(includeMetadataClassified bool) string {

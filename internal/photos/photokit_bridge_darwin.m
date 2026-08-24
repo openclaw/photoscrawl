@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 #import <Photos/Photos.h>
 #import <CoreLocation/CoreLocation.h>
 #import <CoreImage/CoreImage.h>
@@ -422,6 +423,113 @@ int photoscrawl_export_original_resource(const char *localIdentifier, const char
 
     if (writeError != nil) {
       pcSetError(errorOut, [NSString stringWithFormat:@"export original resource: %@", writeError.localizedDescription]);
+      return 0;
+    }
+    return 1;
+  }
+}
+
+int photoscrawl_export_image_preview(const char *localIdentifier, const char *destinationPath, int maxDimension, int allowNetwork, char **errorOut) {
+  @autoreleasepool {
+    if (errorOut != NULL) {
+      *errorOut = NULL;
+    }
+    if (!@available(macOS 10.15, *)) {
+      pcSetError(errorOut, @"PhotoKit preview export requires macOS 10.15 or newer");
+      return 0;
+    }
+
+    NSString *identifier = localIdentifier == NULL ? @"" : [NSString stringWithUTF8String:localIdentifier];
+    NSString *path = destinationPath == NULL ? @"" : [NSString stringWithUTF8String:destinationPath];
+    if (identifier.length == 0 || path.length == 0) {
+      pcSetError(errorOut, @"asset identifier and destination path are required");
+      return 0;
+    }
+
+    PHAuthorizationStatus status = pcEnsureAuthorized();
+    if (status != PHAuthorizationStatusAuthorized && status != PHAuthorizationStatusLimited) {
+      pcSetError(errorOut, [NSString stringWithFormat:@"Photos access is %@ for this process", pcAuthorizationStatus(status)]);
+      return 0;
+    }
+
+    PHFetchResult<PHAsset *> *fetch = [PHAsset fetchAssetsWithLocalIdentifiers:@[identifier] options:nil];
+    PHAsset *asset = fetch.firstObject;
+    if (asset == nil) {
+      pcSetError(errorOut, @"PhotoKit asset not found");
+      return 0;
+    }
+    if (asset.mediaType != PHAssetMediaTypeImage) {
+      pcSetError(errorOut, @"PhotoKit asset is not an image");
+      return 0;
+    }
+
+    NSInteger boundedDimension = maxDimension;
+    if (boundedDimension < 256 || boundedDimension > 2560) {
+      boundedDimension = 1600;
+    }
+    CGFloat width = MAX((CGFloat)asset.pixelWidth, 1.0);
+    CGFloat height = MAX((CGFloat)asset.pixelHeight, 1.0);
+    CGFloat scale = MIN(1.0, (CGFloat)boundedDimension / MAX(width, height));
+    CGSize targetSize = CGSizeMake(MAX(1.0, floor(width * scale)), MAX(1.0, floor(height * scale)));
+
+    PHImageRequestOptions *options = [[PHImageRequestOptions alloc] init];
+    options.synchronous = YES;
+    options.deliveryMode = PHImageRequestOptionsDeliveryModeHighQualityFormat;
+    options.resizeMode = PHImageRequestOptionsResizeModeExact;
+    options.networkAccessAllowed = allowNetwork ? YES : NO;
+
+    __block NSImage *preview = nil;
+    __block NSDictionary *resultInfo = nil;
+    [[PHImageManager defaultManager] requestImageForAsset:asset
+                                              targetSize:targetSize
+                                             contentMode:PHImageContentModeAspectFit
+                                                 options:options
+                                           resultHandler:^(NSImage *result, NSDictionary *info) {
+      preview = result;
+      resultInfo = info;
+    }];
+
+    NSError *requestError = resultInfo[PHImageErrorKey];
+    if (requestError != nil) {
+      pcSetError(errorOut, [NSString stringWithFormat:@"request PhotoKit preview: %@", requestError.localizedDescription]);
+      return 0;
+    }
+    if ([resultInfo[PHImageCancelledKey] boolValue]) {
+      pcSetError(errorOut, @"PhotoKit preview request was cancelled");
+      return 0;
+    }
+    if (preview == nil) {
+      BOOL inCloud = [resultInfo[PHImageResultIsInCloudKey] boolValue];
+      pcSetError(errorOut, inCloud ? @"PhotoKit preview requires iCloud network access" : @"PhotoKit returned no preview");
+      return 0;
+    }
+
+    NSURL *destination = [NSURL fileURLWithPath:path];
+    if (!pcEnsureParentDirectory(destination, errorOut)) {
+      return 0;
+    }
+    [[NSFileManager defaultManager] removeItemAtURL:destination error:nil];
+
+    CGRect proposedRect = CGRectMake(0, 0, preview.size.width, preview.size.height);
+    CGImageRef cgImage = [preview CGImageForProposedRect:&proposedRect context:nil hints:nil];
+    if (cgImage == nil) {
+      pcSetError(errorOut, @"render PhotoKit preview");
+      return 0;
+    }
+    CGImageDestinationRef imageDestination = CGImageDestinationCreateWithURL((__bridge CFURLRef)destination, CFSTR("public.jpeg"), 1, NULL);
+    if (imageDestination == NULL) {
+      pcSetError(errorOut, @"create PhotoKit preview destination");
+      return 0;
+    }
+    NSDictionary *properties = @{
+      (NSString *)kCGImageDestinationLossyCompressionQuality: @0.85,
+      (NSString *)kCGImagePropertyOrientation: @1
+    };
+    CGImageDestinationAddImage(imageDestination, cgImage, (__bridge CFDictionaryRef)properties);
+    BOOL ok = CGImageDestinationFinalize(imageDestination);
+    CFRelease(imageDestination);
+    if (!ok) {
+      pcSetError(errorOut, @"write PhotoKit preview");
       return 0;
     }
     return 1;

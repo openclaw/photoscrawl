@@ -706,6 +706,8 @@ func (input classifyInput) localPathClass(path string) string {
 		}
 		value := strings.ToLower(strings.Join([]string{resource.ResourceType, resource.LocalPath}, " "))
 		switch {
+		case strings.Contains(value, "classification_preview"):
+			return "classification_preview"
 		case strings.Contains(value, "derivative"):
 			return "derivative"
 		case strings.Contains(value, "render"):

@@ -3,10 +3,11 @@
 package photos
 
 /*
-#cgo darwin LDFLAGS: -framework Foundation -framework Photos -framework CoreLocation -framework CoreImage -framework CoreGraphics -framework ImageIO
+#cgo darwin LDFLAGS: -framework Foundation -framework AppKit -framework Photos -framework CoreLocation -framework CoreImage -framework CoreGraphics -framework ImageIO
 #include <stdlib.h>
 
 int photoscrawl_export_original_resource(const char *localIdentifier, const char *destinationPath, int allowNetwork, char **errorOut);
+int photoscrawl_export_image_preview(const char *localIdentifier, const char *destinationPath, int maxDimension, int allowNetwork, char **errorOut);
 int photoscrawl_render_canonical_jpeg(const char *sourcePath, const char *destinationPath, double quality, char **errorOut);
 char *photoscrawl_image_metadata_json(const char *sourcePath, char **errorOut);
 */
@@ -43,6 +44,32 @@ func ExportOriginalResource(ctx context.Context, localIdentifier, destinationPat
 	}
 	if ok == 0 {
 		return errors.New("export original resource failed")
+	}
+	return nil
+}
+
+func ExportImagePreview(ctx context.Context, localIdentifier, destinationPath string, maxDimension int, allowNetwork bool) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
+		return err
+	}
+	cIdentifier := C.CString(localIdentifier)
+	defer C.free(unsafe.Pointer(cIdentifier))
+	cDestination := C.CString(destinationPath)
+	defer C.free(unsafe.Pointer(cDestination))
+
+	var cErr *C.char
+	ok := C.photoscrawl_export_image_preview(cIdentifier, cDestination, C.int(maxDimension), boolInt(allowNetwork), &cErr)
+	if cErr != nil {
+		defer C.free(unsafe.Pointer(cErr))
+		return errors.New(C.GoString(cErr))
+	}
+	if ok == 0 {
+		return errors.New("export image preview failed")
 	}
 	return nil
 }

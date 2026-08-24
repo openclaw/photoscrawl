@@ -143,6 +143,7 @@ func run(ctx context.Context, args []string) error {
 		localModel := fs.String("local-model", "", "local vision model to use for content observations")
 		localModelAPI := fs.String("local-model-api", "", "local model API: ollama or openai")
 		localModelURL := fs.String("local-model-url", "", "local model endpoint URL")
+		allowICloud := fs.Bool("allow-icloud-downloads", false, "download bounded PhotoKit previews when local image content is missing")
 		jsonFlag := fs.Bool("json", false, "write JSON")
 		formatFlag := fs.String("format", "", "output format")
 		if err := fs.Parse(args[1:]); err != nil {
@@ -156,11 +157,12 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		result, err := archive.Classify(ctx, paths, archive.ClassifyOptions{
-			All:           *all,
-			Limit:         *limit,
-			LocalModel:    *localModel,
-			LocalModelAPI: *localModelAPI,
-			LocalModelURL: *localModelURL,
+			All:                  *all,
+			Limit:                *limit,
+			LocalModel:           *localModel,
+			LocalModelAPI:        *localModelAPI,
+			LocalModelURL:        *localModelURL,
+			AllowICloudDownloads: *allowICloud,
 		})
 		if err != nil {
 			return err
