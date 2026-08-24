@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -439,6 +440,90 @@ func TestClassifyLocalModelFinishesUnavailableImagesWithoutDownloadSignal(t *tes
 	}
 	if second.Processed != 0 {
 		t.Fatalf("unavailable image stayed retryable = %#v", second)
+	}
+}
+
+func TestClassifyLocalModelDownloadsTemporaryICloudPreview(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(ollamaGenerateResponse{
+			Response: `{"scene_summary":"Dinner at a shared table.","cluster_terms":["dinner","shared_table"]}`,
+			Done:     true,
+		})
+	}))
+	defer server.Close()
+	provider := fakeProvider{snapshot: photos.LibrarySnapshot{
+		Provider: "fake",
+		Assets: []photos.Asset{{
+			LocalIdentifier: "fixture-cloud-shared-image",
+			MediaType:       "image",
+			CreationDate:    "2026-07-30T20:00:00Z",
+			Width:           4032,
+			Height:          3024,
+			Resources: []photos.Resource{{
+				SourceIdentifier: "cloud-shared-photo",
+				Type:             "photo",
+				OriginalFilename: "shared.jpeg",
+				Availability:     "unknown",
+			}},
+		}},
+	}}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-07-31T10:00:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+
+	var exportedIdentifier, exportedPath string
+	var exportedDimension int
+	var exportedWithNetwork bool
+	result, err := Classify(ctx, paths, ClassifyOptions{
+		All:                  true,
+		LocalModel:           "fixture-vision",
+		LocalModelURL:        server.URL,
+		AllowICloudDownloads: true,
+		Now:                  fixedClock("2026-07-31T10:05:00Z"),
+		previewExporter: func(_ context.Context, identifier, destination string, maxDimension int, allowNetwork bool) error {
+			exportedIdentifier = identifier
+			exportedPath = destination
+			exportedDimension = maxDimension
+			exportedWithNetwork = allowNetwork
+			return os.WriteFile(destination, []byte("bounded preview bytes"), 0o600)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exportedIdentifier != "fixture-cloud-shared-image" || exportedDimension != 1600 || !exportedWithNetwork {
+		t.Fatalf("preview request = identifier %q dimension %d network %v", exportedIdentifier, exportedDimension, exportedWithNetwork)
+	}
+	if result.ContentClassified != 1 || result.ICloudPreviewsDownloaded != 1 || result.ICloudPreviewDownloadFailures != 0 {
+		t.Fatalf("classify result = %#v", result)
+	}
+	if _, err := os.Stat(exportedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary preview was not removed: %v", err)
+	}
+
+	db, err := store.OpenReadOnly(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var evidenceJSON string
+	if err := db.DB().QueryRowContext(ctx, `
+select value_json
+from evidence_ref
+where asset_id in (select id from asset where local_identifier = ?)
+  and evidence_kind = 'content_classification'
+`, "fixture-cloud-shared-image").Scan(&evidenceJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(evidenceJSON, `"image_path_class":"classification_preview"`) {
+		t.Fatalf("preview evidence = %s", evidenceJSON)
 	}
 }
 
