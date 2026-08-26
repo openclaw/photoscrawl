@@ -113,24 +113,71 @@ type appleSearchCategory struct {
 	SemanticKind string
 }
 
+type facesImportInput struct {
+	libraryPath  string
+	schema       map[string]string
+	rows         []photosFaceRow
+	namedPersons int
+	unnamedFaces int
+	peopleByUUID map[string]photosPerson
+}
+
+type searchImportInput struct {
+	variant string
+	relPath string
+	schema  map[string]string
+	rows    []appleSearchRow
+}
+
 func ImportApple(ctx context.Context, paths Paths, opts ImportAppleOptions) (ImportAppleResult, error) {
 	importedAt := time.Now().UTC()
-	faces, err := ImportFaces(ctx, paths, ImportFacesOptions{LibraryPath: opts.LibraryPath})
+	libraryPath, err := resolveFacesLibraryPath(ctx, paths, opts.LibraryPath)
 	if err != nil {
 		return ImportAppleResult{}, err
 	}
-	searchIndex, err := ImportSearchIndex(ctx, paths, ImportSearchIndexOptions{LibraryPath: opts.LibraryPath})
+	facesInput, err := preflightFacesImport(ctx, libraryPath)
 	if err != nil {
 		return ImportAppleResult{}, err
 	}
-	totalTouched := faces.AssetsTouched + searchIndex.AssetsTouched
+	searchInput, err := preflightSearchImport(ctx, libraryPath)
+	if err != nil {
+		return ImportAppleResult{}, err
+	}
+	archiveDB, err := openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		return ImportAppleResult{}, err
+	}
+	defer archiveDB.Close()
+	assetByUUID, err := archiveAssetMap(ctx, archiveDB.DB())
+	if err != nil {
+		return ImportAppleResult{}, err
+	}
+	tx, err := archiveDB.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return ImportAppleResult{}, err
+	}
+	defer tx.Rollback()
+	faces, faceAssets, err := writeFacesImport(ctx, tx, paths, facesInput, assetByUUID, importedAt)
+	if err != nil {
+		return ImportAppleResult{}, err
+	}
+	searchIndex, searchAssets, err := writeSearchImport(ctx, tx, searchInput, assetByUUID, facesInput.peopleByUUID, importedAt)
+	if err != nil {
+		return ImportAppleResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ImportAppleResult{}, err
+	}
+	for assetID := range searchAssets {
+		faceAssets[assetID] = true
+	}
 	return ImportAppleResult{
 		Database:           paths.Database,
-		LibraryPath:        faces.LibraryPath,
+		LibraryPath:        libraryPath,
 		Faces:              faces,
 		SearchIndex:        searchIndex,
-		TotalAssetsTouched: totalTouched,
-		SyncStrategy:       "authoritative_replace_by_source",
+		TotalAssetsTouched: len(faceAssets),
+		SyncStrategy:       "atomic_authoritative_replace_by_source",
 		ImportedAt:         importedAt.Format(time.RFC3339Nano),
 		OsxphotosReferences: []string{
 			"osxphotos/photosdb/_photosdb_process_searchinfo.py:_process_searchinfo",
@@ -152,84 +199,33 @@ func ImportFaces(ctx context.Context, paths Paths, opts ImportFacesOptions) (Imp
 	if err != nil {
 		return ImportFacesResult{}, err
 	}
-	liveDBPath := filepath.Join(libraryPath, "database", "Photos.sqlite")
-	if _, err := os.Stat(liveDBPath); err != nil {
-		return ImportFacesResult{}, fmt.Errorf("find Photos sqlite: %w", err)
-	}
-	snapshotPath, cleanup, err := copyPhotosSQLite(ctx, liveDBPath)
+	input, err := preflightFacesImport(ctx, libraryPath)
 	if err != nil {
 		return ImportFacesResult{}, err
 	}
-	defer cleanup()
-
 	archiveDB, err := openArchiveStore(ctx, paths.Database)
 	if err != nil {
 		return ImportFacesResult{}, err
 	}
 	defer archiveDB.Close()
 
-	photosDB, err := store.OpenReadOnly(ctx, snapshotPath)
-	if err != nil {
-		return ImportFacesResult{}, fmt.Errorf("open copied Photos sqlite: %w", err)
-	}
-	defer photosDB.Close()
-
-	schema, err := validatePhotosFacesSchema(ctx, photosDB.DB())
-	if err != nil {
-		return ImportFacesResult{}, err
-	}
 	assetByUUID, err := archiveAssetMap(ctx, archiveDB.DB())
 	if err != nil {
 		return ImportFacesResult{}, err
 	}
-	faceRows, namedPersons, unnamedFaces, err := loadPhotosFaceRows(ctx, photosDB.DB())
-	if err != nil {
-		return ImportFacesResult{}, err
-	}
-
 	tx, err := archiveDB.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return ImportFacesResult{}, err
 	}
 	defer tx.Rollback()
-	if err := clearImportedFaces(ctx, tx); err != nil {
+	result, _, err := writeFacesImport(ctx, tx, paths, input, assetByUUID, time.Now().UTC())
+	if err != nil {
 		return ImportFacesResult{}, err
-	}
-
-	inserted := 0
-	unresolved := 0
-	touched := map[string]bool{}
-	importedAt := time.Now().UTC()
-	for _, face := range faceRows {
-		assetID, ok := assetByUUID[face.assetUUID]
-		if !ok {
-			unresolved++
-			continue
-		}
-		if err := insertImportedFace(ctx, tx, assetID, face, importedAt); err != nil {
-			return ImportFacesResult{}, err
-		}
-		inserted++
-		touched[assetID] = true
 	}
 	if err := tx.Commit(); err != nil {
 		return ImportFacesResult{}, err
 	}
-
-	return ImportFacesResult{
-		Database:                 paths.Database,
-		LibraryPath:              libraryPath,
-		Source:                   photosLibraryDBFaceSource,
-		PhotosDatabase:           "database/Photos.sqlite",
-		Schema:                   schema,
-		NamedPersonsFound:        namedPersons,
-		NamedFaceRowsFound:       len(faceRows),
-		ResolvedFaceRows:         inserted,
-		UnresolvedFaceRows:       unresolved,
-		FaceObservationsInserted: inserted,
-		AssetsTouched:            len(touched),
-		UnnamedFacesSkipped:      unnamedFaces,
-	}, nil
+	return result, nil
 }
 
 type ImportSearchIndexOptions struct {
@@ -241,47 +237,16 @@ func ImportSearchIndex(ctx context.Context, paths Paths, opts ImportSearchIndexO
 	if err != nil {
 		return ImportSearchIndexResult{}, err
 	}
-	searchDBPath, variant, relPath, err := resolveAppleSearchDB(libraryPath)
+	input, err := preflightSearchImport(ctx, libraryPath)
 	if err != nil {
 		return ImportSearchIndexResult{}, err
 	}
-	snapshotPath, cleanup, err := copySQLite(ctx, searchDBPath, "photoscrawl-search-index-")
-	if err != nil {
-		return ImportSearchIndexResult{}, err
-	}
-	defer cleanup()
-
 	archiveDB, err := openArchiveStore(ctx, paths.Database)
 	if err != nil {
 		return ImportSearchIndexResult{}, err
 	}
 	defer archiveDB.Close()
 
-	searchDB, err := store.OpenReadOnly(ctx, snapshotPath)
-	if err != nil {
-		return ImportSearchIndexResult{}, fmt.Errorf("open copied Apple search index: %w", err)
-	}
-	defer searchDB.Close()
-
-	var schema map[string]string
-	var searchRows []appleSearchRow
-	switch variant {
-	case "psi":
-		schema, err = validatePSISearchSchema(ctx, searchDB.DB())
-		if err == nil {
-			searchRows, err = loadPSISearchRows(ctx, searchDB.DB())
-		}
-	case "leo":
-		schema, err = validateLeoSearchSchema(ctx, searchDB.DB())
-		if err == nil {
-			searchRows, err = loadLeoSearchRows(ctx, searchDB.DB())
-		}
-	default:
-		err = fmt.Errorf("unsupported Apple search index variant: %s", variant)
-	}
-	if err != nil {
-		return ImportSearchIndexResult{}, err
-	}
 	assetByUUID, err := archiveAssetMap(ctx, archiveDB.DB())
 	if err != nil {
 		return ImportSearchIndexResult{}, err
@@ -295,32 +260,147 @@ func ImportSearchIndex(ctx context.Context, paths Paths, opts ImportSearchIndexO
 		return ImportSearchIndexResult{}, err
 	}
 	defer tx.Rollback()
-	if err := clearImportedSearchIndex(ctx, tx); err != nil {
+	result, _, err := writeSearchImport(ctx, tx, input, assetByUUID, peopleByUUID, time.Now().UTC())
+	if err != nil {
 		return ImportSearchIndexResult{}, err
 	}
+	if err := tx.Commit(); err != nil {
+		return ImportSearchIndexResult{}, err
+	}
+	return result, nil
+}
 
+func preflightFacesImport(ctx context.Context, libraryPath string) (facesImportInput, error) {
+	liveDBPath := filepath.Join(libraryPath, "database", "Photos.sqlite")
+	if _, err := os.Stat(liveDBPath); err != nil {
+		return facesImportInput{}, fmt.Errorf("find Photos sqlite: %w", err)
+	}
+	snapshotPath, cleanup, err := copyPhotosSQLite(ctx, liveDBPath)
+	if err != nil {
+		return facesImportInput{}, err
+	}
+	defer cleanup()
+	photosDB, err := store.OpenReadOnly(ctx, snapshotPath)
+	if err != nil {
+		return facesImportInput{}, fmt.Errorf("open copied Photos sqlite: %w", err)
+	}
+	defer photosDB.Close()
+	schema, err := validatePhotosFacesSchema(ctx, photosDB.DB())
+	if err != nil {
+		return facesImportInput{}, err
+	}
+	faceRows, namedPersons, unnamedFaces, err := loadPhotosFaceRows(ctx, photosDB.DB())
+	if err != nil {
+		return facesImportInput{}, err
+	}
+	peopleByUUID, err := loadPhotosPeopleByUUIDFromDB(ctx, photosDB.DB())
+	if err != nil {
+		return facesImportInput{}, err
+	}
+	return facesImportInput{
+		libraryPath:  libraryPath,
+		schema:       schema,
+		rows:         faceRows,
+		namedPersons: namedPersons,
+		unnamedFaces: unnamedFaces,
+		peopleByUUID: peopleByUUID,
+	}, nil
+}
+
+func preflightSearchImport(ctx context.Context, libraryPath string) (searchImportInput, error) {
+	searchDBPath, variant, relPath, err := resolveAppleSearchDB(libraryPath)
+	if err != nil {
+		return searchImportInput{}, err
+	}
+	snapshotPath, cleanup, err := copySQLite(ctx, searchDBPath, "photoscrawl-search-index-")
+	if err != nil {
+		return searchImportInput{}, err
+	}
+	defer cleanup()
+	searchDB, err := store.OpenReadOnly(ctx, snapshotPath)
+	if err != nil {
+		return searchImportInput{}, fmt.Errorf("open copied Apple search index: %w", err)
+	}
+	defer searchDB.Close()
+	input := searchImportInput{variant: variant, relPath: relPath}
+	switch variant {
+	case "psi":
+		input.schema, err = validatePSISearchSchema(ctx, searchDB.DB())
+		if err == nil {
+			input.rows, err = loadPSISearchRows(ctx, searchDB.DB())
+		}
+	case "leo":
+		input.schema, err = validateLeoSearchSchema(ctx, searchDB.DB())
+		if err == nil {
+			input.rows, err = loadLeoSearchRows(ctx, searchDB.DB())
+		}
+	default:
+		err = fmt.Errorf("unsupported Apple search index variant: %s", variant)
+	}
+	if err != nil {
+		return searchImportInput{}, err
+	}
+	return input, nil
+}
+
+func writeFacesImport(ctx context.Context, tx *sql.Tx, paths Paths, input facesImportInput, assetByUUID map[string]string, importedAt time.Time) (ImportFacesResult, map[string]bool, error) {
+	if err := clearImportedFaces(ctx, tx); err != nil {
+		return ImportFacesResult{}, nil, err
+	}
+	inserted := 0
+	unresolved := 0
+	touched := map[string]bool{}
+	for _, face := range input.rows {
+		assetID, ok := assetByUUID[face.assetUUID]
+		if !ok {
+			unresolved++
+			continue
+		}
+		if err := insertImportedFace(ctx, tx, assetID, face, importedAt); err != nil {
+			return ImportFacesResult{}, nil, err
+		}
+		inserted++
+		touched[assetID] = true
+	}
+	return ImportFacesResult{
+		Database:                 paths.Database,
+		LibraryPath:              input.libraryPath,
+		Source:                   photosLibraryDBFaceSource,
+		PhotosDatabase:           "database/Photos.sqlite",
+		Schema:                   input.schema,
+		NamedPersonsFound:        input.namedPersons,
+		NamedFaceRowsFound:       len(input.rows),
+		ResolvedFaceRows:         inserted,
+		UnresolvedFaceRows:       unresolved,
+		FaceObservationsInserted: inserted,
+		AssetsTouched:            len(touched),
+		UnnamedFacesSkipped:      input.unnamedFaces,
+	}, touched, nil
+}
+
+func writeSearchImport(ctx context.Context, tx *sql.Tx, input searchImportInput, assetByUUID map[string]string, peopleByUUID map[string]photosPerson, importedAt time.Time) (ImportSearchIndexResult, map[string]bool, error) {
+	if err := clearImportedSearchIndex(ctx, tx); err != nil {
+		return ImportSearchIndexResult{}, nil, err
+	}
 	result := ImportSearchIndexResult{
 		Source:         photosSearchIndexSource,
-		Variant:        variant,
-		SearchDatabase: relPath,
-		Schema:         schema,
+		Variant:        input.variant,
+		SearchDatabase: input.relPath,
+		Schema:         input.schema,
 		CategoriesSeen: map[string]int{},
 	}
 	touched := map[string]bool{}
 	unknownCategories := map[int]bool{}
-	importedAt := time.Now().UTC()
-	for _, row := range searchRows {
+	for _, row := range input.rows {
 		result.GroupsRead++
 		category := appleSearchCategoryForID(row.category)
-		categoryKey := fmt.Sprint(row.category)
-		result.CategoriesSeen[categoryKey]++
+		result.CategoriesSeen[fmt.Sprint(row.category)]++
 		if category.Name == "UNKNOWN" {
 			result.UnknownCategoryRows++
 			unknownCategories[row.category] = true
 		} else {
 			result.KnownCategoryRows++
 		}
-
 		assetID, ok := assetByUUID[row.assetUUID]
 		if !ok {
 			result.GroupsUnresolved++
@@ -335,7 +415,7 @@ func ImportSearchIndex(ctx context.Context, paths Paths, opts ImportSearchIndexO
 			}
 		}
 		if err := insertImportedSearchObservation(ctx, tx, assetID, row, category, person, hasPerson, importedAt); err != nil {
-			return ImportSearchIndexResult{}, err
+			return ImportSearchIndexResult{}, nil, err
 		}
 		result.GroupsResolved++
 		result.VisualObservationsInserted++
@@ -344,15 +424,12 @@ func ImportSearchIndex(ctx context.Context, paths Paths, opts ImportSearchIndexO
 		}
 		touched[assetID] = true
 	}
-	if err := tx.Commit(); err != nil {
-		return ImportSearchIndexResult{}, err
-	}
 	result.AssetsTouched = len(touched)
 	for id := range unknownCategories {
 		result.UnknownCategories = append(result.UnknownCategories, id)
 	}
 	sort.Ints(result.UnknownCategories)
-	return result, nil
+	return result, touched, nil
 }
 
 func resolveFacesLibraryPath(ctx context.Context, paths Paths, requested string) (string, error) {
@@ -799,7 +876,11 @@ func loadPhotosPeopleByUUID(ctx context.Context, libraryPath string) (map[string
 	if _, err := validatePhotosFacesSchema(ctx, photosDB.DB()); err != nil {
 		return nil, err
 	}
-	rows, err := photosDB.DB().QueryContext(ctx, `
+	return loadPhotosPeopleByUUIDFromDB(ctx, photosDB.DB())
+}
+
+func loadPhotosPeopleByUUIDFromDB(ctx context.Context, db *sql.DB) (map[string]photosPerson, error) {
+	rows, err := db.QueryContext(ctx, `
 select coalesce(ZPERSONUUID, ''), coalesce(ZDISPLAYNAME, ''), coalesce(ZFULLNAME, '')
 from ZPERSON
 where coalesce(ZPERSONUUID, '') <> ''

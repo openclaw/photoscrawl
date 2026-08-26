@@ -162,6 +162,51 @@ select value, side, zeroblob(2048) from batches cross join (select 1 as side uni
 	}
 }
 
+func TestImportApplePreflightFailureLeavesExistingObservations(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	paths := Paths{DataDir: root, Database: filepath.Join(root, "photos.sqlite")}
+	archiveDB, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID := stableID("source_library", "test-library")
+	assetID := stableID("asset", sourceID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001")
+	execTestSQL(t, archiveDB.DB(), `
+insert into source_library(id, library_path, snapshot_path, snapshot_created_at, photos_version, metadata_json)
+values (?, ?, ?, ?, ?, '{}')
+`, sourceID, filepath.Join(root, "Library.photoslibrary"), "snapshot", "2026-07-06T00:00:00Z", "test")
+	execTestSQL(t, archiveDB.DB(), `
+insert into asset(id, local_identifier, media_type, media_subtypes, creation_date, modification_date, added_date, timezone_name, width, height, duration_seconds, favorite, hidden, burst_identifier, represents_burst, source_library_id, metadata_json)
+values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0, '', 0, ?, '{}')
+`, assetID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001", sourceID)
+	execTestSQL(t, archiveDB.DB(), `
+insert into face_observation(id, asset_id, face_local_id, person_label, confidence, bounding_box_json, source, evidence_id)
+values ('existing-face', ?, 'existing', 'Existing Person', 1, '{}', ?, 'existing-face-evidence')
+`, assetID, photosLibraryDBFaceSource)
+	execTestSQL(t, archiveDB.DB(), `
+insert into visual_observation(id, asset_id, observation_type, label, confidence, bounding_box_json, source, model_id, evidence_id)
+values ('existing-search', ?, 'apple_label', 'Existing Label', 1, '{}', ?, ?, 'existing-search-evidence')
+`, assetID, photosSearchIndexSource, photosSearchIndexModelID)
+	if err := archiveDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	libraryPath := filepath.Join(root, "Library.photoslibrary")
+	createTestPhotosDB(t, filepath.Join(libraryPath, "database", "Photos.sqlite"))
+	if _, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraryPath}); err == nil {
+		t.Fatal("ImportApple() succeeded without a search index")
+	}
+
+	archiveDB, err = store.OpenReadOnly(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archiveDB.Close()
+	assertCount(t, archiveDB.DB(), `select count(*) from face_observation where id = 'existing-face' and person_label = 'Existing Person'`, 1)
+	assertCount(t, archiveDB.DB(), `select count(*) from visual_observation where id = 'existing-search' and label = 'Existing Label'`, 1)
+}
+
 func TestImportSearchIndexIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -202,6 +247,13 @@ values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0
 	second, err := ImportSearchIndex(ctx, paths, ImportSearchIndexOptions{LibraryPath: libraryPath})
 	if err != nil {
 		t.Fatal(err)
+	}
+	combined, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraryPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if combined.SyncStrategy != "atomic_authoritative_replace_by_source" || combined.TotalAssetsTouched != 1 {
+		t.Fatalf("combined import = %#v", combined)
 	}
 	if first.GroupsRead != 3 || first.VisualObservationsInserted != 3 || first.PersonFaceObservationsInserted != 1 {
 		t.Fatalf("first import counts = %#v", first)
