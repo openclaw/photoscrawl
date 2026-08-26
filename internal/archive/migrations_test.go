@@ -40,7 +40,7 @@ create table asset_resource (
 );
 `
 
-func TestSchemaV2MigrationPreservesV1AssetRows(t *testing.T) {
+func TestSchemaMigrationPreservesV1AssetRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "photos.sqlite")
@@ -114,6 +114,41 @@ insert into asset_resource values ('resource-1', 'asset-1', 'thumbnail', 'public
 	}
 	if assetDeleted != nil || resourceDeleted != nil {
 		t.Fatalf("migration invented tombstones: asset=%v resource=%v", assetDeleted, resourceDeleted)
+	}
+}
+
+func TestSchemaV3MigrationAddsAlbumFolderPath(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "photos.sqlite")
+	schemaV2 := strings.Replace(Schema, ",\n  folder_path text not null default ''", "", 1)
+	legacy, err := store.Open(ctx, store.Options{Path: dbPath, Schema: schemaV2, SchemaVersion: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.DB().ExecContext(ctx, `
+insert into source_library values ('library-1', '/fixture', 'snapshot', '2026-07-18T00:00:00Z', 'fixture', '{}');
+insert into asset values ('asset-1', 'local-1', 'image', '', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z', '', '', 10, 20, 0, 0, 0, '', 0, 'library-1', '{"kept":true}', null, null, null);
+insert into album_membership(id, asset_id, album_id, album_title, album_kind) values ('membership-1', 'asset-1', 'album-1', 'Trip', 'album:1:2');
+`); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := openArchiveStore(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	var folderPath string
+	if err := migrated.DB().QueryRowContext(ctx, `select folder_path from album_membership where id = 'membership-1'`).Scan(&folderPath); err != nil {
+		t.Fatal(err)
+	}
+	if folderPath != "" {
+		t.Fatalf("migrated folder_path = %q", folderPath)
 	}
 }
 

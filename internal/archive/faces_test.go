@@ -1,0 +1,284 @@
+package archive
+
+import (
+	"context"
+	"database/sql"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/openclaw/crawlkit/store"
+)
+
+func TestNormalizeAssetLocalIdentifier(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "photokit identifier",
+			input: "D4AA1B8D-FABB-428A-A001-1E285D0CC1EC/L0/001",
+			want:  "D4AA1B8D-FABB-428A-A001-1E285D0CC1EC",
+		},
+		{
+			name:  "sqlite snapshot uuid",
+			input: "D4AA1B8D-FABB-428A-A001-1E285D0CC1EC",
+			want:  "D4AA1B8D-FABB-428A-A001-1E285D0CC1EC",
+		},
+		{
+			name:  "trim whitespace",
+			input: "  D4AA1B8D-FABB-428A-A001-1E285D0CC1EC/L0/001  ",
+			want:  "D4AA1B8D-FABB-428A-A001-1E285D0CC1EC",
+		},
+		{
+			name:  "empty",
+			input: " ",
+			want:  "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeAssetLocalIdentifier(tt.input); got != tt.want {
+				t.Fatalf("normalizeAssetLocalIdentifier(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAppleSearchCategoryMapping(t *testing.T) {
+	person := appleSearchCategoryForID(1300)
+	if person.Name != "PERSON" || person.SemanticKind != "apple_person" {
+		t.Fatalf("person category = %#v", person)
+	}
+	label := appleSearchCategoryForID(1500)
+	if label.Name != "LABEL" || label.SemanticKind != "apple_label" {
+		t.Fatalf("label category = %#v", label)
+	}
+	unknown := appleSearchCategoryForID(9999)
+	if unknown.Name != "UNKNOWN" || unknown.SemanticKind != "apple_search_category_9999" {
+		t.Fatalf("unknown category = %#v", unknown)
+	}
+}
+
+func TestPSIIntsToUUID(t *testing.T) {
+	got := psiIntsToUUID(3551352356587034258, -5010834848571013202)
+	want := "92D69D06-27F0-4831-AEC7-C6F640F075BA"
+	if got != want {
+		t.Fatalf("psiIntsToUUID() = %q, want %q", got, want)
+	}
+}
+
+func TestStripAppleSearchString(t *testing.T) {
+	got := stripAppleSearchString(" Antique Car\x00 ")
+	if got != "Antique Car" {
+		t.Fatalf("stripAppleSearchString() = %q", got)
+	}
+}
+
+func TestDecodeLeoLexemeIDs(t *testing.T) {
+	got := decodeLeoLexemeIDs([]byte{1, 0, 0, 0, 42, 0, 0, 0, 255})
+	if len(got) != 2 || got[0] != 1 || got[1] != 42 {
+		t.Fatalf("decodeLeoLexemeIDs() = %#v", got)
+	}
+}
+
+func TestImportSearchIndexIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	paths := Paths{DataDir: root, Database: filepath.Join(root, "photos.sqlite")}
+	archiveDB, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID := stableID("source_library", "test-library")
+	assetID := stableID("asset", sourceID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001")
+	execTestSQL(t, archiveDB.DB(), `
+insert into source_library(id, library_path, snapshot_path, snapshot_created_at, photos_version, metadata_json)
+values (?, ?, ?, ?, ?, '{}')
+`, sourceID, filepath.Join(root, "Library.photoslibrary"), "snapshot", "2026-07-06T00:00:00Z", "test")
+	execTestSQL(t, archiveDB.DB(), `
+insert into asset(id, local_identifier, media_type, media_subtypes, creation_date, modification_date, added_date, timezone_name, width, height, duration_seconds, favorite, hidden, burst_identifier, represents_burst, source_library_id, metadata_json)
+values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0, '', 0, ?, '{}')
+`, assetID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001", sourceID)
+	if err := archiveDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	libraryPath := filepath.Join(root, "Library.photoslibrary")
+	createTestPhotosDB(t, filepath.Join(libraryPath, "database", "Photos.sqlite"))
+	createTestPSIDB(t, filepath.Join(libraryPath, "database", "search", "psi.sqlite"))
+	faces, err := ImportFaces(ctx, paths, ImportFacesOptions{LibraryPath: libraryPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if faces.FaceObservationsInserted != 1 || faces.AssetsTouched != 1 || faces.NamedPersonsFound != 1 {
+		t.Fatalf("face import counts = %#v", faces)
+	}
+
+	first, err := ImportSearchIndex(ctx, paths, ImportSearchIndexOptions{LibraryPath: libraryPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ImportSearchIndex(ctx, paths, ImportSearchIndexOptions{LibraryPath: libraryPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.GroupsRead != 3 || first.VisualObservationsInserted != 3 || first.PersonFaceObservationsInserted != 1 {
+		t.Fatalf("first import counts = %#v", first)
+	}
+	if first.PersonLookupIdentifiersResolved != 1 || first.PersonLookupIdentifiersUnresolved != 0 {
+		t.Fatalf("person lookup counts = resolved %d unresolved %d", first.PersonLookupIdentifiersResolved, first.PersonLookupIdentifiersUnresolved)
+	}
+	if first.KnownCategoryRows != 2 || first.UnknownCategoryRows != 1 || len(first.UnknownCategories) != 1 || first.UnknownCategories[0] != 9999 {
+		t.Fatalf("category counts = known %d unknown %d unknown ids %#v", first.KnownCategoryRows, first.UnknownCategoryRows, first.UnknownCategories)
+	}
+	if first.CategoriesSeen["1500"] != 1 || first.CategoriesSeen["1300"] != 1 || first.CategoriesSeen["9999"] != 1 {
+		t.Fatalf("categories seen = %#v", first.CategoriesSeen)
+	}
+	if second.GroupsRead != first.GroupsRead || second.VisualObservationsInserted != first.VisualObservationsInserted || second.PersonFaceObservationsInserted != first.PersonFaceObservationsInserted {
+		t.Fatalf("second import counts = %#v, first %#v", second, first)
+	}
+
+	archiveDB, err = store.OpenReadOnly(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archiveDB.Close()
+	assertCount(t, archiveDB.DB(), `select count(*) from visual_observation where source = ?`, 3, photosSearchIndexSource)
+	assertCount(t, archiveDB.DB(), `select count(*) from face_observation where source = ?`, 1, photosSearchIndexSource)
+	assertCount(t, archiveDB.DB(), `select count(*) from evidence_ref where source = ? and evidence_kind = 'apple_search_index'`, 3, photosSearchIndexSource)
+	assertCount(t, archiveDB.DB(), `select count(*) from observation_fts where asset_id = ?`, 5, assetID)
+	status, err := Status(ctx, paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasStatusCount(status.Counts, "observation.source.photos_search_index") {
+		t.Fatalf("status counts missing Apple search source: %#v", status.Counts)
+	}
+}
+
+func TestImportLeoSearchIndexIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	paths := Paths{DataDir: root, Database: filepath.Join(root, "photos.sqlite")}
+	archiveDB, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID := stableID("source_library", "test-library")
+	assetID := stableID("asset", sourceID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001")
+	execTestSQL(t, archiveDB.DB(), `
+insert into source_library(id, library_path, snapshot_path, snapshot_created_at, photos_version, metadata_json)
+values (?, ?, ?, ?, ?, '{}')
+`, sourceID, filepath.Join(root, "Library.photoslibrary"), "snapshot", "2026-07-06T00:00:00Z", "test")
+	execTestSQL(t, archiveDB.DB(), `
+insert into asset(id, local_identifier, media_type, media_subtypes, creation_date, modification_date, added_date, timezone_name, width, height, duration_seconds, favorite, hidden, burst_identifier, represents_burst, source_library_id, metadata_json)
+values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0, '', 0, ?, '{}')
+`, assetID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001", sourceID)
+	if err := archiveDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	libraryPath := filepath.Join(root, "Library.photoslibrary")
+	createTestPhotosDB(t, filepath.Join(libraryPath, "database", "Photos.sqlite"))
+	createTestLeoDB(t, filepath.Join(libraryPath, "database", "search", "leo.sqlite"))
+
+	first, err := ImportSearchIndex(ctx, paths, ImportSearchIndexOptions{LibraryPath: libraryPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ImportSearchIndex(ctx, paths, ImportSearchIndexOptions{LibraryPath: libraryPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Variant != "leo" || first.GroupsRead != 2 || first.VisualObservationsInserted != 2 {
+		t.Fatalf("first leo import = %#v", first)
+	}
+	if first.CategoriesSeen["1500"] != 1 || first.CategoriesSeen["1201"] != 1 {
+		t.Fatalf("leo categories = %#v", first.CategoriesSeen)
+	}
+	if second.GroupsRead != first.GroupsRead || second.VisualObservationsInserted != first.VisualObservationsInserted {
+		t.Fatalf("second leo import = %#v, first %#v", second, first)
+	}
+
+	search, err := Search(ctx, paths, SearchOptions{Query: "ceramics", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(search.Results) != 1 || search.Results[0].Source != photosSearchIndexSource || search.Results[0].ObservationType != "apple_label" {
+		t.Fatalf("leo search = %#v", search.Results)
+	}
+}
+
+func createTestPhotosDB(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	execTestSQL(t, db, `create table ZPERSON (Z_PK integer primary key, ZDISPLAYNAME text, ZFULLNAME text, ZPERSONUUID text)`)
+	execTestSQL(t, db, `create table ZDETECTEDFACE (Z_PK integer primary key, ZUUID text, ZPERSONFORFACE integer, ZASSETFORFACE integer, ZCENTERX real, ZCENTERY real, ZSIZE real, ZQUALITY real, ZNAMESOURCE integer, ZCLOUDNAMESOURCE integer, ZSOURCEWIDTH integer, ZSOURCEHEIGHT integer)`)
+	execTestSQL(t, db, `create table ZASSET (Z_PK integer primary key, ZUUID text)`)
+	execTestSQL(t, db, `insert into ZPERSON(Z_PK, ZDISPLAYNAME, ZFULLNAME, ZPERSONUUID) values (1, 'Alex', 'Alex', '08EA22FD-06A7-4145-829F-D724B9DD1BB6')`)
+	execTestSQL(t, db, `insert into ZASSET(Z_PK, ZUUID) values (1, '92D69D06-27F0-4831-AEC7-C6F640F075BA')`)
+	execTestSQL(t, db, `insert into ZDETECTEDFACE(Z_PK, ZUUID, ZPERSONFORFACE, ZASSETFORFACE, ZCENTERX, ZCENTERY, ZSIZE, ZQUALITY, ZNAMESOURCE, ZCLOUDNAMESOURCE, ZSOURCEWIDTH, ZSOURCEHEIGHT) values (1, 'face-1', 1, 1, 0.5, 0.5, 0.2, 0.9, 1, 0, 100, 100)`)
+}
+
+func createTestPSIDB(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	execTestSQL(t, db, `create table assets (uuid_0 integer, uuid_1 integer)`)
+	execTestSQL(t, db, `create table groups (category integer, owning_groupid integer, content_string text, normalized_string text, lookup_identifier text, score real)`)
+	execTestSQL(t, db, `create table ga (assetid integer, groupid integer)`)
+	execTestSQL(t, db, `insert into assets(rowid, uuid_0, uuid_1) values (1, 3551352356587034258, -5010834848571013202)`)
+	execTestSQL(t, db, `insert into groups(rowid, category, owning_groupid, content_string, normalized_string, lookup_identifier, score) values (10, 1500, null, 'Antique Car'||char(0), 'antique car'||char(0), '', 0.9)`)
+	execTestSQL(t, db, `insert into groups(rowid, category, owning_groupid, content_string, normalized_string, lookup_identifier, score) values (11, 1300, null, 'Alex'||char(0), 'alex'||char(0), '08EA22FD-06A7-4145-829F-D724B9DD1BB6'||char(0), 0.8)`)
+	execTestSQL(t, db, `insert into groups(rowid, category, owning_groupid, content_string, normalized_string, lookup_identifier, score) values (12, 9999, null, 'Future Thing', 'future thing', '', 0.7)`)
+	execTestSQL(t, db, `insert into ga(rowid, assetid, groupid) values (100, 1, 10), (101, 1, 11), (102, 1, 12)`)
+}
+
+func createTestLeoDB(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	execTestSQL(t, db, `create table lexicon (lexeme_id integer primary key, type integer, category integer, content text)`)
+	execTestSQL(t, db, `create table items (identifier text, type integer, lexeme_ids blob)`)
+	execTestSQL(t, db, `insert into lexicon(lexeme_id, type, category, content) values (1, 1, 4000, 'Ceramics'), (2, 1, 7000, 'Studio Archive'), (3, 1, 9999, 'Unsupported'), (4, 2, 4000, 'Ignored')`)
+	execTestSQL(t, db, `insert into items(rowid, identifier, type, lexeme_ids) values (1, ?, 1, ?)`, "92D69D06-27F0-4831-AEC7-C6F640F075BA", []byte{1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0})
+}
+
+func execTestSQL(t *testing.T, db *sql.DB, query string, args ...any) {
+	t.Helper()
+	if _, err := db.Exec(query, args...); err != nil {
+		t.Fatalf("exec %q: %v", query, err)
+	}
+}
+
+func assertCount(t *testing.T, db *sql.DB, query string, want int, args ...any) {
+	t.Helper()
+	var got int
+	if err := db.QueryRow(query, args...).Scan(&got); err != nil {
+		t.Fatalf("count %q: %v", query, err)
+	}
+	if got != want {
+		t.Fatalf("count %q = %d, want %d", query, got, want)
+	}
+}

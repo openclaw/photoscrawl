@@ -1,6 +1,6 @@
 package archive
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 const Schema = `
 create table if not exists source_library (
@@ -99,7 +99,8 @@ create table if not exists album_membership (
   asset_id text not null references asset(id),
   album_id text not null,
   album_title text not null,
-  album_kind text not null
+  album_kind text not null,
+  folder_path text not null default ''
 );
 
 create table if not exists location_observation (

@@ -57,6 +57,7 @@ type AlbumMembership struct {
 	AlbumID    string `json:"album_id"`
 	AlbumTitle string `json:"album_title"`
 	AlbumKind  string `json:"album_kind"`
+	FolderPath string `json:"folder_path,omitempty"`
 }
 
 type Location struct {

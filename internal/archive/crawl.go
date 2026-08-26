@@ -388,7 +388,7 @@ limit 1
 
 func (c *crawlImporter) insertAlbum(ctx context.Context, tx *sql.Tx, assetID string, album photos.AlbumMembership) error {
 	membershipID := stableID("album_membership", assetID, album.AlbumID)
-	if _, err := c.stmts.album.ExecContext(ctx, membershipID, assetID, album.AlbumID, album.AlbumTitle, album.AlbumKind); err != nil {
+	if _, err := c.stmts.album.ExecContext(ctx, membershipID, assetID, album.AlbumID, album.AlbumTitle, album.AlbumKind, album.FolderPath); err != nil {
 		return fmt.Errorf("insert album membership: %w", err)
 	}
 	return c.insertEvidence(ctx, tx, assetID, "album_membership", c.snapshot.Provider, "album:"+album.AlbumID, album)
@@ -444,21 +444,21 @@ order by resource_type, original_filename, id
 		return err
 	}
 	albumRows, err := tx.QueryContext(ctx, `
-select album_title, album_kind
+select album_title, album_kind, folder_path
 from album_membership
 where asset_id = ?
-order by album_title, album_kind, id
+order by folder_path, album_title, album_kind, id
 `, assetID)
 	if err != nil {
 		return fmt.Errorf("load merged album memberships for fts: %w", err)
 	}
 	for albumRows.Next() {
-		var title, kind string
-		if err := albumRows.Scan(&title, &kind); err != nil {
+		var title, kind, folderPath string
+		if err := albumRows.Scan(&title, &kind, &folderPath); err != nil {
 			albumRows.Close()
 			return err
 		}
-		bodyParts = append(bodyParts, title, kind)
+		bodyParts = append(bodyParts, title, kind, folderPath)
 	}
 	if err := albumRows.Close(); err != nil {
 		return err

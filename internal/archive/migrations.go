@@ -126,6 +126,7 @@ func migrateArchiveSchema(ctx context.Context, db *store.Store) error {
 			{"asset_resource", "deletion_source", "text"},
 			{"asset_resource", "deletion_reason", "text"},
 			{"asset_resource", "source_identifier", "text"},
+			{"album_membership", "folder_path", "text not null default ''"},
 		}
 		for _, column := range columns {
 			if err := ensureArchiveColumn(ctx, tx, column.table, column.name, column.definition); err != nil {

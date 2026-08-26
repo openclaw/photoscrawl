@@ -92,13 +92,14 @@ on conflict(id) do update set
   deletion_reason = coalesce(nullif(asset_resource.deletion_reason, ''), excluded.deletion_reason)
 `},
 		{&stmts.album, `
-insert into album_membership(id, asset_id, album_id, album_title, album_kind)
-values (?, ?, ?, ?, ?)
+insert into album_membership(id, asset_id, album_id, album_title, album_kind, folder_path)
+values (?, ?, ?, ?, ?, ?)
 on conflict(id) do update set
   asset_id = excluded.asset_id,
   album_id = excluded.album_id,
   album_title = excluded.album_title,
-  album_kind = excluded.album_kind
+  album_kind = excluded.album_kind,
+  folder_path = excluded.folder_path
 `},
 		{&stmts.evidence, `
 insert into evidence_ref(id, asset_id, evidence_kind, source, pointer, value_json)

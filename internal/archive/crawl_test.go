@@ -48,6 +48,13 @@ func TestCrawlImportsSnapshotAndTracksDelta(t *testing.T) {
 	if len(search.Results) != 1 {
 		t.Fatalf("search results = %d, want 1", len(search.Results))
 	}
+	folderSearch, err := Search(ctx, paths, SearchOptions{Query: "Studio Archive", Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(folderSearch.Results) != 1 || folderSearch.Results[0].ID != search.Results[0].ID {
+		t.Fatalf("folder search = %#v", folderSearch.Results)
+	}
 
 	opened, err := Open(ctx, paths, search.Results[0].ID)
 	if err != nil {
@@ -55,6 +62,9 @@ func TestCrawlImportsSnapshotAndTracksDelta(t *testing.T) {
 	}
 	if len(opened.Resources) != 1 || len(opened.Albums) != 1 || len(opened.Locations) != 1 || len(opened.Evidence) == 0 {
 		t.Fatalf("open returned resources=%d albums=%d locations=%d evidence=%d", len(opened.Resources), len(opened.Albums), len(opened.Locations), len(opened.Evidence))
+	}
+	if opened.Albums[0]["folder_path"] != "Studio Archive / Media" {
+		t.Fatalf("album folder path = %#v", opened.Albums[0])
 	}
 	evidence, err := Evidence(ctx, paths, search.Results[0].ID)
 	if err != nil {
@@ -542,7 +552,7 @@ func fakeSnapshot(changed, includeSecond bool) photos.LibrarySnapshot {
 					{SourceIdentifier: "fixture-photo", Type: "photo", UTI: "public.heic", OriginalFilename: "Screenshot Beach Fixture.heic", Availability: "remote", NeedsDownload: true},
 				},
 				Albums: []photos.AlbumMembership{
-					{AlbumID: "fixture-album-1", AlbumTitle: "Beach", AlbumKind: "album:1:2"},
+					{AlbumID: "fixture-album-1", AlbumTitle: "Beach", AlbumKind: "album:1:2", FolderPath: "Studio Archive / Media"},
 				},
 			},
 		},

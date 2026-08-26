@@ -67,6 +67,7 @@ go run ./cmd/photoscrawl metadata --json
 go run ./cmd/photoscrawl init --json
 go run ./cmd/photoscrawl status --json
 go run ./cmd/photoscrawl crawl --library "$HOME/Pictures/Photos Library.photoslibrary" --json
+go run ./cmd/photoscrawl import-apple --library "$HOME/Pictures/Photos Library.photoslibrary" --json
 go run ./cmd/photoscrawl crawl --provider sqlite --library "/path/to/scratch.photoslibrary" --json
 go run ./cmd/photoscrawl classify --limit 100 --json
 go run ./cmd/photoscrawl classify --local-model gemma4:e4b --limit 20 --json
@@ -97,6 +98,20 @@ source. If PhotoKit is unavailable or denied, the POC falls back to a read-only
 local package media paths for derivatives/renders/originals when they exist, so
 content classification can use local files without changing Photos or iCloud
 state. Every imported asset is queued for `classify`.
+
+`import-apple` copies Apple Photos' live databases into a private temporary
+directory, reads those copies, and removes them when the import finishes. It
+adds Apple's existing named-person records and search index to `photos.sqlite`:
+captions, keywords, detected text, scene labels, activities, venues, dates,
+places, people, camera/source clues, and photo types. Both the current
+`psi.sqlite` search index and the newer `leo.sqlite` layout are supported. The
+import is an authoritative refresh of only the Apple-derived observation rows;
+it never writes to the Photos library or uploads the source databases.
+
+Apple's Photos database is a private schema and can change between macOS
+releases. The importer validates every required table and column before it
+writes observations, so an unknown schema fails closed instead of silently
+mislabeling photos.
 
 Crawls merge into the archive. An asset missing from a later enumeration stays
 live; only an explicit provider deletion signal creates a tombstone. Asset
@@ -163,7 +178,11 @@ Today the POC sees useful source facts and optional local multimodal observation
   burst metadata;
 - resource type, UTI, filename, local/remote availability, iCloud download need,
   and resource hash when already local;
-- album membership and raw GPS observations with evidence refs;
+- regular, shared, and smart album membership, album folder paths, and raw GPS
+  observations with evidence refs;
+- Apple Photos captions, keywords, detected text, scene labels, activities,
+  venues, people, camera/source clues, and media categories imported from the
+  local Photos search index;
 - metadata-only observations for media type, local content availability,
   geometry, burst membership, resource UTI/type, and weak
   screenshot/document/receipt candidates from filenames, albums, and metadata;

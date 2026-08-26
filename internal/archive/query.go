@@ -20,13 +20,15 @@ type SearchResult struct {
 }
 
 type SearchHit struct {
-	ID            string `json:"id"`
-	HitType       string `json:"hit_type"`
-	ObservationID string `json:"observation_id,omitempty"`
-	MediaType     string `json:"media_type"`
-	CreationDate  string `json:"creation_date"`
-	Title         string `json:"title"`
-	Snippet       string `json:"snippet"`
+	ID              string `json:"id"`
+	HitType         string `json:"hit_type"`
+	ObservationID   string `json:"observation_id,omitempty"`
+	Source          string `json:"source,omitempty"`
+	ObservationType string `json:"observation_type,omitempty"`
+	MediaType       string `json:"media_type"`
+	CreationDate    string `json:"creation_date"`
+	Title           string `json:"title"`
+	Snippet         string `json:"snippet"`
 }
 
 type OpenResult struct {
@@ -97,10 +99,21 @@ limit ?
 	if len(result.Results) < limit {
 		observationLimit := limit - len(result.Results)
 		observationRows, err := db.DB().QueryContext(ctx, `
-select asset.id, observation_fts.id, asset.media_type, asset.creation_date, observation_fts.title,
+select asset.id, observation_fts.id,
+       coalesce(visual_observation.source, face_observation.source, text_observation.source, model_observation.source, '') as source,
+       coalesce(visual_observation.observation_type,
+                case when face_observation.id is not null then 'face' end,
+                case when text_observation.id is not null then 'text' end,
+                model_observation.observation_type,
+                '') as observation_type,
+       asset.media_type, asset.creation_date, observation_fts.title,
        snippet(observation_fts, 3, '[', ']', ' ... ', 12) as snippet
 from observation_fts
 join asset on asset.id = observation_fts.asset_id
+left join visual_observation on visual_observation.id = observation_fts.id
+left join face_observation on face_observation.id = observation_fts.id
+left join text_observation on text_observation.id = observation_fts.id
+left join model_observation on model_observation.id = observation_fts.id
 where observation_fts match ? and asset.deleted_at is null
 order by rank
 limit ?
@@ -111,7 +124,7 @@ limit ?
 		defer observationRows.Close()
 		for observationRows.Next() {
 			var hit SearchHit
-			if err := observationRows.Scan(&hit.ID, &hit.ObservationID, &hit.MediaType, &hit.CreationDate, &hit.Title, &hit.Snippet); err != nil {
+			if err := observationRows.Scan(&hit.ID, &hit.ObservationID, &hit.Source, &hit.ObservationType, &hit.MediaType, &hit.CreationDate, &hit.Title, &hit.Snippet); err != nil {
 				return SearchResult{}, err
 			}
 			hit.HitType = "observation"
@@ -159,10 +172,10 @@ order by resource_type, original_filename
 		return OpenResult{}, err
 	}
 	albums, err := rows(ctx, db.DB(), `
-select id, album_id, album_title, album_kind
+select id, album_id, album_title, album_kind, folder_path
 from album_membership
 where asset_id = ?
-order by album_title, album_id
+order by folder_path, album_title, album_id
 `, rowID)
 	if err != nil {
 		return OpenResult{}, err

@@ -134,6 +134,28 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return output.Write(os.Stdout, format, "crawl", result)
+	case "import-apple":
+		fs := flag.NewFlagSet("import-apple", flag.ContinueOnError)
+		fs.SetOutput(os.Stderr)
+		dbPath := fs.String("db", "", "photos.sqlite path")
+		libraryPath := fs.String("library", "", "Photos Library.photoslibrary path")
+		jsonFlag := fs.Bool("json", false, "write JSON")
+		formatFlag := fs.String("format", "", "output format")
+		if err := fs.Parse(args[1:]); err != nil {
+			return output.UsageError{Err: err}
+		}
+		if *dbPath != "" {
+			paths.Database = *dbPath
+		}
+		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		if err != nil {
+			return err
+		}
+		result, err := archive.ImportApple(ctx, paths, archive.ImportAppleOptions{LibraryPath: *libraryPath})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "import_apple", result)
 	case "classify":
 		fs := flag.NewFlagSet("classify", flag.ContinueOnError)
 		fs.SetOutput(os.Stderr)
@@ -420,7 +442,7 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage() error {
-	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|classify|search|timeline|open|export|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
+	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|import-apple|classify|search|timeline|open|export|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
 }
 
 func writeVersion(w io.Writer) error {

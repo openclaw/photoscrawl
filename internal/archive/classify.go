@@ -79,6 +79,7 @@ type classifyResource struct {
 type classifyAlbum struct {
 	AlbumTitle string
 	AlbumKind  string
+	FolderPath string
 }
 
 type visualObservation struct {
@@ -306,10 +307,10 @@ order by resource_type, original_filename
 
 func loadClassifyAlbums(ctx context.Context, tx *sql.Tx, assetID string) ([]classifyAlbum, error) {
 	rows, err := tx.QueryContext(ctx, `
-select album_title, album_kind
+select album_title, album_kind, folder_path
 from album_membership
 where asset_id = ?
-order by album_title, album_kind
+order by folder_path, album_title, album_kind
 `, assetID)
 	if err != nil {
 		return nil, fmt.Errorf("load classification albums: %w", err)
@@ -319,7 +320,7 @@ order by album_title, album_kind
 	albums := []classifyAlbum{}
 	for rows.Next() {
 		var album classifyAlbum
-		if err := rows.Scan(&album.AlbumTitle, &album.AlbumKind); err != nil {
+		if err := rows.Scan(&album.AlbumTitle, &album.AlbumKind, &album.FolderPath); err != nil {
 			return nil, err
 		}
 		albums = append(albums, album)
@@ -508,7 +509,7 @@ func (input classifyInput) keywordText() string {
 		parts = append(parts, resource.ResourceType, resource.UTI, resource.OriginalFilename)
 	}
 	for _, album := range input.Albums {
-		parts = append(parts, album.AlbumTitle, album.AlbumKind)
+		parts = append(parts, album.AlbumTitle, album.AlbumKind, album.FolderPath)
 	}
 	return strings.ToLower(strings.Join(parts, " "))
 }

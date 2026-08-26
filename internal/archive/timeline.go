@@ -42,9 +42,10 @@ type TimelineObservation struct {
 }
 
 type TimelineAlbum struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	Kind  string `json:"kind"`
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Kind       string `json:"kind"`
+	FolderPath string `json:"folder_path,omitempty"`
 }
 
 func Timeline(ctx context.Context, paths Paths, opts TimelineOptions) (TimelineResult, error) {
@@ -76,7 +77,7 @@ func Timeline(ctx context.Context, paths Paths, opts TimelineOptions) (TimelineR
 select asset.id, location_observation.id, asset.creation_date, asset.media_type,
        coalesce(cast(json_extract(asset.metadata_json, '$.source_type') as integer), 0),
        coalesce((
-         select json_group_array(json_object('id', album_id, 'title', album_title, 'kind', album_kind))
+         select json_group_array(json_object('id', album_id, 'title', album_title, 'kind', album_kind, 'folder_path', folder_path))
          from album_membership
          where album_membership.asset_id = asset.id
        ), '[]'),

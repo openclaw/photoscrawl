@@ -120,6 +120,21 @@ join asset on asset.id = visual_observation.asset_id and asset.deleted_at is nul
 group by observation_type
 order by count(*) desc, observation_type
 `},
+		{"observation.source", "observations from", `
+select source, count(*)
+from (
+  select source, asset_id from visual_observation
+  union all
+  select source, asset_id from text_observation
+  union all
+  select source, asset_id from face_observation
+  union all
+  select source, asset_id from model_observation
+) observations
+join asset on asset.id = observations.asset_id and asset.deleted_at is null
+group by source
+order by count(*) desc, source
+`},
 		{"model_observation.type", "model observation type", `
 select observation_type, count(*)
 from model_observation
@@ -155,10 +170,18 @@ order by count(*) desc, term_type
 		{"asset.with_observation", "assets with local observations", `select count(distinct asset_id) from (
   select asset_id from visual_observation
   union
+  select asset_id from text_observation
+  union
+  select asset_id from face_observation
+  union
   select asset_id from model_observation
 ) where asset_id in (select id from asset where deleted_at is null)`},
 		{"asset.without_observation", "assets without local observations", `select count(*) from asset where deleted_at is null and id not in (
   select asset_id from visual_observation
+  union
+  select asset_id from text_observation
+  union
+  select asset_id from face_observation
   union
   select asset_id from model_observation
 )`},
@@ -207,6 +230,10 @@ func statusSummary(ctx context.Context, db *sql.DB) (string, error) {
 	}
 	if err := db.QueryRowContext(ctx, `select count(distinct asset_id) from (
   select asset_id from visual_observation
+  union
+  select asset_id from text_observation
+  union
+  select asset_id from face_observation
   union
   select asset_id from model_observation
 ) where asset_id in (select id from asset where deleted_at is null)`).Scan(&observations); err != nil {

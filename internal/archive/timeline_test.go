@@ -28,7 +28,7 @@ func TestTimelineReturnsLocatedAssetsInHalfOpenRange(t *testing.T) {
 				Height:           3024,
 				Metadata:         map[string]any{"source_type": 2},
 				Albums: []photos.AlbumMembership{
-					{AlbumID: "shared-trip", AlbumTitle: "Trip", AlbumKind: "album:1:101"},
+					{AlbumID: "shared-trip", AlbumTitle: "Trip", AlbumKind: "album:1:101", FolderPath: "Travel / 2026"},
 				},
 				Location: &photos.Location{
 					Latitude:           52.3676,
@@ -76,7 +76,7 @@ func TestTimelineReturnsLocatedAssetsInHalfOpenRange(t *testing.T) {
 	if observation.CreatedAt != "2026-05-27T10:00:00Z" || observation.MediaType != "image" {
 		t.Fatalf("asset metadata = %#v", observation)
 	}
-	if observation.SourceType != 2 || len(observation.Albums) != 1 || observation.Albums[0].Title != "Trip" {
+	if observation.SourceType != 2 || len(observation.Albums) != 1 || observation.Albums[0].Title != "Trip" || observation.Albums[0].FolderPath != "Travel / 2026" {
 		t.Fatalf("source metadata = %#v", observation)
 	}
 	if observation.Latitude == nil || observation.Longitude == nil || observation.AccuracyMeters == nil || *observation.AccuracyMeters != accuracy || observation.IsPrecise == nil || !*observation.IsPrecise {
