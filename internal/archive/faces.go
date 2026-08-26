@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
 	"errors"
@@ -155,7 +156,7 @@ func ImportFaces(ctx context.Context, paths Paths, opts ImportFacesOptions) (Imp
 	if _, err := os.Stat(liveDBPath); err != nil {
 		return ImportFacesResult{}, fmt.Errorf("find Photos sqlite: %w", err)
 	}
-	snapshotPath, cleanup, err := copyPhotosSQLite(liveDBPath)
+	snapshotPath, cleanup, err := copyPhotosSQLite(ctx, liveDBPath)
 	if err != nil {
 		return ImportFacesResult{}, err
 	}
@@ -244,7 +245,7 @@ func ImportSearchIndex(ctx context.Context, paths Paths, opts ImportSearchIndexO
 	if err != nil {
 		return ImportSearchIndexResult{}, err
 	}
-	snapshotPath, cleanup, err := copySQLite(searchDBPath, "photoscrawl-search-index-")
+	snapshotPath, cleanup, err := copySQLite(ctx, searchDBPath, "photoscrawl-search-index-")
 	if err != nil {
 		return ImportSearchIndexResult{}, err
 	}
@@ -380,34 +381,185 @@ limit 1
 	return filepath.Join(home, "Pictures", "Photos Library.photoslibrary"), nil
 }
 
-func copyPhotosSQLite(liveDBPath string) (string, func(), error) {
-	return copySQLite(liveDBPath, "photoscrawl-faces-")
+func copyPhotosSQLite(ctx context.Context, liveDBPath string) (string, func(), error) {
+	return copySQLite(ctx, liveDBPath, "photoscrawl-faces-")
 }
 
-func copySQLite(liveDBPath string, tempPrefix string) (string, func(), error) {
+type sqliteFileState struct {
+	exists      bool
+	size        int64
+	modifiedNS  int64
+	contentHash [sha256.Size]byte
+}
+
+func copySQLite(ctx context.Context, liveDBPath string, tempPrefix string) (string, func(), error) {
 	dir, err := os.MkdirTemp("", tempPrefix)
 	if err != nil {
 		return "", func() {}, err
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
 	dest := filepath.Join(dir, filepath.Base(liveDBPath))
-	if err := copyFile(liveDBPath, dest, 0o600); err != nil {
-		cleanup()
-		return "", func() {}, err
-	}
-	for _, suffix := range []string{"-wal", "-shm"} {
-		source := liveDBPath + suffix
-		if _, err := os.Stat(source); err == nil {
-			if err := copyFile(source, dest+suffix, 0o600); err != nil {
-				cleanup()
-				return "", func() {}, err
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
+	for attempt := 1; attempt <= 5; attempt++ {
+		if err := ctx.Err(); err != nil {
 			cleanup()
 			return "", func() {}, err
 		}
+		_ = os.Remove(dest)
+		_ = os.Remove(dest + "-wal")
+		before, err := statSQLiteFiles(liveDBPath)
+		if err != nil {
+			cleanup()
+			return "", func() {}, err
+		}
+		copied, err := copySQLiteFiles(liveDBPath, dest, before)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			cleanup()
+			return "", func() {}, err
+		}
+		after, err := hashSQLiteFiles(liveDBPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			cleanup()
+			return "", func() {}, err
+		}
+		if sqliteFilesStable(before, copied, after) {
+			if err := verifySQLiteSnapshot(ctx, dest); err == nil {
+				return dest, cleanup, nil
+			}
+		}
 	}
-	return dest, cleanup, nil
+	cleanup()
+	return "", func() {}, fmt.Errorf("create consistent SQLite snapshot: source kept changing during 5 attempts")
+}
+
+func statSQLiteFiles(dbPath string) (map[string]sqliteFileState, error) {
+	out := map[string]sqliteFileState{}
+	for _, suffix := range []string{"", "-wal"} {
+		path := dbPath + suffix
+		info, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			out[suffix] = sqliteFileState{}
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect SQLite source %s: %w", path, err)
+		}
+		out[suffix] = sqliteFileState{exists: true, size: info.Size(), modifiedNS: info.ModTime().UnixNano()}
+	}
+	if !out[""].exists {
+		return nil, fmt.Errorf("SQLite source does not exist: %s", dbPath)
+	}
+	return out, nil
+}
+
+func copySQLiteFiles(sourceDB, destDB string, before map[string]sqliteFileState) (map[string]sqliteFileState, error) {
+	out := map[string]sqliteFileState{}
+	for _, suffix := range []string{"", "-wal"} {
+		if !before[suffix].exists {
+			out[suffix] = sqliteFileState{}
+			continue
+		}
+		digest, err := copyFileWithHash(sourceDB+suffix, destDB+suffix, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		state := before[suffix]
+		state.contentHash = digest
+		out[suffix] = state
+	}
+	return out, nil
+}
+
+func hashSQLiteFiles(dbPath string) (map[string]sqliteFileState, error) {
+	states, err := statSQLiteFiles(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	for _, suffix := range []string{"", "-wal"} {
+		state := states[suffix]
+		if !state.exists {
+			continue
+		}
+		file, err := os.Open(dbPath + suffix)
+		if err != nil {
+			return nil, fmt.Errorf("open SQLite source %s: %w", dbPath+suffix, err)
+		}
+		digest := sha256.New()
+		_, copyErr := io.Copy(digest, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			return nil, fmt.Errorf("hash SQLite source %s: %w", dbPath+suffix, copyErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close SQLite source %s: %w", dbPath+suffix, closeErr)
+		}
+		copy(state.contentHash[:], digest.Sum(nil))
+		states[suffix] = state
+	}
+	return states, nil
+}
+
+func sqliteFilesStable(before, copied, after map[string]sqliteFileState) bool {
+	for _, suffix := range []string{"", "-wal"} {
+		if before[suffix].exists != after[suffix].exists || copied[suffix].exists != after[suffix].exists {
+			return false
+		}
+		if !after[suffix].exists {
+			continue
+		}
+		if before[suffix].size != after[suffix].size || before[suffix].modifiedNS != after[suffix].modifiedNS {
+			return false
+		}
+		if copied[suffix].contentHash != after[suffix].contentHash {
+			return false
+		}
+	}
+	return true
+}
+
+func verifySQLiteSnapshot(ctx context.Context, path string) error {
+	db, err := store.OpenReadOnly(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	var result string
+	if err := db.DB().QueryRowContext(ctx, `pragma quick_check`).Scan(&result); err != nil {
+		return err
+	}
+	if result != "ok" {
+		return fmt.Errorf("SQLite snapshot quick check: %s", result)
+	}
+	return nil
+}
+
+func copyFileWithHash(source, dest string, mode os.FileMode) ([sha256.Size]byte, error) {
+	var outHash [sha256.Size]byte
+	in, err := os.Open(source)
+	if err != nil {
+		return outHash, fmt.Errorf("open %s: %w", source, err)
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
+		return outHash, fmt.Errorf("create %s: %w", dest, err)
+	}
+	digest := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(out, digest), in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return outHash, fmt.Errorf("copy %s: %w", source, copyErr)
+	}
+	if closeErr != nil {
+		return outHash, fmt.Errorf("close %s: %w", dest, closeErr)
+	}
+	copy(outHash[:], digest.Sum(nil))
+	return outHash, nil
 }
 
 func resolveAppleSearchDB(libraryPath string) (string, string, string, error) {
@@ -430,27 +582,6 @@ func resolveAppleSearchDB(libraryPath string) (string, string, string, error) {
 		}
 	}
 	return "", "", "", fmt.Errorf("find Apple Photos search index: neither %s nor %s exists with content", filepath.Join(searchDir, "psi.sqlite"), filepath.Join(searchDir, "leo.sqlite"))
-}
-
-func copyFile(source, dest string, mode os.FileMode) error {
-	in, err := os.Open(source)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", source, err)
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", dest, err)
-	}
-	_, copyErr := io.Copy(out, in)
-	closeErr := out.Close()
-	if copyErr != nil {
-		return fmt.Errorf("copy %s: %w", source, copyErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close %s: %w", dest, closeErr)
-	}
-	return nil
 }
 
 func validatePhotosFacesSchema(ctx context.Context, db *sql.DB) (map[string]string, error) {
@@ -655,7 +786,7 @@ func loadPhotosPeopleByUUID(ctx context.Context, libraryPath string) (map[string
 	if _, err := os.Stat(liveDBPath); err != nil {
 		return nil, fmt.Errorf("find Photos sqlite for people lookup: %w", err)
 	}
-	snapshotPath, cleanup, err := copyPhotosSQLite(liveDBPath)
+	snapshotPath, cleanup, err := copyPhotosSQLite(ctx, liveDBPath)
 	if err != nil {
 		return nil, err
 	}

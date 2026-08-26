@@ -99,8 +99,9 @@ local package media paths for derivatives/renders/originals when they exist, so
 content classification can use local files without changing Photos or iCloud
 state. Every imported asset is queued for `classify`.
 
-`import-apple` copies Apple Photos' live databases into a private temporary
-directory, reads those copies, and removes them when the import finishes. It
+`import-apple` makes verified, consistent copies of Apple Photos' live
+databases in a private temporary directory, reads those copies, and removes
+them when the import finishes. It
 adds Apple's existing named-person records and search index to `photos.sqlite`:
 captions, keywords, detected text, scene labels, activities, venues, dates,
 places, people, camera/source clues, and photo types. Both the current

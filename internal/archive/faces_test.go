@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/openclaw/crawlkit/store"
 )
@@ -80,6 +81,84 @@ func TestDecodeLeoLexemeIDs(t *testing.T) {
 	got := decodeLeoLexemeIDs([]byte{1, 0, 0, 0, 42, 0, 0, 0, 255})
 	if len(got) != 2 || got[0] != 1 || got[1] != 42 {
 		t.Fatalf("decodeLeoLexemeIDs() = %#v", got)
+	}
+}
+
+func TestCopySQLiteCreatesConsistentSnapshotWhileSourceIsLive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "live.sqlite")
+	db, err := sql.Open("sqlite", "file:"+sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `
+pragma journal_mode = wal;
+pragma wal_autocheckpoint = 0;
+create table paired(batch integer not null, side integer not null, payload blob, primary key(batch, side));
+with recursive batches(value) as (select 1 union all select value + 1 from batches where value < 2000)
+insert into paired(batch, side, payload)
+select value, side, zeroblob(2048) from batches cross join (select 1 as side union all select 2);
+`); err != nil {
+		t.Fatal(err)
+	}
+
+	writerDone := make(chan error, 1)
+	writerStarted := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		for batch := 2001; batch <= 2100; batch++ {
+			tx, err := db.BeginTx(ctx, nil)
+			if err == nil {
+				_, err = tx.ExecContext(ctx, `insert into paired(batch, side, payload) values (?, 1, zeroblob(2048)), (?, 2, zeroblob(2048))`, batch, batch)
+			}
+			if err == nil {
+				err = tx.Commit()
+			} else if tx != nil {
+				_ = tx.Rollback()
+			}
+			if err != nil {
+				writerDone <- err
+				return
+			}
+			if batch == 2001 {
+				close(writerStarted)
+			}
+			time.Sleep(100 * time.Microsecond)
+		}
+		writerDone <- nil
+	}()
+	<-writerStarted
+
+	snapshotPath, cleanup, copyErr := copySQLite(ctx, sourcePath, "photoscrawl-snapshot-test-")
+	if writerErr := <-writerDone; writerErr != nil {
+		t.Fatal(writerErr)
+	}
+	if copyErr != nil {
+		t.Fatal(copyErr)
+	}
+	defer cleanup()
+
+	snapshot, err := store.OpenReadOnly(ctx, snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	var integrity string
+	if err := snapshot.DB().QueryRowContext(ctx, `pragma integrity_check`).Scan(&integrity); err != nil {
+		t.Fatal(err)
+	}
+	if integrity != "ok" {
+		t.Fatalf("snapshot integrity = %q", integrity)
+	}
+	var incompleteBatches int
+	if err := snapshot.DB().QueryRowContext(ctx, `select count(*) from (select batch from paired group by batch having count(*) <> 2)`).Scan(&incompleteBatches); err != nil {
+		t.Fatal(err)
+	}
+	if incompleteBatches != 0 {
+		t.Fatalf("snapshot contains %d partial write batches", incompleteBatches)
 	}
 }
 
