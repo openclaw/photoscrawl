@@ -1,6 +1,6 @@
 module github.com/openclaw/photoscrawl
 
-go 1.27.0
+go 1.26.7
 
 require (
 	github.com/openclaw/crawlkit v0.14.7
