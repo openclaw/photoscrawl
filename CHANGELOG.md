@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Update to Go 1.27.0, CrawlKit v0.14.7, SQLite v1.57.0, deadcode v0.49.0, and the v7 checkout/setup-go actions.
 - Update Go dependencies, including `go-isatty` v0.0.24 and `x/sys` v0.47.0.
 - Standardize the Makefile's build, check, snapshot, and fail-closed release targets across the crawler repositories.
 

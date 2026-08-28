@@ -35,7 +35,7 @@ lint:
 	@set -e; \
 	output_file="$$(mktemp)"; \
 	trap 'rm -f "$$output_file"' EXIT; \
-	if ! GOWORK=off go run golang.org/x/tools/cmd/deadcode@v0.45.0 -test ./... > "$$output_file"; then cat "$$output_file"; exit 1; fi; \
+	if ! GOWORK=off go run golang.org/x/tools/cmd/deadcode@v0.49.0 -test ./... > "$$output_file"; then cat "$$output_file"; exit 1; fi; \
 	if [ -s "$$output_file" ]; then cat "$$output_file"; exit 1; fi
 
 tidy-check:
