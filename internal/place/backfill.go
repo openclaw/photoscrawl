@@ -311,7 +311,7 @@ func rawAppleResultSubprocess(ctx context.Context, input Input) (Result, error) 
 	if err != nil {
 		return Result{}, err
 	}
-	cmd := exec.CommandContext(ctx, executable, "place-context-raw", "--input", "-")
+	cmd := exec.CommandContext(ctx, executable, RawContextCommand, "--input", "-", "--radius", fmt.Sprint(backfillRadiusMeters))
 	cmd.Stdin = bytes.NewReader(data)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

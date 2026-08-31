@@ -3,6 +3,8 @@ package place
 import "time"
 
 const (
+	RawContextCommand = "place-context-raw"
+
 	defaultRadiusMeters = 150.0
 	maxCandidates       = 12
 
@@ -15,6 +17,11 @@ type Options struct {
 	InputPath    string
 	RadiusMeters float64
 	CacheDir     string
+}
+
+type RawOptions struct {
+	InputPath    string
+	RadiusMeters float64
 }
 
 type Input struct {

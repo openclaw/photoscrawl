@@ -365,6 +365,23 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return output.Write(os.Stdout, format, "place_context", result)
+	case place.RawContextCommand:
+		// This is the place-backfill subprocess bridge.
+		fs := flag.NewFlagSet(place.RawContextCommand, flag.ContinueOnError)
+		fs.SetOutput(os.Stderr)
+		inputPath := fs.String("input", "-", "JSON place input path, or stdin")
+		radius := fs.Float64("radius", 150, "nearby POI search radius in meters")
+		if err := fs.Parse(args[1:]); err != nil {
+			return output.UsageError{Err: err}
+		}
+		result, err := place.RunRaw(ctx, place.RawOptions{
+			InputPath:    *inputPath,
+			RadiusMeters: *radius,
+		})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, output.JSON, "place_context_raw", result)
 	case "place-card":
 		fs := flag.NewFlagSet("place-card", flag.ContinueOnError)
 		fs.SetOutput(os.Stderr)
@@ -456,7 +473,7 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage() error {
-	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|import-apple|classify|search|timeline|open|export|neighbors|evidence|place-context|place-card|place-backfill|eval-card>")}
+	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|import-apple|classify|search|timeline|open|export|neighbors|evidence|place-context|place-context-raw|place-card|place-backfill|eval-card>")}
 }
 
 func writeVersion(w io.Writer) error {

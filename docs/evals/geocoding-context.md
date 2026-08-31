@@ -29,6 +29,7 @@ For provider evaluation, run `place-backfill` instead of wrapping
 dedupes exact latitude/longitude/accuracy keys, retries Apple failures, and
 writes all manifests, attempts, outputs, and final errors outside the repo under
 the crawlkit data dir's `backfills/place-context-full/apple-ingest` subtree.
+It shells out to the internal `place-context-raw` command per coordinate key.
 
 Provider evidence includes:
 

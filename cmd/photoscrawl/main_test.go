@@ -5,16 +5,35 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/openclaw/crawlkit/output"
+	"github.com/openclaw/photoscrawl/internal/place"
 	_ "modernc.org/sqlite"
 )
+
+func TestPlaceContextRawDispatchParsesInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid.json")
+	if err := os.WriteFile(path, []byte("{invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := run(context.Background(), []string{place.RawContextCommand, "--input", path})
+	if output.IsUsage(err) {
+		t.Fatalf("raw context command returned a usage error: %v", err)
+	}
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) || !strings.HasPrefix(err.Error(), "read place input:") {
+		t.Fatalf("raw context error = %v, want an input JSON parse error", err)
+	}
+}
 
 func TestCommandContextSecondInterruptTerminates(t *testing.T) {
 	if os.Getenv("PHOTOSCRAWL_TEST_SIGNAL_CHILD") == "1" {
