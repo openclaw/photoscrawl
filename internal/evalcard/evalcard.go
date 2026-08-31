@@ -272,17 +272,17 @@ func prepareInput(ctx context.Context, localMedia photos.LocalMediaIndex, output
 		return preparedInput{}, manifestRow{}, err
 	}
 	return preparedInput{
-			ID:           id,
-			ImagePath:    imagePath,
-			MetadataPath: metadataPath,
-			MetadataJSON: metadataJSON,
-		}, manifestRow{
-			EvalID:       id,
-			ImagePath:    imagePath,
-			MetadataPath: metadataPath,
-			OriginalPath: originalPath,
-			OriginalMode: source,
-		}, nil
+		ID:           id,
+		ImagePath:    imagePath,
+		MetadataPath: metadataPath,
+		MetadataJSON: metadataJSON,
+	}, manifestRow{
+		EvalID:       id,
+		ImagePath:    imagePath,
+		MetadataPath: metadataPath,
+		OriginalPath: originalPath,
+		OriginalMode: source,
+	}, nil
 }
 
 func resolveOriginal(ctx context.Context, localMedia photos.LocalMediaIndex, cacheDir string, asset photos.Asset, allowICloud bool) (string, string, error) {

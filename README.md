@@ -21,7 +21,7 @@ evidence supports each result.
 
 ## Installation
 
-The first release supports macOS on Apple silicon and Intel. `photoscrawl` uses
+Current builds require macOS 13 Ventura or later on Apple silicon or Intel. `photoscrawl` uses
 native Objective-C/CGO bridges to PhotoKit, CoreLocation, MapKit, CoreImage,
 CoreGraphics, and ImageIO, so v0.1.x release archives are intentionally
 Darwin-only. Download the archive for your architecture from GitHub Releases,
@@ -34,6 +34,8 @@ photoscrawl --version
 There is no Homebrew formula in the debut release.
 
 ## Development
+
+Building from source requires Go 1.27.0 or later and the macOS SDK.
 
 The Makefile exposes the same core targets as the other OpenClaw crawler
 repositories:
