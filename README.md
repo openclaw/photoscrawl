@@ -114,6 +114,14 @@ releases. The importer validates every required table and column before it
 writes observations, so an unknown schema fails closed instead of silently
 mislabeling photos.
 
+After upgrading an existing archive to this version, run `photoscrawl init
+--json` once before `status`, `search`, or other read-only commands. This
+applies the required archive migration without recrawling media. If macOS
+reports `operation not permitted` while opening the Photos database, grant Full
+Disk Access to the installed `photoscrawl` executable in **System Settings →
+Privacy & Security → Full Disk Access**, then rerun the import from the logged-in
+macOS session or its background worker.
+
 Crawls merge into the archive. An asset missing from a later enumeration stays
 live; only an explicit provider deletion signal creates a tombstone. Asset
 tombstones retain their reason and also tombstone archived resource rows such as
