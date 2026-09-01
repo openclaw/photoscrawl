@@ -41,6 +41,24 @@ create table asset_resource (
 );
 `
 
+func TestOpenArchiveStoreConfiguresWriterWait(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "photos.sqlite")
+	db, err := openArchiveStore(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var timeout int
+	if err := db.DB().QueryRowContext(ctx, `pragma busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatal(err)
+	}
+	if timeout != archiveBusyTimeoutMillis {
+		t.Fatalf("busy timeout = %d, want %d", timeout, archiveBusyTimeoutMillis)
+	}
+}
+
 func TestSchemaMigrationPreservesV1AssetRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

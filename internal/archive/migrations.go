@@ -11,6 +11,8 @@ import (
 	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
+const archiveBusyTimeoutMillis = 120000
+
 func openArchiveStore(ctx context.Context, path string) (*store.Store, error) {
 	return openArchiveStoreWithValidation(ctx, path, nil)
 }
@@ -26,6 +28,13 @@ func openArchiveStoreWithValidation(ctx context.Context, path string, validate f
 	db, err := store.Open(ctx, store.Options{Path: sqlitePath})
 	if err != nil {
 		return nil, err
+	}
+	// Crawls and classifiers are separate processes that share this archive.
+	// Their write transactions are bounded, so wait for the current writer
+	// instead of failing a multi-hour crawl after CrawlKit's five-second default.
+	if _, err := db.DB().ExecContext(ctx, fmt.Sprintf("pragma busy_timeout = %d", archiveBusyTimeoutMillis)); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure archive busy timeout: %w", err)
 	}
 	current, err := db.SchemaVersion(ctx)
 	if err != nil {
