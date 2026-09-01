@@ -17,7 +17,7 @@ func ControlManifest(paths Paths) control.Manifest {
 		DefaultLogs:     paths.LogDir,
 		DefaultShare:    paths.ShareDir,
 	}
-	manifest.Capabilities = []string{"metadata", "status", "init", "search", "timeline", "face-observations", "apple-search-index"}
+	manifest.Capabilities = []string{"metadata", "status", "init", "search", "timeline", "face-observations", "apple-search-index", "apple-photo-metadata"}
 	manifest.Privacy = control.Privacy{
 		ExportsSecrets: false,
 		LocalOnlyScopes: []string{
@@ -27,6 +27,7 @@ func ControlManifest(paths Paths) control.Manifest {
 			"location-observations",
 			"face-observations",
 			"apple-search-index",
+			"apple-photo-metadata",
 			"local-model-observations",
 		},
 	}
@@ -34,7 +35,7 @@ func ControlManifest(paths Paths) control.Manifest {
 		"metadata":     {Title: "Metadata", Argv: []string{"photoscrawl", "metadata", "--json"}, JSON: true},
 		"status":       {Title: "Status", Argv: []string{"photoscrawl", "status", "--json"}, JSON: true},
 		"init":         {Title: "Initialize archive", Argv: []string{"photoscrawl", "init", "--json"}, JSON: true, Mutates: true},
-		"import_apple": {Title: "Import Apple search labels and people", Argv: []string{"photoscrawl", "import-apple", "--json"}, JSON: true, Mutates: true},
+		"import_apple": {Title: "Import Apple search labels, people, and photo metadata", Argv: []string{"photoscrawl", "import-apple", "--json"}, JSON: true, Mutates: true},
 		"query":        {Title: "Search", Argv: []string{"photoscrawl", "search", "--json", "--query"}, JSON: true},
 		"timeline":     {Title: "Timeline", Argv: []string{"photoscrawl", "timeline", "--json", "--from", "<from>", "--to", "<to>"}, JSON: true},
 	}

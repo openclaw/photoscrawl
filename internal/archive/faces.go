@@ -26,14 +26,15 @@ type ImportAppleOptions struct {
 }
 
 type ImportAppleResult struct {
-	Database            string                  `json:"database"`
-	LibraryPath         string                  `json:"library_path"`
-	Faces               ImportFacesResult       `json:"faces"`
-	SearchIndex         ImportSearchIndexResult `json:"search_index"`
-	TotalAssetsTouched  int                     `json:"total_assets_touched"`
-	SyncStrategy        string                  `json:"sync_strategy"`
-	ImportedAt          string                  `json:"imported_at"`
-	OsxphotosReferences []string                `json:"osxphotos_references"`
+	Database            string                    `json:"database"`
+	LibraryPath         string                    `json:"library_path"`
+	Faces               ImportFacesResult         `json:"faces"`
+	SearchIndex         ImportSearchIndexResult   `json:"search_index"`
+	PhotoMetadata       ImportPhotoMetadataResult `json:"photo_metadata"`
+	TotalAssetsTouched  int                       `json:"total_assets_touched"`
+	SyncStrategy        string                    `json:"sync_strategy"`
+	ImportedAt          string                    `json:"imported_at"`
+	OsxphotosReferences []string                  `json:"osxphotos_references"`
 }
 
 type ImportFacesResult struct {
@@ -143,6 +144,10 @@ func ImportApple(ctx context.Context, paths Paths, opts ImportAppleOptions) (Imp
 	if err != nil {
 		return ImportAppleResult{}, err
 	}
+	metadataInput, err := preflightPhotoMetadataImport(ctx, libraryPath)
+	if err != nil {
+		return ImportAppleResult{}, err
+	}
 	archiveDB, err := openArchiveStore(ctx, paths.Database)
 	if err != nil {
 		return ImportAppleResult{}, err
@@ -165,10 +170,17 @@ func ImportApple(ctx context.Context, paths Paths, opts ImportAppleOptions) (Imp
 	if err != nil {
 		return ImportAppleResult{}, err
 	}
+	photoMetadata, metadataAssets, err := writePhotoMetadataImport(ctx, tx, metadataInput, assetByUUID, importedAt)
+	if err != nil {
+		return ImportAppleResult{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return ImportAppleResult{}, err
 	}
 	for assetID := range searchAssets {
+		faceAssets[assetID] = true
+	}
+	for assetID := range metadataAssets {
 		faceAssets[assetID] = true
 	}
 	return ImportAppleResult{
@@ -176,6 +188,7 @@ func ImportApple(ctx context.Context, paths Paths, opts ImportAppleOptions) (Imp
 		LibraryPath:        libraryPath,
 		Faces:              faces,
 		SearchIndex:        searchIndex,
+		PhotoMetadata:      photoMetadata,
 		TotalAssetsTouched: len(faceAssets),
 		SyncStrategy:       "atomic_authoritative_replace_by_source",
 		ImportedAt:         importedAt.Format(time.RFC3339Nano),
@@ -186,6 +199,9 @@ func ImportApple(ctx context.Context, paths Paths, opts ImportAppleOptions) (Imp
 			"osxphotos/photosdb/_photosdb_process_searchinfo.py:decode_leo_lexeme_ids",
 			"osxphotos/photosdb/_photosdb_process_searchinfo.py:ints_to_uuid",
 			"osxphotos/_constants.py:SearchCategory_Photos8",
+			"osxphotos/photosdb/_photosdb_process_exif.py:_process_exifinfo_5",
+			"osxphotos/photosdb/_photosdb_process_scoreinfo.py:_process_scoreinfo_5",
+			"osxphotos/_constants.py:HAS_ADJUSTMENTS",
 		},
 	}, nil
 }

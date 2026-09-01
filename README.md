@@ -104,7 +104,8 @@ state. Every imported asset is queued for `classify`.
 `import-apple` makes verified, consistent copies of Apple Photos' live
 databases in a private temporary directory, reads those copies, and removes
 them when the import finishes. It
-adds Apple's existing named-person records and search index to `photos.sqlite`:
+adds Apple's existing named-person records, search index, original camera and
+EXIF details, edit state, and Photos quality scores to `photos.sqlite`:
 captions, keywords, detected text, scene labels, activities, venues, dates,
 places, people, camera/source clues, and photo types. Both the current
 `psi.sqlite` search index and the newer `leo.sqlite` layout are supported. The

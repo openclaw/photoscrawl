@@ -188,14 +188,28 @@ values ('existing-face', ?, 'existing', 'Existing Person', 1, '{}', ?, 'existing
 insert into visual_observation(id, asset_id, observation_type, label, confidence, bounding_box_json, source, model_id, evidence_id)
 values ('existing-search', ?, 'apple_label', 'Existing Label', 1, '{}', ?, ?, 'existing-search-evidence')
 `, assetID, photosSearchIndexSource, photosSearchIndexModelID)
+	execTestSQL(t, archiveDB.DB(), `
+insert into model_observation(id, asset_id, observation_type, value_text, value_json, confidence, source, model_id, prompt_version, evidence_id)
+values ('existing-metadata', ?, 'apple_exif', 'Existing Camera', '{}', 1, ?, ?, ?, 'existing-metadata-evidence')
+`, assetID, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID, photosLibraryDBMetadataVersion)
 	if err := archiveDB.Close(); err != nil {
 		t.Fatal(err)
 	}
 
 	libraryPath := filepath.Join(root, "Library.photoslibrary")
-	createTestPhotosDB(t, filepath.Join(libraryPath, "database", "Photos.sqlite"))
+	photosDBPath := filepath.Join(libraryPath, "database", "Photos.sqlite")
+	createTestPhotosDB(t, photosDBPath)
+	createTestPSIDB(t, filepath.Join(libraryPath, "database", "search", "psi.sqlite"))
+	brokenDB, err := sql.Open("sqlite", "file:"+photosDBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execTestSQL(t, brokenDB, `drop table ZCOMPUTEDASSETATTRIBUTES`)
+	if err := brokenDB.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraryPath}); err == nil {
-		t.Fatal("ImportApple() succeeded without a search index")
+		t.Fatal("ImportApple() succeeded with an unsupported metadata schema")
 	}
 
 	archiveDB, err = store.OpenReadOnly(ctx, paths.Database)
@@ -205,6 +219,7 @@ values ('existing-search', ?, 'apple_label', 'Existing Label', 1, '{}', ?, ?, 'e
 	defer archiveDB.Close()
 	assertCount(t, archiveDB.DB(), `select count(*) from face_observation where id = 'existing-face' and person_label = 'Existing Person'`, 1)
 	assertCount(t, archiveDB.DB(), `select count(*) from visual_observation where id = 'existing-search' and label = 'Existing Label'`, 1)
+	assertCount(t, archiveDB.DB(), `select count(*) from model_observation where id = 'existing-metadata' and value_text = 'Existing Camera'`, 1)
 }
 
 func TestImportSearchIndexIsIdempotent(t *testing.T) {
@@ -252,8 +267,21 @@ values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0
 	if err != nil {
 		t.Fatal(err)
 	}
+	combinedAgain, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraryPath})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if combined.SyncStrategy != "atomic_authoritative_replace_by_source" || combined.TotalAssetsTouched != 1 {
 		t.Fatalf("combined import = %#v", combined)
+	}
+	if combined.PhotoMetadata.ExifObservationsInserted != 1 || combined.PhotoMetadata.QualityObservationsInserted != 1 || combined.PhotoMetadata.EditObservationsInserted != 1 {
+		t.Fatalf("photo metadata import = %#v", combined.PhotoMetadata)
+	}
+	if combinedAgain.PhotoMetadata.ExifObservationsInserted != combined.PhotoMetadata.ExifObservationsInserted ||
+		combinedAgain.PhotoMetadata.QualityObservationsInserted != combined.PhotoMetadata.QualityObservationsInserted ||
+		combinedAgain.PhotoMetadata.EditObservationsInserted != combined.PhotoMetadata.EditObservationsInserted ||
+		combinedAgain.PhotoMetadata.AssetsTouched != combined.PhotoMetadata.AssetsTouched {
+		t.Fatalf("second photo metadata import = %#v, first %#v", combinedAgain.PhotoMetadata, combined.PhotoMetadata)
 	}
 	if first.GroupsRead != 3 || first.VisualObservationsInserted != 3 || first.PersonFaceObservationsInserted != 1 {
 		t.Fatalf("first import counts = %#v", first)
@@ -279,7 +307,16 @@ values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0
 	assertCount(t, archiveDB.DB(), `select count(*) from visual_observation where source = ?`, 3, photosSearchIndexSource)
 	assertCount(t, archiveDB.DB(), `select count(*) from face_observation where source = ?`, 1, photosSearchIndexSource)
 	assertCount(t, archiveDB.DB(), `select count(*) from evidence_ref where source = ? and evidence_kind = 'apple_search_index'`, 3, photosSearchIndexSource)
-	assertCount(t, archiveDB.DB(), `select count(*) from observation_fts where asset_id = ?`, 5, assetID)
+	assertCount(t, archiveDB.DB(), `select count(*) from observation_fts where asset_id = ?`, 8, assetID)
+	assertCount(t, archiveDB.DB(), `select count(*) from model_observation where asset_id = ? and source = ? and model_id = ?`, 3, assetID, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID)
+	assertCount(t, archiveDB.DB(), `select count(*) from evidence_ref where asset_id = ? and evidence_kind = 'apple_photo_metadata'`, 3, assetID)
+	metadataSearch, err := Search(ctx, paths, SearchOptions{Query: "iPhone", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metadataSearch.Results) != 1 || metadataSearch.Results[0].ObservationType != "apple_exif" {
+		t.Fatalf("metadata search = %#v", metadataSearch.Results)
+	}
 	status, err := Status(ctx, paths)
 	if err != nil {
 		t.Fatal(err)
@@ -354,9 +391,13 @@ func createTestPhotosDB(t *testing.T, path string) {
 	defer db.Close()
 	execTestSQL(t, db, `create table ZPERSON (Z_PK integer primary key, ZDISPLAYNAME text, ZFULLNAME text, ZPERSONUUID text)`)
 	execTestSQL(t, db, `create table ZDETECTEDFACE (Z_PK integer primary key, ZUUID text, ZPERSONFORFACE integer, ZASSETFORFACE integer, ZCENTERX real, ZCENTERY real, ZSIZE real, ZQUALITY real, ZNAMESOURCE integer, ZCLOUDNAMESOURCE integer, ZSOURCEWIDTH integer, ZSOURCEHEIGHT integer)`)
-	execTestSQL(t, db, `create table ZASSET (Z_PK integer primary key, ZUUID text)`)
+	execTestSQL(t, db, `create table ZASSET (Z_PK integer primary key, ZUUID text, ZADJUSTMENTSSTATE integer, ZOVERALLAESTHETICSCORE real, ZCURATIONSCORE real, ZPROMOTIONSCORE real, ZHIGHLIGHTVISIBILITYSCORE real)`)
+	execTestSQL(t, db, `create table ZEXTENDEDATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZISO integer, ZFLASHFIRED integer, ZAPERTURE real, ZFOCALLENGTH real, ZCAMERAMAKE text, ZCAMERAMODEL text, ZLENSMODEL text, ZCODEC text)`)
+	execTestSQL(t, db, `create table ZCOMPUTEDASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZFAILURESCORE real, ZHARMONIOUSCOLORSCORE real, ZINTERESTINGSUBJECTSCORE real, ZPLEASANTCOMPOSITIONSCORE real, ZSHARPLYFOCUSEDSUBJECTSCORE real, ZWELLFRAMEDSUBJECTSCORE real)`)
 	execTestSQL(t, db, `insert into ZPERSON(Z_PK, ZDISPLAYNAME, ZFULLNAME, ZPERSONUUID) values (1, 'Alex', 'Alex', '08EA22FD-06A7-4145-829F-D724B9DD1BB6')`)
-	execTestSQL(t, db, `insert into ZASSET(Z_PK, ZUUID) values (1, '92D69D06-27F0-4831-AEC7-C6F640F075BA')`)
+	execTestSQL(t, db, `insert into ZASSET(Z_PK, ZUUID, ZADJUSTMENTSSTATE, ZOVERALLAESTHETICSCORE, ZCURATIONSCORE, ZPROMOTIONSCORE, ZHIGHLIGHTVISIBILITYSCORE) values (1, '92D69D06-27F0-4831-AEC7-C6F640F075BA', 1, 0.91, 0.82, 0.73, 0.64)`)
+	execTestSQL(t, db, `insert into ZEXTENDEDATTRIBUTES(Z_PK, ZASSET, ZISO, ZFLASHFIRED, ZAPERTURE, ZFOCALLENGTH, ZCAMERAMAKE, ZCAMERAMODEL, ZLENSMODEL, ZCODEC) values (1, 1, 100, 0, 1.8, 26, 'Apple', 'iPhone 15 Pro', 'iPhone 15 Pro back camera', 'HEVC')`)
+	execTestSQL(t, db, `insert into ZCOMPUTEDASSETATTRIBUTES(Z_PK, ZASSET, ZFAILURESCORE, ZHARMONIOUSCOLORSCORE, ZINTERESTINGSUBJECTSCORE, ZPLEASANTCOMPOSITIONSCORE, ZSHARPLYFOCUSEDSUBJECTSCORE, ZWELLFRAMEDSUBJECTSCORE) values (1, 1, 0.01, 0.75, 0.88, 0.92, 0.86, 0.94)`)
 	execTestSQL(t, db, `insert into ZDETECTEDFACE(Z_PK, ZUUID, ZPERSONFORFACE, ZASSETFORFACE, ZCENTERX, ZCENTERY, ZSIZE, ZQUALITY, ZNAMESOURCE, ZCLOUDNAMESOURCE, ZSOURCEWIDTH, ZSOURCEHEIGHT) values (1, 'face-1', 1, 1, 0.5, 0.5, 0.2, 0.9, 1, 0, 100, 100)`)
 }
 

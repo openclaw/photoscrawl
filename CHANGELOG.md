@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-09-01
+
+### Highlights
+
+- Import original camera and EXIF details, Photos edit state, and Apple quality scores as evidence-backed searchable observations.
+
 ## 0.2.0 - 2026-09-01
 
 ### Highlights
