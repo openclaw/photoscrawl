@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-09-01
+
+### Highlights
+
+- Import named people and Apple Photos search-index labels into evidence-backed, locally searchable observations.
+- Preserve regular, smart, and shared album membership, including nested folder paths and shared-photo source identity.
+- Add bounded geotagged timelines, optional unlocated-photo results, and original PhotoKit export for images and videos.
+
+### Data integrity
+
+- Snapshot live Photos and search-index SQLite databases with WAL consistency checks before reading them.
+- Refresh Apple-derived observations atomically, fail closed on unknown schemas, and preserve existing archive data when preflight checks fail.
+- Keep classified assets out of the crawl queue and retry interrupted metadata tagging.
+
+### Reliability and tooling
+
 - Stop place-backfill promptly on evidence write failures without deadlocking workers or starting the remaining attempts; thanks @SebTardif.
 - Cancel place-backfill retry waits on Ctrl-C while preserving second-interrupt termination for blocked commands; thanks @SebTardif.
 - Return eval-card manifest flush and close failures before writing its summary; thanks @SebTardif.
@@ -9,6 +25,7 @@
 - Update Go dependencies, including `go-isatty` v0.0.24 and `x/sys` v0.47.0.
 - Require macOS 13 Ventura or later with the update to Go 1.27.0 and CrawlKit v0.14.8.
 - Standardize the Makefile's build, check, snapshot, and fail-closed release targets across the crawler repositories.
+- Publish the project under the MIT License.
 
 ## 0.1.0 - 2026-07-18
 
