@@ -35,7 +35,7 @@ There is no Homebrew formula in the debut release.
 
 ## Development
 
-Building from source requires Go 1.27.0 or later and the macOS SDK.
+Building from source requires Go 1.27.1 or later and the macOS SDK.
 
 The Makefile exposes the same core targets as the other OpenClaw crawler
 repositories:

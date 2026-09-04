@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Update to Go 1.27.1 and modernc SQLite v1.58.0, retaining SQLite's required libc v1.75.6 and macOS 13 support.
+
 ## 0.3.0 - 2026-09-01
 
 ### Highlights
