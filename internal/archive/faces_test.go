@@ -85,8 +85,7 @@ func TestDecodeLeoLexemeIDs(t *testing.T) {
 }
 
 func TestCopySQLiteCreatesConsistentSnapshotWhileSourceIsLive(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	root := t.TempDir()
 	sourcePath := filepath.Join(root, "live.sqlite")
 	db, err := sql.Open("sqlite", "file:"+sourcePath)
@@ -94,52 +93,85 @@ func TestCopySQLiteCreatesConsistentSnapshotWhileSourceIsLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	// Keep the connection-local WAL and cache settings on the writer connection.
+	db.SetMaxOpenConns(1)
 	if _, err := db.ExecContext(ctx, `
 pragma journal_mode = wal;
 pragma wal_autocheckpoint = 0;
+pragma cache_size = 1;
 create table paired(batch integer not null, side integer not null, payload blob, primary key(batch, side));
-with recursive batches(value) as (select 1 union all select value + 1 from batches where value < 2000)
+with recursive batches(value) as (select 1 union all select value + 1 from batches where value < 8)
 insert into paired(batch, side, payload)
 select value, side, zeroblob(2048) from batches cross join (select 1 as side union all select 2);
 `); err != nil {
 		t.Fatal(err)
 	}
+	committedWAL, err := os.Stat(sourcePath + "-wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committedWAL.Size() == 0 {
+		t.Fatal("fixture has no committed WAL data")
+	}
 
+	writeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	writerDone := make(chan error, 1)
 	writerStarted := make(chan struct{})
+	finishWrite := make(chan struct{})
 	go func() {
 		defer close(writerDone)
-		for batch := 2001; batch <= 2100; batch++ {
-			tx, err := db.BeginTx(ctx, nil)
-			if err == nil {
-				_, err = tx.ExecContext(ctx, `insert into paired(batch, side, payload) values (?, 1, zeroblob(2048)), (?, 2, zeroblob(2048))`, batch, batch)
-			}
-			if err == nil {
-				err = tx.Commit()
-			} else if tx != nil {
-				_ = tx.Rollback()
-			}
+		writerDone <- func() error {
+			tx, err := db.BeginTx(writeCtx, nil)
 			if err != nil {
-				writerDone <- err
-				return
+				return err
 			}
-			if batch == 2001 {
-				close(writerStarted)
+			defer tx.Rollback()
+			// Spill incomplete pairs to the WAL, then hold the transaction open
+			// throughout the copy so overlap does not depend on scheduling.
+			if _, err := tx.ExecContext(writeCtx, `insert into paired(batch, side, payload) select batch + 8, 1, payload from paired where side = 1 and batch <= 8`); err != nil {
+				return err
 			}
-			time.Sleep(100 * time.Microsecond)
-		}
-		writerDone <- nil
+			close(writerStarted)
+			select {
+			case <-finishWrite:
+			case <-writeCtx.Done():
+				return writeCtx.Err()
+			}
+			if _, err := tx.ExecContext(writeCtx, `insert into paired(batch, side, payload) select batch + 8, 2, payload from paired where side = 2 and batch <= 8`); err != nil {
+				return err
+			}
+			return tx.Commit()
+		}()
 	}()
-	<-writerStarted
+	defer func() {
+		cancel()
+		<-writerDone
+	}()
+	select {
+	case <-writerStarted:
+	case err := <-writerDone:
+		t.Fatalf("writer failed before snapshot: %v", err)
+	case <-writeCtx.Done():
+		t.Fatal(writeCtx.Err())
+	}
+	pendingWAL, err := os.Stat(sourcePath + "-wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pendingWAL.Size() <= committedWAL.Size() {
+		t.Fatal("writer did not spill uncommitted data to the WAL")
+	}
 
-	snapshotPath, cleanup, copyErr := copySQLite(ctx, sourcePath, "photoscrawl-snapshot-test-")
-	if writerErr := <-writerDone; writerErr != nil {
-		t.Fatal(writerErr)
-	}
-	if copyErr != nil {
-		t.Fatal(copyErr)
-	}
+	snapshotPath, cleanup, err := copySQLite(writeCtx, sourcePath, "photoscrawl-snapshot-test-")
 	defer cleanup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(finishWrite)
+	if err := <-writerDone; err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, db, `select count(*) from paired`, 32)
 
 	snapshot, err := store.OpenReadOnly(ctx, snapshotPath)
 	if err != nil {
@@ -153,6 +185,8 @@ select value, side, zeroblob(2048) from batches cross join (select 1 as side uni
 	if integrity != "ok" {
 		t.Fatalf("snapshot integrity = %q", integrity)
 	}
+	assertCount(t, snapshot.DB(), `select count(*) from paired where batch <= 8`, 16)
+	assertCount(t, snapshot.DB(), `select count(*) from paired where batch > 8`, 0)
 	var incompleteBatches int
 	if err := snapshot.DB().QueryRowContext(ctx, `select count(*) from (select batch from paired group by batch having count(*) <> 2)`).Scan(&incompleteBatches); err != nil {
 		t.Fatal(err)
