@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.3.1 - 2026-09-05
 
 - Update SQLite to v1.58.0 and prefer Go 1.27.1 for source builds; Go 1.27.0 and macOS 13 remain supported.
