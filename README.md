@@ -23,7 +23,7 @@ evidence supports each result.
 
 Current builds require macOS 13 Ventura or later on Apple silicon or Intel. `photoscrawl` uses
 native Objective-C/CGO bridges to PhotoKit, CoreLocation, MapKit, CoreImage,
-CoreGraphics, and ImageIO, so v0.1.x release archives are intentionally
+CoreGraphics, and ImageIO, so release archives are intentionally
 Darwin-only. Download the archive for your architecture from GitHub Releases,
 extract `photoscrawl`, and place it on your `PATH`.
 

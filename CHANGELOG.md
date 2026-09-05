@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Prefer the Go 1.27.1 build toolchain and update modernc SQLite to v1.58.0, retaining the Go 1.27.0 source minimum, SQLite's required libc v1.75.6, and macOS 13 support.
+- Update SQLite to v1.58.0 and prefer Go 1.27.1 for source builds; Go 1.27.0 and macOS 13 remain supported.
 
 ## 0.3.0 - 2026-09-01
 
