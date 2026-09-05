@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 - 2026-09-05
+
+### Highlights
+
+Original exports now support safe cancellation and protect existing files when an export fails.
 
 - Cancel PhotoKit original exports promptly on Ctrl-C or an opt-in `--timeout`, preserve existing files on failure, and support long destination names; thanks @SebTardif.
 
