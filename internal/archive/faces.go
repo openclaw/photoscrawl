@@ -495,7 +495,7 @@ func copySQLite(ctx context.Context, liveDBPath string, tempPrefix string) (stri
 	for attempt := 1; attempt <= 5; attempt++ {
 		if err := ctx.Err(); err != nil {
 			cleanup()
-			return "", func() {}, err
+			return "", func() {}, fmt.Errorf("snapshot SQLite source %s: %w", liveDBPath, err)
 		}
 		_ = os.Remove(dest)
 		_ = os.Remove(dest + "-wal")
