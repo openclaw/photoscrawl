@@ -51,6 +51,10 @@ make snapshot
 `make snapshot` builds local GoReleaser artifacts without credentials and never
 publishes them.
 
+On macOS, `go test -v -run TestExportNativeIntegration ./cmd/photoscrawl` builds
+the CLI with a required synthetic PhotoKit library. It exercises native export
+cancellation, late callbacks, and filesystem failures without accessing Photos.
+
 ## Releases
 
 Official releases run only through the manual **Release (unified)** GitHub
@@ -79,6 +83,7 @@ go run ./cmd/photoscrawl search --query "drone beach portugal" --json
 go run ./cmd/photoscrawl timeline --from 2026-05-27T00:00:00Z --to 2026-05-28T00:00:00Z --json
 go run ./cmd/photoscrawl open --id asset:<id> --json
 go run ./cmd/photoscrawl export --id asset:<id> --output /path/to/export --json
+go run ./cmd/photoscrawl export --id asset:<id> --output /path/to/export --timeout 2m --json
 go run ./cmd/photoscrawl neighbors --id asset:<id> --json
 go run ./cmd/photoscrawl evidence --row-id asset:<id> --json
 go run ./cmd/photoscrawl place-context --input <private-eval-run>/metadata/E001.json --json
@@ -90,6 +95,13 @@ go run ./cmd/photoscrawl eval-card --library "$HOME/Pictures/Photos Library.phot
 Default runtime paths come from crawlkit platform dirs. The primary database is
 `photos.sqlite` under the crawlkit data dir; provider caches and exported
 originals use the crawlkit cache dir.
+
+Original exports wait until completion by default. `export --timeout <duration>`
+opts into a time limit (`0` keeps the unlimited default). Ctrl-C or an expired
+deadline cancels the native PhotoKit resource request and removes its temporary
+file. A completed export atomically replaces the destination; failures preserve
+an existing file. PhotoKit reads the active system library; `export` cannot target
+a separate Photos library.
 
 `crawl` tries PhotoKit first for metadata. PhotoKit enumerates the active system
 Photos library; the `--library` path is validated and recorded as the requested

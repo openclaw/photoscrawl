@@ -6,7 +6,7 @@ package photos
 #cgo darwin LDFLAGS: -framework Foundation -framework Photos -framework CoreLocation -framework CoreImage -framework CoreGraphics -framework ImageIO
 #include <stdlib.h>
 
-int photoscrawl_export_original_resource(const char *localIdentifier, const char *destinationPath, int allowNetwork, char **errorOut);
+#include "original_export_darwin.h"
 int photoscrawl_render_canonical_jpeg(const char *sourcePath, const char *destinationPath, double quality, char **errorOut);
 char *photoscrawl_image_metadata_json(const char *sourcePath, char **errorOut);
 */
@@ -27,18 +27,34 @@ func ExportOriginalResource(ctx context.Context, localIdentifier, destinationPat
 		return ctx.Err()
 	default:
 	}
-	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
-		return err
-	}
 	cIdentifier := C.CString(localIdentifier)
 	defer C.free(unsafe.Pointer(cIdentifier))
 	cDestination := C.CString(destinationPath)
 	defer C.free(unsafe.Pointer(cDestination))
 
+	control := C.photoscrawl_export_create()
+	if control == nil {
+		return errors.New("create original export control")
+	}
+	defer C.photoscrawl_export_release(control)
+	canceled := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		C.photoscrawl_export_cancel(control)
+		close(canceled)
+	})
+	defer func() {
+		if !stop() {
+			<-canceled
+		}
+	}()
+
 	var cErr *C.char
-	ok := C.photoscrawl_export_original_resource(cIdentifier, cDestination, boolInt(allowNetwork), &cErr)
+	ok := C.photoscrawl_export_original_resource(cIdentifier, cDestination, boolInt(allowNetwork), control, &cErr)
 	if cErr != nil {
 		defer C.free(unsafe.Pointer(cErr))
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return errors.New(C.GoString(cErr))
 	}
 	if ok == 0 {

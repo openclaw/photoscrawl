@@ -280,6 +280,7 @@ func run(ctx context.Context, args []string) error {
 		dbPath := fs.String("db", "", "photos.sqlite path")
 		id := fs.String("id", "", "asset id")
 		outputDir := fs.String("output", "", "destination directory")
+		timeout := fs.Duration("timeout", 0, "export timeout (for example 2m); 0 waits until completion or cancellation")
 		jsonFlag := fs.Bool("json", false, "write JSON")
 		formatFlag := fs.String("format", "", "output format")
 		if err := fs.Parse(args[1:]); err != nil {
@@ -291,6 +292,14 @@ func run(ctx context.Context, args []string) error {
 		format, err := output.Resolve(*formatFlag, *jsonFlag)
 		if err != nil {
 			return err
+		}
+		if *timeout < 0 {
+			return output.UsageError{Err: errors.New("timeout must not be negative")}
+		}
+		if *timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, *timeout)
+			defer cancel()
 		}
 		result, err := archive.Export(ctx, paths, *id, *outputDir)
 		if err != nil {
