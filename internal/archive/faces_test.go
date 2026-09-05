@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/openclaw/crawlkit/store"
 )
@@ -114,7 +113,10 @@ select value, side, zeroblob(2048) from batches cross join (select 1 as side uni
 		t.Fatal("fixture has no committed WAL data")
 	}
 
-	writeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// Cancel on cleanup only. copySQLite is I/O bound, so a wall-clock budget
+	// here would assert how fast the machine is rather than whether the
+	// snapshot is consistent; go test's own timeout is the hang backstop.
+	writeCtx, cancel := context.WithCancel(ctx)
 	writerDone := make(chan error, 1)
 	writerStarted := make(chan struct{})
 	finishWrite := make(chan struct{})
@@ -151,8 +153,6 @@ select value, side, zeroblob(2048) from batches cross join (select 1 as side uni
 	case <-writerStarted:
 	case err := <-writerDone:
 		t.Fatalf("writer failed before snapshot: %v", err)
-	case <-writeCtx.Done():
-		t.Fatal(writeCtx.Err())
 	}
 	pendingWAL, err := os.Stat(sourcePath + "-wal")
 	if err != nil {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Name the SQLite source in snapshot cancellation errors so an aborted Photos snapshot reports which database it was copying.
+
 ## 0.3.2 - 2026-09-05
 
 ### Highlights
