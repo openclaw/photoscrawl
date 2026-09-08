@@ -69,9 +69,13 @@ func libraryComparisonPath(path string) (string, error) {
 }
 
 func openAppleArchive(ctx context.Context, path, libraryPath string) (*store.Store, error) {
+	sqlitePath, err := archiveFilename(path)
+	if err != nil {
+		return nil, err
+	}
 	// Check the binding on a private copy before a writable open can migrate or
 	// change permissions. The transaction resolves it again before replacement.
-	private, cleanup, err := photos.CopySQLite(ctx, path, "photoscrawl-library-preflight-")
+	private, cleanup, err := photos.CopySQLite(ctx, sqlitePath, "photoscrawl-library-preflight-")
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +89,7 @@ func openAppleArchive(ctx context.Context, path, libraryPath string) (*store.Sto
 	if bindingErr != nil {
 		return nil, bindingErr
 	}
-	return openArchiveStore(ctx, path)
+	return openArchiveStore(ctx, sqlitePath)
 }
 
 func archiveAssetMap(ctx context.Context, tx *sql.Tx, libraryPath string) (appleAssetScope, error) {

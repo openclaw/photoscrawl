@@ -17,10 +17,14 @@ type InitResult struct {
 }
 
 func Init(ctx context.Context, paths Paths) (InitResult, error) {
-	if err := os.MkdirAll(filepath.Dir(paths.Database), 0o700); err != nil {
+	sqlitePath, err := archiveFilename(paths.Database)
+	if err != nil {
 		return InitResult{}, err
 	}
-	db, err := openArchiveStore(ctx, paths.Database)
+	if err := os.MkdirAll(filepath.Dir(sqlitePath), 0o700); err != nil {
+		return InitResult{}, err
+	}
+	db, err := openArchiveStore(ctx, sqlitePath)
 	if err != nil {
 		return InitResult{}, err
 	}

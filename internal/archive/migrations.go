@@ -6,14 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/openclaw/crawlkit/store"
 	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
 func openArchiveStore(ctx context.Context, path string) (*store.Store, error) {
-	sqlitePath, err := filepath.Abs(path)
+	sqlitePath, err := archiveFilename(path)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +126,7 @@ func preflightArchive(ctx context.Context, path string) error {
 }
 
 func openArchiveReadOnly(ctx context.Context, path string) (*store.Store, error) {
-	sqlitePath, err := filepath.Abs(path)
+	sqlitePath, err := archiveFilename(path)
 	if err != nil {
 		return nil, err
 	}
