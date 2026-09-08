@@ -78,7 +78,7 @@ func preflightArchive(ctx context.Context, path string) error {
 	if !info.Mode().IsRegular() {
 		return errors.New("archive must be a regular file")
 	}
-	if err := inspectArchiveSidecars(path, false); err != nil {
+	if err := inspectArchiveSidecars(path, info.Size() == 0); err != nil {
 		return err
 	}
 	linked, err := archiveHardlinked(path, info)

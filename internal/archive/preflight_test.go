@@ -108,6 +108,31 @@ func TestArchivePreflightAllowsOrdinaryEmptyFile(t *testing.T) {
 	db.Close()
 }
 
+func TestArchivePreflightRejectsSidecarsBesideEmptyArchive(t *testing.T) {
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		t.Run(suffix, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "archive.db")
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			orphan := []byte("synthetic orphan sidecar")
+			if err := os.WriteFile(path+suffix, orphan, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if db, err := openArchiveStore(context.Background(), path); err == nil {
+				db.Close()
+				t.Error("orphan sidecar beside empty archive accepted")
+			}
+			if info, err := os.Stat(path); err != nil || info.Size() != 0 {
+				t.Fatalf("empty archive changed: %v", err)
+			}
+			if got, err := os.ReadFile(path + suffix); err != nil || !bytes.Equal(got, orphan) {
+				t.Fatalf("orphan %s changed: %v", suffix, err)
+			}
+		})
+	}
+}
+
 func TestArchivePreflightPreservesForeignSource(t *testing.T) {
 	for _, journal := range []string{"DELETE", "WAL"} {
 		t.Run(journal, func(t *testing.T) {
