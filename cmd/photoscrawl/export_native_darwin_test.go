@@ -45,9 +45,9 @@ func TestExportNativeIntegration(t *testing.T) {
 		}
 	}
 	cases := []struct {
-		name, mode, wantError                        string
-		flags                                        []string
-		signal, driver, directory, longName, success bool
+		name, mode, wantError                                   string
+		flags                                                   []string
+		signal, driver, directory, longName, success, cancelAck bool
 	}{
 		{name: "unlimited-default", mode: "slow", success: true},
 		{name: "explicit-unlimited", mode: "slow", flags: []string{"--timeout", "0"}, success: true},
@@ -63,6 +63,10 @@ func TestExportNativeIntegration(t *testing.T) {
 		{name: "invalid-timeout", mode: "success", flags: []string{"--timeout", "-1s"}, wantError: "timeout must not be negative"},
 		{name: "retry-before-late-callback", mode: "retry", driver: true, success: true},
 		{name: "late-authorization-callback", mode: "auth", driver: true},
+		{name: "limited-exact-budget", mode: "limited-exact", driver: true, success: true},
+		{name: "limited-single-chunk-overflow", mode: "limited-over-single", driver: true, cancelAck: true},
+		{name: "limited-cumulative-overflow", mode: "limited-over-chunked", driver: true, cancelAck: true},
+		{name: "limited-cancel-after-partial-write", mode: "limited-cancel", driver: true, cancelAck: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -146,9 +150,19 @@ func TestExportNativeIntegration(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(dir, "loaded")); err != nil {
 				t.Fatal("required PhotoKit fixture was not loaded")
 			}
-			if tc.mode == "stall" || tc.mode == "delayed-id" || tc.mode == "retry" || tc.mode == "write-error" {
+			if tc.cancelAck || tc.mode == "stall" || tc.mode == "delayed-id" || tc.mode == "retry" || tc.mode == "write-error" {
 				if _, err := os.Stat(filepath.Join(dir, "cancelled")); err != nil {
 					t.Fatal("native request was not cancelled")
+				}
+			}
+			if strings.HasPrefix(tc.mode, "limited-") {
+				if _, err := os.Stat(filepath.Join(dir, "streamed")); err != nil {
+					t.Fatal("limited export did not reach the native data callback")
+				}
+				if tc.success {
+					if _, err := os.Stat(filepath.Join(dir, "cancelled")); !os.IsNotExist(err) {
+						t.Fatalf("successful limited export cancellation marker: %v", err)
+					}
 				}
 			}
 			contents, err := os.ReadFile(preserved)

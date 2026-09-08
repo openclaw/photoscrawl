@@ -15,6 +15,27 @@ static void mark(NSString *name) {
   NSString *path = [root stringByAppendingPathComponent:name];
   if (![[NSFileManager defaultManager] createFileAtPath:path contents:[NSData data] attributes:nil]) abort();
 }
+static void confirmPartial(NSData *expected) {
+  NSString *directory = [root stringByAppendingPathComponent:@"out"];
+  NSArray *entries = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:directory error:NULL];
+  NSUInteger count = 0;
+  for (NSString *entry in entries) {
+    if (![entry hasPrefix:@".photoscrawl-export-"]) continue;
+    NSData *actual = [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:entry]];
+    if (![actual isEqualToData:expected]) abort();
+    count++;
+  }
+  if (count != 1) abort();
+  mark(@"partial");
+}
+static void waitForMarker(NSString *name) {
+  NSString *path = [root stringByAppendingPathComponent:name];
+  NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + 5;
+  while (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+    if (NSProcessInfo.processInfo.systemUptime >= deadline) abort();
+    usleep(5000);
+  }
+}
 static PHAuthorizationStatus authorization(id self, SEL selector, ...) {
   return [mode hasPrefix:@"auth"] ? PHAuthorizationStatusNotDetermined : PHAuthorizationStatusAuthorized;
 }
@@ -51,7 +72,27 @@ static id resources(id self, SEL selector, id asset) { return @[[PCFixtureResour
     }
 
   NSData *bytes = [@"synthetic-original" dataUsingEncoding:NSUTF8StringEncoding];
-  if ([mode isEqual:@"stall"] || [mode isEqual:@"delayed-id"] || ([mode isEqual:@"retry"] && request == 1)) {
+  if ([mode hasPrefix:@"limited-"]) {
+    if (((PHAssetResourceRequestOptions *)options).networkAccessAllowed) abort();
+    if ([mode isEqual:@"limited-cancel"]) {
+      @synchronized(pending) { pending[@(request)] = @[[data copy], [complete copy]]; }
+      NSData *partial = [@"partial" dataUsingEncoding:NSUTF8StringEncoding];
+      data(partial);
+      confirmPartial(partial);
+    } else if ([mode isEqual:@"limited-over-single"]) {
+      data(bytes);
+      complete(nil);
+    } else if ([mode isEqual:@"limited-exact"] || [mode isEqual:@"limited-over-chunked"]) {
+      NSData *first = [bytes subdataWithRange:NSMakeRange(0, 7)];
+      data(first);
+      confirmPartial(first);
+      data([bytes subdataWithRange:NSMakeRange(7, bytes.length - 7)]);
+      complete(nil);
+    } else {
+      abort();
+    }
+    mark(@"streamed");
+  } else if ([mode isEqual:@"stall"] || [mode isEqual:@"delayed-id"] || ([mode isEqual:@"retry"] && request == 1)) {
     @synchronized(pending) { pending[@(request)] = @[[data copy], [complete copy]]; }
     data([@"partial" dataUsingEncoding:NSUTF8StringEncoding]);
     if ([mode isEqual:@"delayed-id"]) usleep(200000);
@@ -85,7 +126,15 @@ static id resources(id self, SEL selector, id asset) { return @[[PCFixtureResour
     complete(nil);
     mark(@"late");
   };
-  if ([mode isEqual:@"retry"]) {
+  if ([mode isEqual:@"limited-cancel"]) {
+    // The Go driver releases this barrier only after the export API returns.
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+      @autoreleasepool {
+        waitForMarker(@"export-returned");
+        late();
+      }
+    });
+  } else if ([mode isEqual:@"retry"]) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC), dispatch_get_global_queue(0, 0), late);
   } else {
     late();
