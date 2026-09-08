@@ -9,6 +9,7 @@
 - Read fallback SQLite library metadata from a verified private snapshot without opening the live Photos database.
 - Reject foreign, unsupported, or hardlinked archive databases before writable access changes schema, permissions, or sidecars.
 - Refuse orphan SQLite sidecars beside a zero-byte archive before initialization.
+- Validate the same normalized archive filename SQLite opens when a path contains a symlink followed by `..`.
 - Bound photo-card preparation attempts and downloaded originals (256 MiB each, 512 MiB per run); enforce the byte limit while streaming and remove owned temporary originals after preparation.
 
 - Name the SQLite source in snapshot cancellation errors so an aborted Photos snapshot reports which database it was copying.

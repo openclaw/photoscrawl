@@ -13,11 +13,11 @@ import (
 )
 
 func openArchiveStore(ctx context.Context, path string) (*store.Store, error) {
-	if err := preflightArchive(ctx, path); err != nil {
-		return nil, err
-	}
 	sqlitePath, err := filepath.Abs(path)
 	if err != nil {
+		return nil, err
+	}
+	if err := preflightArchive(ctx, sqlitePath); err != nil {
 		return nil, err
 	}
 	db, err := store.Open(ctx, store.Options{Path: sqlitePath})
