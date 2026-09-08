@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Archive safety
+
+- Scope Apple observation replacement to the selected archived library, including valid empty libraries, and reject ambiguous bindings.
+- Preserve asset IDs and full native identifiers across evidence-backed PhotoKit/SQLite fallback changes within one library; reject ambiguous historical duplicates without merging or rekeying them.
+- Read fallback SQLite library metadata from a verified private snapshot without opening the live Photos database.
+- Reject foreign, unsupported, or hardlinked archive databases before writable access changes schema, permissions, or sidecars.
+- Bound photo-card preparation attempts and downloaded originals (256 MiB each, 512 MiB per run); enforce the byte limit while streaming and remove owned temporary originals after preparation.
+
 - Name the SQLite source in snapshot cancellation errors so an aborted Photos snapshot reports which database it was copying.
 
 ## 0.3.2 - 2026-09-05

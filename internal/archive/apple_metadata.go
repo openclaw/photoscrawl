@@ -213,8 +213,8 @@ func loadPhotoMetadataInput(ctx context.Context, db *sql.DB) (photoMetadataImpor
 	}, nil
 }
 
-func writePhotoMetadataImport(ctx context.Context, tx *sql.Tx, input photoMetadataImportInput, assetByUUID map[string]string, importedAt time.Time) (ImportPhotoMetadataResult, map[string]bool, error) {
-	if err := clearImportedPhotoMetadata(ctx, tx); err != nil {
+func writePhotoMetadataImport(ctx context.Context, tx *sql.Tx, input photoMetadataImportInput, assetByUUID appleAssetScope, importedAt time.Time) (ImportPhotoMetadataResult, map[string]bool, error) {
+	if err := clearImportedPhotoMetadata(ctx, tx, assetByUUID.libraryID); err != nil {
 		return ImportPhotoMetadataResult{}, nil, err
 	}
 	result := ImportPhotoMetadataResult{
@@ -226,7 +226,7 @@ func writePhotoMetadataImport(ctx context.Context, tx *sql.Tx, input photoMetada
 	}
 	touched := map[string]bool{}
 	for _, row := range input.rows {
-		assetID, ok := assetByUUID[row.assetUUID]
+		assetID, ok := assetByUUID.byUUID[row.assetUUID]
 		if !ok {
 			result.AssetsUnresolved++
 			continue
@@ -259,17 +259,17 @@ func writePhotoMetadataImport(ctx context.Context, tx *sql.Tx, input photoMetada
 	return result, touched, nil
 }
 
-func clearImportedPhotoMetadata(ctx context.Context, tx *sql.Tx) error {
-	if _, err := tx.ExecContext(ctx, `delete from observation_fts where id in (select id from model_observation where source = ? and model_id = ?)`, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID); err != nil {
+func clearImportedPhotoMetadata(ctx context.Context, tx *sql.Tx, libraryID string) error {
+	if _, err := tx.ExecContext(ctx, `delete from observation_fts where id in (select id from model_observation where source = ? and model_id = ? and asset_id in (select id from asset where source_library_id = ?))`, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID, libraryID); err != nil {
 		return fmt.Errorf("clear Apple photo metadata search rows: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `delete from observation_term where observation_id in (select id from model_observation where source = ? and model_id = ?)`, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from observation_term where observation_id in (select id from model_observation where source = ? and model_id = ? and asset_id in (select id from asset where source_library_id = ?))`, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID, libraryID); err != nil {
 		return fmt.Errorf("clear Apple photo metadata terms: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `delete from model_observation where source = ? and model_id = ?`, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from model_observation where source = ? and model_id = ? and asset_id in (select id from asset where source_library_id = ?)`, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID, libraryID); err != nil {
 		return fmt.Errorf("clear Apple photo metadata observations: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `delete from evidence_ref where source = ? and evidence_kind = 'apple_photo_metadata'`, photosLibraryDBFaceSource); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from evidence_ref where source = ? and evidence_kind = 'apple_photo_metadata' and asset_id in (select id from asset where source_library_id = ?)`, photosLibraryDBFaceSource, libraryID); err != nil {
 		return fmt.Errorf("clear Apple photo metadata evidence: %w", err)
 	}
 	return nil

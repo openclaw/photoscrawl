@@ -2,12 +2,10 @@ package archive
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +13,7 @@ import (
 	"time"
 
 	"github.com/openclaw/crawlkit/store"
+	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
 const photosLibraryDBFaceSource = "photos_library_db"
@@ -148,20 +147,20 @@ func ImportApple(ctx context.Context, paths Paths, opts ImportAppleOptions) (Imp
 	if err != nil {
 		return ImportAppleResult{}, err
 	}
-	archiveDB, err := openArchiveStore(ctx, paths.Database)
+	archiveDB, err := openAppleArchive(ctx, paths.Database, libraryPath)
 	if err != nil {
 		return ImportAppleResult{}, err
 	}
 	defer archiveDB.Close()
-	assetByUUID, err := archiveAssetMap(ctx, archiveDB.DB())
-	if err != nil {
-		return ImportAppleResult{}, err
-	}
 	tx, err := archiveDB.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return ImportAppleResult{}, err
 	}
 	defer tx.Rollback()
+	assetByUUID, err := archiveAssetMap(ctx, tx, libraryPath)
+	if err != nil {
+		return ImportAppleResult{}, err
+	}
 	faces, faceAssets, err := writeFacesImport(ctx, tx, paths, facesInput, assetByUUID, importedAt)
 	if err != nil {
 		return ImportAppleResult{}, err
@@ -219,21 +218,21 @@ func ImportFaces(ctx context.Context, paths Paths, opts ImportFacesOptions) (Imp
 	if err != nil {
 		return ImportFacesResult{}, err
 	}
-	archiveDB, err := openArchiveStore(ctx, paths.Database)
+	archiveDB, err := openAppleArchive(ctx, paths.Database, libraryPath)
 	if err != nil {
 		return ImportFacesResult{}, err
 	}
 	defer archiveDB.Close()
 
-	assetByUUID, err := archiveAssetMap(ctx, archiveDB.DB())
-	if err != nil {
-		return ImportFacesResult{}, err
-	}
 	tx, err := archiveDB.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return ImportFacesResult{}, err
 	}
 	defer tx.Rollback()
+	assetByUUID, err := archiveAssetMap(ctx, tx, libraryPath)
+	if err != nil {
+		return ImportFacesResult{}, err
+	}
 	result, _, err := writeFacesImport(ctx, tx, paths, input, assetByUUID, time.Now().UTC())
 	if err != nil {
 		return ImportFacesResult{}, err
@@ -257,16 +256,12 @@ func ImportSearchIndex(ctx context.Context, paths Paths, opts ImportSearchIndexO
 	if err != nil {
 		return ImportSearchIndexResult{}, err
 	}
-	archiveDB, err := openArchiveStore(ctx, paths.Database)
+	archiveDB, err := openAppleArchive(ctx, paths.Database, libraryPath)
 	if err != nil {
 		return ImportSearchIndexResult{}, err
 	}
 	defer archiveDB.Close()
 
-	assetByUUID, err := archiveAssetMap(ctx, archiveDB.DB())
-	if err != nil {
-		return ImportSearchIndexResult{}, err
-	}
 	peopleByUUID, err := loadPhotosPeopleByUUID(ctx, libraryPath)
 	if err != nil {
 		return ImportSearchIndexResult{}, err
@@ -276,6 +271,10 @@ func ImportSearchIndex(ctx context.Context, paths Paths, opts ImportSearchIndexO
 		return ImportSearchIndexResult{}, err
 	}
 	defer tx.Rollback()
+	assetByUUID, err := archiveAssetMap(ctx, tx, libraryPath)
+	if err != nil {
+		return ImportSearchIndexResult{}, err
+	}
 	result, _, err := writeSearchImport(ctx, tx, input, assetByUUID, peopleByUUID, time.Now().UTC())
 	if err != nil {
 		return ImportSearchIndexResult{}, err
@@ -359,15 +358,15 @@ func preflightSearchImport(ctx context.Context, libraryPath string) (searchImpor
 	return input, nil
 }
 
-func writeFacesImport(ctx context.Context, tx *sql.Tx, paths Paths, input facesImportInput, assetByUUID map[string]string, importedAt time.Time) (ImportFacesResult, map[string]bool, error) {
-	if err := clearImportedFaces(ctx, tx); err != nil {
+func writeFacesImport(ctx context.Context, tx *sql.Tx, paths Paths, input facesImportInput, assetByUUID appleAssetScope, importedAt time.Time) (ImportFacesResult, map[string]bool, error) {
+	if err := clearImportedFaces(ctx, tx, assetByUUID.libraryID); err != nil {
 		return ImportFacesResult{}, nil, err
 	}
 	inserted := 0
 	unresolved := 0
 	touched := map[string]bool{}
 	for _, face := range input.rows {
-		assetID, ok := assetByUUID[face.assetUUID]
+		assetID, ok := assetByUUID.byUUID[face.assetUUID]
 		if !ok {
 			unresolved++
 			continue
@@ -394,8 +393,8 @@ func writeFacesImport(ctx context.Context, tx *sql.Tx, paths Paths, input facesI
 	}, touched, nil
 }
 
-func writeSearchImport(ctx context.Context, tx *sql.Tx, input searchImportInput, assetByUUID map[string]string, peopleByUUID map[string]photosPerson, importedAt time.Time) (ImportSearchIndexResult, map[string]bool, error) {
-	if err := clearImportedSearchIndex(ctx, tx); err != nil {
+func writeSearchImport(ctx context.Context, tx *sql.Tx, input searchImportInput, assetByUUID appleAssetScope, peopleByUUID map[string]photosPerson, importedAt time.Time) (ImportSearchIndexResult, map[string]bool, error) {
+	if err := clearImportedSearchIndex(ctx, tx, assetByUUID.libraryID); err != nil {
 		return ImportSearchIndexResult{}, nil, err
 	}
 	result := ImportSearchIndexResult{
@@ -417,7 +416,7 @@ func writeSearchImport(ctx context.Context, tx *sql.Tx, input searchImportInput,
 		} else {
 			result.KnownCategoryRows++
 		}
-		assetID, ok := assetByUUID[row.assetUUID]
+		assetID, ok := assetByUUID.byUUID[row.assetUUID]
 		if !ok {
 			result.GroupsUnresolved++
 			continue
@@ -478,181 +477,8 @@ func copyPhotosSQLite(ctx context.Context, liveDBPath string) (string, func(), e
 	return copySQLite(ctx, liveDBPath, "photoscrawl-faces-")
 }
 
-type sqliteFileState struct {
-	exists      bool
-	size        int64
-	modifiedNS  int64
-	contentHash [sha256.Size]byte
-}
-
-func copySQLite(ctx context.Context, liveDBPath string, tempPrefix string) (string, func(), error) {
-	dir, err := os.MkdirTemp("", tempPrefix)
-	if err != nil {
-		return "", func() {}, err
-	}
-	cleanup := func() { _ = os.RemoveAll(dir) }
-	dest := filepath.Join(dir, filepath.Base(liveDBPath))
-	for attempt := 1; attempt <= 5; attempt++ {
-		if err := ctx.Err(); err != nil {
-			cleanup()
-			return "", func() {}, fmt.Errorf("snapshot SQLite source %s: %w", liveDBPath, err)
-		}
-		_ = os.Remove(dest)
-		_ = os.Remove(dest + "-wal")
-		before, err := statSQLiteFiles(liveDBPath)
-		if err != nil {
-			cleanup()
-			return "", func() {}, err
-		}
-		copied, err := copySQLiteFiles(liveDBPath, dest, before)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			cleanup()
-			return "", func() {}, err
-		}
-		after, err := hashSQLiteFiles(liveDBPath)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			cleanup()
-			return "", func() {}, err
-		}
-		if sqliteFilesStable(before, copied, after) {
-			if err := verifySQLiteSnapshot(ctx, dest); err == nil {
-				return dest, cleanup, nil
-			}
-		}
-	}
-	cleanup()
-	return "", func() {}, fmt.Errorf("create consistent SQLite snapshot: source kept changing during 5 attempts")
-}
-
-func statSQLiteFiles(dbPath string) (map[string]sqliteFileState, error) {
-	out := map[string]sqliteFileState{}
-	for _, suffix := range []string{"", "-wal"} {
-		path := dbPath + suffix
-		info, err := os.Stat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			out[suffix] = sqliteFileState{}
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("inspect SQLite source %s: %w", path, err)
-		}
-		out[suffix] = sqliteFileState{exists: true, size: info.Size(), modifiedNS: info.ModTime().UnixNano()}
-	}
-	if !out[""].exists {
-		return nil, fmt.Errorf("SQLite source does not exist: %s", dbPath)
-	}
-	return out, nil
-}
-
-func copySQLiteFiles(sourceDB, destDB string, before map[string]sqliteFileState) (map[string]sqliteFileState, error) {
-	out := map[string]sqliteFileState{}
-	for _, suffix := range []string{"", "-wal"} {
-		if !before[suffix].exists {
-			out[suffix] = sqliteFileState{}
-			continue
-		}
-		digest, err := copyFileWithHash(sourceDB+suffix, destDB+suffix, 0o600)
-		if err != nil {
-			return nil, err
-		}
-		state := before[suffix]
-		state.contentHash = digest
-		out[suffix] = state
-	}
-	return out, nil
-}
-
-func hashSQLiteFiles(dbPath string) (map[string]sqliteFileState, error) {
-	states, err := statSQLiteFiles(dbPath)
-	if err != nil {
-		return nil, err
-	}
-	for _, suffix := range []string{"", "-wal"} {
-		state := states[suffix]
-		if !state.exists {
-			continue
-		}
-		file, err := os.Open(dbPath + suffix)
-		if err != nil {
-			return nil, fmt.Errorf("open SQLite source %s: %w", dbPath+suffix, err)
-		}
-		digest := sha256.New()
-		_, copyErr := io.Copy(digest, file)
-		closeErr := file.Close()
-		if copyErr != nil {
-			return nil, fmt.Errorf("hash SQLite source %s: %w", dbPath+suffix, copyErr)
-		}
-		if closeErr != nil {
-			return nil, fmt.Errorf("close SQLite source %s: %w", dbPath+suffix, closeErr)
-		}
-		copy(state.contentHash[:], digest.Sum(nil))
-		states[suffix] = state
-	}
-	return states, nil
-}
-
-func sqliteFilesStable(before, copied, after map[string]sqliteFileState) bool {
-	for _, suffix := range []string{"", "-wal"} {
-		if before[suffix].exists != after[suffix].exists || copied[suffix].exists != after[suffix].exists {
-			return false
-		}
-		if !after[suffix].exists {
-			continue
-		}
-		if before[suffix].size != after[suffix].size || before[suffix].modifiedNS != after[suffix].modifiedNS {
-			return false
-		}
-		if copied[suffix].contentHash != after[suffix].contentHash {
-			return false
-		}
-	}
-	return true
-}
-
-func verifySQLiteSnapshot(ctx context.Context, path string) error {
-	db, err := store.OpenReadOnly(ctx, path)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	var result string
-	if err := db.DB().QueryRowContext(ctx, `pragma quick_check`).Scan(&result); err != nil {
-		return err
-	}
-	if result != "ok" {
-		return fmt.Errorf("SQLite snapshot quick check: %s", result)
-	}
-	return nil
-}
-
-func copyFileWithHash(source, dest string, mode os.FileMode) ([sha256.Size]byte, error) {
-	var outHash [sha256.Size]byte
-	in, err := os.Open(source)
-	if err != nil {
-		return outHash, fmt.Errorf("open %s: %w", source, err)
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
-	if err != nil {
-		return outHash, fmt.Errorf("create %s: %w", dest, err)
-	}
-	digest := sha256.New()
-	_, copyErr := io.Copy(io.MultiWriter(out, digest), in)
-	closeErr := out.Close()
-	if copyErr != nil {
-		return outHash, fmt.Errorf("copy %s: %w", source, copyErr)
-	}
-	if closeErr != nil {
-		return outHash, fmt.Errorf("close %s: %w", dest, closeErr)
-	}
-	copy(outHash[:], digest.Sum(nil))
-	return outHash, nil
+func copySQLite(ctx context.Context, path, prefix string) (string, func(), error) {
+	return photos.CopySQLite(ctx, path, prefix)
 }
 
 func resolveAppleSearchDB(libraryPath string) (string, string, string, error) {
@@ -775,26 +601,6 @@ func tableColumns(ctx context.Context, db *sql.DB, table string) (map[string]boo
 		columns[name] = true
 	}
 	return columns, rows.Err()
-}
-
-func archiveAssetMap(ctx context.Context, db *sql.DB) (map[string]string, error) {
-	rows, err := db.QueryContext(ctx, `select id, local_identifier from asset`)
-	if err != nil {
-		return nil, fmt.Errorf("load archive assets: %w", err)
-	}
-	defer rows.Close()
-	out := map[string]string{}
-	for rows.Next() {
-		var assetID, localIdentifier string
-		if err := rows.Scan(&assetID, &localIdentifier); err != nil {
-			return nil, err
-		}
-		uuid := normalizeAssetLocalIdentifier(localIdentifier)
-		if uuid != "" {
-			out[uuid] = assetID
-		}
-	}
-	return out, rows.Err()
 }
 
 func normalizeAssetLocalIdentifier(localIdentifier string) string {
@@ -1089,42 +895,42 @@ func leoCategoryToPhotos8(category int) (int, bool) {
 	return mapped, ok
 }
 
-func clearImportedFaces(ctx context.Context, tx *sql.Tx) error {
+func clearImportedFaces(ctx context.Context, tx *sql.Tx, libraryID string) error {
 	if _, err := tx.ExecContext(ctx, `
 delete from observation_fts
 where id in (
-  select id from face_observation where source = ?
+  select id from face_observation where source = ? and asset_id in (select id from asset where source_library_id = ?)
 )
-`, photosLibraryDBFaceSource); err != nil {
+`, photosLibraryDBFaceSource, libraryID); err != nil {
 		return fmt.Errorf("clear imported face fts: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `delete from face_observation where source = ?`, photosLibraryDBFaceSource); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from face_observation where source = ? and asset_id in (select id from asset where source_library_id = ?)`, photosLibraryDBFaceSource, libraryID); err != nil {
 		return fmt.Errorf("clear imported faces: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `delete from evidence_ref where source = ? and evidence_kind = ?`, photosLibraryDBFaceSource, "face_observation"); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from evidence_ref where source = ? and evidence_kind = ? and asset_id in (select id from asset where source_library_id = ?)`, photosLibraryDBFaceSource, "face_observation", libraryID); err != nil {
 		return fmt.Errorf("clear imported face evidence: %w", err)
 	}
 	return nil
 }
 
-func clearImportedSearchIndex(ctx context.Context, tx *sql.Tx) error {
+func clearImportedSearchIndex(ctx context.Context, tx *sql.Tx, libraryID string) error {
 	if _, err := tx.ExecContext(ctx, `
 delete from observation_fts
 where id in (
-  select id from visual_observation where source = ?
+  select id from visual_observation where source = ? and asset_id in (select id from asset where source_library_id = ?)
   union
-  select id from face_observation where source = ?
+  select id from face_observation where source = ? and asset_id in (select id from asset where source_library_id = ?)
 )
-`, photosSearchIndexSource, photosSearchIndexSource); err != nil {
+`, photosSearchIndexSource, libraryID, photosSearchIndexSource, libraryID); err != nil {
 		return fmt.Errorf("clear Apple search index fts: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `delete from visual_observation where source = ?`, photosSearchIndexSource); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from visual_observation where source = ? and asset_id in (select id from asset where source_library_id = ?)`, photosSearchIndexSource, libraryID); err != nil {
 		return fmt.Errorf("clear Apple search index visual observations: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `delete from face_observation where source = ?`, photosSearchIndexSource); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from face_observation where source = ? and asset_id in (select id from asset where source_library_id = ?)`, photosSearchIndexSource, libraryID); err != nil {
 		return fmt.Errorf("clear Apple search index person observations: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `delete from evidence_ref where source = ? and evidence_kind = ?`, photosSearchIndexSource, "apple_search_index"); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from evidence_ref where source = ? and evidence_kind = ? and asset_id in (select id from asset where source_library_id = ?)`, photosSearchIndexSource, "apple_search_index", libraryID); err != nil {
 		return fmt.Errorf("clear Apple search index evidence: %w", err)
 	}
 	return nil

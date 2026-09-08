@@ -201,6 +201,13 @@ private images, metadata, and model responses under the crawlkit data dir's
 missing originals into the crawlkit cache dir's `originals` subtree; normal
 crawl/classify commands do not force iCloud downloads.
 
+Preparation tries at most three times the requested card limit. Downloaded
+originals are limited to 256 MiB each and 512 MiB per run, streamed into owned
+temporary cache files and removed after preparation, including on failure.
+Existing local originals and older cache files are never deleted by this cleanup.
+The summary includes `assets_attempted`; retained JPEGs and metadata remain in
+the output directory, while temporary original paths are provenance only.
+
 The eval-card summary is written only after its manifest flush and close succeed;
 manifest persistence errors fail the run before the summary is written.
 

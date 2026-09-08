@@ -5,12 +5,22 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/openclaw/crawlkit/store"
+	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
 func openArchiveStore(ctx context.Context, path string) (*store.Store, error) {
-	db, err := store.Open(ctx, store.Options{Path: path})
+	if err := preflightArchive(ctx, path); err != nil {
+		return nil, err
+	}
+	sqlitePath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	db, err := store.Open(ctx, store.Options{Path: sqlitePath})
 	if err != nil {
 		return nil, err
 	}
@@ -55,8 +65,73 @@ func openArchiveStore(ctx context.Context, path string) (*store.Store, error) {
 	return db, nil
 }
 
+func preflightArchive(ctx context.Context, path string) error {
+	// Reject accidental foreign-file selection without opening it writable.
+	// As with SQLite's pathname API, callers must keep the path stable through open.
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return inspectArchiveSidecars(path, true)
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("archive must be a regular file")
+	}
+	if err := inspectArchiveSidecars(path, false); err != nil {
+		return err
+	}
+	linked, err := archiveHardlinked(path, info)
+	if err != nil {
+		return err
+	}
+	if linked {
+		return errors.New("cannot write a hardlinked archive: SQLite sidecars belong to a single filename")
+	}
+	private, cleanup, err := photos.CopySQLite(ctx, path, "photoscrawl-preflight-")
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	db, err := store.OpenReadOnly(ctx, private)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	current, err := db.SchemaVersion(ctx)
+	if err != nil {
+		return err
+	}
+	if current > SchemaVersion {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", current, SchemaVersion)
+	}
+	isArchive, err := archiveTablesPresent(ctx, db.DB())
+	if err != nil {
+		return err
+	}
+	empty, err := archiveDatabaseEmpty(ctx, db.DB())
+	if err != nil {
+		return err
+	}
+	if !isArchive && (!empty || current != 0) {
+		return errors.New("database is not a photoscrawl archive")
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(info, after) {
+		return errors.New("archive changed identity during validation")
+	}
+	return nil
+}
+
 func openArchiveReadOnly(ctx context.Context, path string) (*store.Store, error) {
-	db, err := store.OpenReadOnly(ctx, path)
+	sqlitePath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	db, err := store.OpenReadOnly(ctx, sqlitePath)
 	if err != nil {
 		return nil, err
 	}

@@ -35,6 +35,13 @@ local, it asks PhotoKit to download/export the original into a private cache
 under the crawlkit cache dir's `originals` subtree. Normal crawl behavior
 remains read-only/local-first and does not force iCloud downloads.
 
+Preparation attempts are capped at three times `--limit`. New originals are
+streamed with a 256 MiB per-object limit and a 512 MiB run allowance, then removed
+from their owned temporary cache directory after preparation, even on failure.
+Existing Photos package originals and older cache files are not removed.
+`assets_attempted` reports the attempted sample size. Original paths marked
+`photokit_original_export_temporary` are provenance, not retained artifacts.
+
 For each asset, the harness writes a canonical full-resolution JPEG to the
 private eval directory. The JPEG has display-upright pixels and does not copy the
 original EXIF block. Full asset, resource, and ImageIO metadata are written as a
