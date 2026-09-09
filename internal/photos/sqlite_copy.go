@@ -36,7 +36,7 @@ func copySQLiteWithVerifier(ctx context.Context, liveDBPath, tempPrefix string, 
 		return "", func() {}, err
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
-	dest := filepath.Join(dir, filepath.Base(liveDBPath))
+	dest := filepath.Join(dir, "snapshot.db")
 	for attempt := 1; attempt <= 5; attempt++ {
 		if err := ctx.Err(); err != nil {
 			cleanup()

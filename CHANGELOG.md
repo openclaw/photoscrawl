@@ -8,6 +8,7 @@
 
 ### Archive safety
 
+- Preserve the selected SQLite data during private verification when the resolved source filename ends in whitespace.
 - Scope Apple observation replacement to the selected archived library, including valid empty libraries, and reject ambiguous bindings.
 - Preserve asset IDs and full native identifiers across evidence-backed PhotoKit/SQLite fallback changes within one library; reject ambiguous historical duplicates without merging or rekeying them.
 - Read fallback SQLite library metadata from a verified private snapshot without opening the live Photos database.
