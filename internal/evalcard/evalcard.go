@@ -55,6 +55,7 @@ type Result struct {
 	Sample                string         `json:"sample"`
 	AllowICloudDownloads  bool           `json:"allow_icloud_downloads"`
 	AssetsSeen            int            `json:"assets_seen"`
+	AssetsAttempted       int            `json:"assets_attempted"`
 	AssetsPrepared        int            `json:"assets_prepared"`
 	AssetsSkipped         map[string]int `json:"assets_skipped,omitempty"`
 	ModelCallsAttempted   int            `json:"model_calls_attempted"`
@@ -198,12 +199,23 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	writer := bufio.NewWriter(manifest)
 
 	inputs := []preparedInput{}
+	budget := &originalBudget{remaining: maxRunOriginalBytes}
+	// Limit attempts as well as successful cards. Failed rendering must not
+	// download every original in a library while trying to fill the sample.
+	attemptLimit := limit
+	if limit <= int(^uint(0)>>1)/3 {
+		attemptLimit = limit * 3
+	}
 	for _, asset := range assets {
-		if len(inputs) >= limit {
+		if len(inputs) >= limit || result.AssetsAttempted >= attemptLimit {
 			break
 		}
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
+		result.AssetsAttempted++
 		id := fmt.Sprintf("E%03d", len(inputs)+1)
-		input, row, err := prepareInput(ctx, localMedia, outputDir, cacheDir, id, asset, opts.AllowICloudDownloads)
+		input, row, err := prepareInput(ctx, localMedia, outputDir, cacheDir, id, asset, opts.AllowICloudDownloads, budget)
 		if err != nil {
 			result.AssetsSkipped[classifySkip(err)]++
 			continue
@@ -240,16 +252,17 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	return result, nil
 }
 
-func prepareInput(ctx context.Context, localMedia photos.LocalMediaIndex, outputDir, cacheDir, id string, asset photos.Asset, allowICloud bool) (preparedInput, manifestRow, error) {
-	originalPath, source, err := resolveOriginal(ctx, localMedia, cacheDir, asset, allowICloud)
+func prepareInput(ctx context.Context, localMedia photos.LocalMediaIndex, outputDir, cacheDir, id string, asset photos.Asset, allowICloud bool, budget *originalBudget) (preparedInput, manifestRow, error) {
+	originalPath, source, cleanup, err := resolveOriginal(ctx, localMedia, cacheDir, asset, allowICloud, budget)
 	if err != nil {
 		return preparedInput{}, manifestRow{}, err
 	}
+	defer cleanup()
 	imagePath := filepath.Join(outputDir, "images", id+".jpg")
-	if err := photos.RenderCanonicalJPEG(ctx, originalPath, imagePath, 0.92); err != nil {
+	if err := renderEvalImage(ctx, originalPath, imagePath, 0.92); err != nil {
 		return preparedInput{}, manifestRow{}, fmt.Errorf("canonical_render")
 	}
-	imageMeta, err := photos.ImageMetadata(ctx, originalPath)
+	imageMeta, err := readEvalMetadata(ctx, originalPath)
 	if err != nil {
 		return preparedInput{}, manifestRow{}, fmt.Errorf("image_metadata")
 	}
@@ -285,24 +298,25 @@ func prepareInput(ctx context.Context, localMedia photos.LocalMediaIndex, output
 	}, nil
 }
 
-func resolveOriginal(ctx context.Context, localMedia photos.LocalMediaIndex, cacheDir string, asset photos.Asset, allowICloud bool) (string, string, error) {
+func resolveOriginal(ctx context.Context, localMedia photos.LocalMediaIndex, cacheDir string, asset photos.Asset, allowICloud bool, budget *originalBudget) (string, string, func(), error) {
 	candidates := localMedia.Candidates(asset.LocalIdentifier)
 	for _, candidate := range candidates {
 		if candidate.Class == "original" {
-			return candidate.Path, "photos_package_original", nil
+			return candidate.Path, "photos_package_original", func() {}, nil
 		}
 	}
 	cachePath := filepath.Join(cacheDir, cacheName(asset))
-	if info, err := os.Stat(cachePath); err == nil && info.Size() > 0 {
-		return cachePath, "cached_photokit_original", nil
+	if info, err := os.Lstat(cachePath); err == nil && info.Mode().IsRegular() && info.Size() > 0 && info.Size() <= maxOriginalBytes {
+		return cachePath, "cached_photokit_original", func() {}, nil
 	}
 	if !allowICloud {
-		return "", "", fmt.Errorf("missing_original")
+		return "", "", func() {}, fmt.Errorf("missing_original")
 	}
-	if err := photos.ExportOriginalResource(ctx, asset.LocalIdentifier, cachePath, true); err != nil {
-		return "", "", fmt.Errorf("export_original")
+	path, cleanup, err := budget.export(ctx, cacheDir, asset)
+	if err != nil {
+		return "", "", func() {}, err
 	}
-	return cachePath, "photokit_original_export", nil
+	return path, "photokit_original_export_temporary", cleanup, nil
 }
 
 func imageAssets(assets []photos.Asset, sample string, seed uint64) []photos.Asset {

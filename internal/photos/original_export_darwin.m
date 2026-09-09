@@ -14,6 +14,8 @@
   BOOL finished;
   BOOL cancelled;
   int descriptor;
+  uint64_t byteLimit;
+  uint64_t bytesWritten;
   PHAssetResourceDataRequestID requestID;
   NSString *stagingPath;
   NSString *destinationPath;
@@ -110,6 +112,11 @@
     if (finished) return;
     const char *bytes = data.bytes;
     NSUInteger remaining = data.length;
+    if (byteLimit > 0 && remaining > byteLimit - bytesWritten) {
+      [self failLocked:@"original resource exceeds byte limit"];
+      failed = YES;
+      remaining = 0;
+    }
     while (remaining > 0) {
       ssize_t count = write(descriptor, bytes, remaining);
       if (count < 0 && errno == EINTR) continue;
@@ -120,6 +127,7 @@
       }
       bytes += count;
       remaining -= count;
+      bytesWritten += count;
     }
   }
   if (failed) [self cancelRequest];
@@ -150,6 +158,10 @@
 
 void *photoscrawl_export_create(void) {
   return [[PCOriginalExport alloc] init];
+}
+void photoscrawl_export_set_limit(void *control, int64_t bytes) {
+  PCOriginalExport *state = (PCOriginalExport *)control;
+  @synchronized(state) { state->byteLimit = bytes > 0 ? (uint64_t)bytes : 0; }
 }
 void photoscrawl_export_cancel(void *control) {
   @autoreleasepool { [(PCOriginalExport *)control cancel]; }

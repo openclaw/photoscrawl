@@ -19,7 +19,12 @@ func (SQLiteSnapshotProvider) Snapshot(ctx context.Context, libraryPath string) 
 	if _, err := os.Stat(dbPath); err != nil {
 		return LibrarySnapshot{}, fmt.Errorf("open Photos sqlite snapshot: %w", err)
 	}
-	db, err := store.OpenReadOnly(ctx, dbPath)
+	privatePath, cleanup, err := CopySQLite(ctx, dbPath, "photoscrawl-provider-")
+	if err != nil {
+		return LibrarySnapshot{}, err
+	}
+	defer cleanup()
+	db, err := store.OpenReadOnly(ctx, privatePath)
 	if err != nil {
 		return LibrarySnapshot{}, fmt.Errorf("open Photos sqlite snapshot: %w", err)
 	}
@@ -44,7 +49,7 @@ func (SQLiteSnapshotProvider) Snapshot(ctx context.Context, libraryPath string) 
 		PhotosVersion: "unknown",
 		Metadata: map[string]any{
 			"source":        "Photos.sqlite",
-			"snapshot":      "read_only_sqlite_transaction",
+			"snapshot":      "verified_private_sqlite_copy",
 			"database_path": "database/Photos.sqlite",
 			"warning":       "Private Photos Core Data schema; use as fallback evidence, not as the only source strategy.",
 		},

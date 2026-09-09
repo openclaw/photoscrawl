@@ -22,6 +22,17 @@ import (
 )
 
 func ExportOriginalResource(ctx context.Context, localIdentifier, destinationPath string, allowNetwork bool) error {
+	return exportOriginalResource(ctx, localIdentifier, destinationPath, allowNetwork, 0)
+}
+
+func ExportOriginalResourceLimited(ctx context.Context, localIdentifier, destinationPath string, allowNetwork bool, maxBytes int64) error {
+	if maxBytes <= 0 {
+		return errors.New("original export byte limit must be positive")
+	}
+	return exportOriginalResource(ctx, localIdentifier, destinationPath, allowNetwork, maxBytes)
+}
+
+func exportOriginalResource(ctx context.Context, localIdentifier, destinationPath string, allowNetwork bool, maxBytes int64) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -37,6 +48,7 @@ func ExportOriginalResource(ctx context.Context, localIdentifier, destinationPat
 		return errors.New("create original export control")
 	}
 	defer C.photoscrawl_export_release(control)
+	C.photoscrawl_export_set_limit(control, C.int64_t(maxBytes))
 	canceled := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
 		C.photoscrawl_export_cancel(control)

@@ -156,6 +156,10 @@ values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	}
 	defer stmts.close()
 	c.stmts = stmts
+	identities, err := newAssetIdentityResolver(ctx, tx, sourceID)
+	if err != nil {
+		return fmt.Errorf("load asset identities: %w", err)
+	}
 
 	for _, asset := range c.snapshot.Assets {
 		if strings.TrimSpace(asset.LocalIdentifier) == "" {
@@ -165,7 +169,10 @@ values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		if err != nil {
 			return err
 		}
-		assetID := stableID("asset", sourceID, asset.LocalIdentifier)
+		assetID, canonicalIdentifier, err := identities.resolve(c.snapshot.Provider, asset)
+		if err != nil {
+			return err
+		}
 		fingerprint, err := assetFingerprint(asset)
 		if err != nil {
 			return err
@@ -189,9 +196,10 @@ values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			c.result.AssetsRestored++
 		}
 		needsClassification := !seenBefore || previousFingerprint != fingerprint || previouslyDeleted
-		if err := c.upsertAsset(ctx, tx, sourceID, snapshotID, assetID, fingerprint, deleted, needsClassification, asset); err != nil {
+		if err := c.upsertAsset(ctx, tx, sourceID, snapshotID, assetID, canonicalIdentifier, fingerprint, deleted, needsClassification, asset); err != nil {
 			return err
 		}
+		identities.remember(assetID, canonicalIdentifier, c.snapshot.Provider, asset)
 	}
 
 	var missing int
@@ -221,12 +229,12 @@ where source_library_id = ? and last_seen_snapshot_id <> ?
 	return nil
 }
 
-func (c *crawlImporter) upsertAsset(ctx context.Context, tx *sql.Tx, sourceID, snapshotID, assetID, fingerprint string, deleted, needsClassification bool, asset photos.Asset) error {
+func (c *crawlImporter) upsertAsset(ctx context.Context, tx *sql.Tx, sourceID, snapshotID, assetID, canonicalIdentifier, fingerprint string, deleted, needsClassification bool, asset photos.Asset) error {
 	metadataJSON, err := jsonText(asset.Metadata)
 	if err != nil {
 		return err
 	}
-	assetArgs := []any{assetID, asset.LocalIdentifier, asset.MediaType, asset.MediaSubtypes, asset.CreationDate, asset.ModificationDate, asset.AddedDate, asset.TimezoneName, asset.Width, asset.Height, asset.DurationSeconds, boolInt(asset.Favorite), boolInt(asset.Hidden), asset.BurstIdentifier, boolInt(asset.RepresentsBurst), sourceID, metadataJSON}
+	assetArgs := []any{assetID, canonicalIdentifier, asset.MediaType, asset.MediaSubtypes, asset.CreationDate, asset.ModificationDate, asset.AddedDate, asset.TimezoneName, asset.Width, asset.Height, asset.DurationSeconds, boolInt(asset.Favorite), boolInt(asset.Hidden), asset.BurstIdentifier, boolInt(asset.RepresentsBurst), sourceID, metadataJSON}
 	assetStatement := c.stmts.assetLive
 	if deleted {
 		assetStatement = c.stmts.assetTombstone

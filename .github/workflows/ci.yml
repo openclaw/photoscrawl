@@ -55,3 +55,46 @@ jobs:
           mkdir -p bin
           GOWORK=off go build -trimpath -ldflags "-X main.version=ci" -o bin/photoscrawl ./cmd/photoscrawl
           test "$(bin/photoscrawl --version)" = "ci"
+
+  vulnerabilities:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      GOWORK: "off"
+      GOENV: "off"
+      GOTOOLCHAIN: "local"
+      GOMAXPROCS: "2"
+      GOFLAGS: "-mod=readonly -p=1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.1"
+          cache: true
+
+      - name: Verify structured scan evaluator
+        run: python3 .github/scripts/test_vulncheck.py
+
+      - name: Stage public modules, scanner and frozen advisories
+        run: |
+          go version
+          test "$(go env GOVERSION)" = "go1.27.1"
+          go mod download
+          GOBIN="$RUNNER_TEMP/vulntools" go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          python3 .github/scripts/vulncheck.py stage "$RUNNER_TEMP/vulndb"
+
+      - name: Scan native configuration
+        run: python3 .github/scripts/vulncheck.py scan "$RUNNER_TEMP/vulndb" "$RUNNER_TEMP/vulntools/govulncheck" "$RUNNER_TEMP/vuln-preferred" go1.27.1 darwin
+
+      - name: Retain complete advisory evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: darwin-vulnerability-evidence
+          path: |
+            ${{ runner.temp }}/vulndb
+            ${{ runner.temp }}/vuln-preferred
+          if-no-files-found: error

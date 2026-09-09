@@ -1,6 +1,7 @@
 package photos
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -27,6 +28,13 @@ func TestSQLiteSnapshotProviderReadsSyntheticLibrary(t *testing.T) {
 	if err := createSyntheticPhotosDB(db.DB()); err != nil {
 		t.Fatal(err)
 	}
+	before := map[string][]byte{}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		before[suffix], err = os.ReadFile(dbPath + suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	snapshot, err := SQLiteSnapshotProvider{}.Snapshot(context.Background(), libraryPath)
 	if err != nil {
@@ -34,6 +42,15 @@ func TestSQLiteSnapshotProviderReadsSyntheticLibrary(t *testing.T) {
 	}
 	if snapshot.Provider != "photos_sqlite_snapshot" {
 		t.Fatalf("provider = %q", snapshot.Provider)
+	}
+	if snapshot.Metadata["snapshot"] != "verified_private_sqlite_copy" {
+		t.Fatalf("snapshot evidence = %#v", snapshot.Metadata)
+	}
+	for suffix, want := range before {
+		got, err := os.ReadFile(dbPath + suffix)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("source sidecar %q changed: %v", suffix, err)
+		}
 	}
 	if len(snapshot.Assets) != 2 {
 		t.Fatalf("assets = %d, want 2", len(snapshot.Assets))

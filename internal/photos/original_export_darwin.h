@@ -1,7 +1,10 @@
 #ifndef PHOTOSCRAWL_ORIGINAL_EXPORT_H
 #define PHOTOSCRAWL_ORIGINAL_EXPORT_H
 
+#include <stdint.h>
+
 void *photoscrawl_export_create(void);
+void photoscrawl_export_set_limit(void *control, int64_t bytes);
 void photoscrawl_export_cancel(void *control);
 int photoscrawl_export_cancelled(void *control);
 void photoscrawl_export_release(void *control);
