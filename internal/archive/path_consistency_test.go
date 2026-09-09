@@ -16,7 +16,10 @@ func TestArchiveWhitespaceTargetBoundAlias(t *testing.T) {
 	for _, caller := range []string{"archive", "apple"} {
 		t.Run(caller, func(t *testing.T) {
 			ctx := context.Background()
-			root := t.TempDir()
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
 			ordinary := filepath.Join(root, "ordinary.db")
 			target := filepath.Join(root, "bound.db ")
 			alias := filepath.Join(root, "alias.db")
@@ -81,7 +84,10 @@ func TestArchiveWhitespaceTargetForeignRefusal(t *testing.T) {
 		for _, caller := range []string{"archive", "init", "apple"} {
 			t.Run(journal+"/"+caller, func(t *testing.T) {
 				ctx := context.Background()
-				root := t.TempDir()
+				root, err := filepath.EvalSymlinks(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
 				target := filepath.Join(root, "foreign.db ")
 				alias := filepath.Join(root, "alias.db")
 				writer, err := sql.Open("sqlite", target)

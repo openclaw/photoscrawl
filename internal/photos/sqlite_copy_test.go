@@ -18,7 +18,11 @@ func TestCopySQLiteWhitespaceSource(t *testing.T) {
 		for _, spelling := range []string{"direct", "symlink"} {
 			t.Run(journal+"/"+spelling, func(t *testing.T) {
 				ctx := context.Background()
-				source := filepath.Join(t.TempDir(), "source.db ")
+				root, err := filepath.EvalSymlinks(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				source := filepath.Join(root, "source.db ")
 				writer, err := sql.Open("sqlite", source)
 				if err != nil {
 					t.Fatal(err)
@@ -180,7 +184,11 @@ func requireCopySidecarsAbsent(t *testing.T, path string) {
 
 func TestCopySQLitePrivateRollbackRecovery(t *testing.T) {
 	ctx := context.Background()
-	source := filepath.Join(t.TempDir(), "source.db ")
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "source.db ")
 	writer, err := sql.Open("sqlite", source)
 	if err != nil {
 		t.Fatal(err)
