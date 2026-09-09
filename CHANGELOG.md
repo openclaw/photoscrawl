@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Dependencies
+
+- Update CrawlKit to v0.15.0 while preserving the Go 1.27.0 minimum and preferred Go 1.27.1 toolchain; verify complete frozen-database vulnerability results in macOS CI.
+
 ### Archive safety
 
 - Scope Apple observation replacement to the selected archived library, including valid empty libraries, and reject ambiguous bindings.
