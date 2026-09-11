@@ -2,23 +2,17 @@
 
 ## Unreleased
 
-### Dependencies
+**Highlights:** Safer archive updates preserve library bindings and asset identities, and Apple imports avoid a redundant temporary archive copy.
 
-- Update CrawlKit to v0.15.0 while preserving the Go 1.27.0 minimum and preferred Go 1.27.1 toolchain; verify complete frozen-database vulnerability results in macOS CI.
-
-### Archive safety
-
-- Preserve the selected SQLite data during private verification when the resolved source filename ends in whitespace.
-- Scope Apple observation replacement to the selected archived library, including valid empty libraries, and reject ambiguous bindings.
-- Preserve asset IDs and full native identifiers across evidence-backed PhotoKit/SQLite fallback changes within one library; reject ambiguous historical duplicates without merging or rekeying them.
-- Read fallback SQLite library metadata from a verified private snapshot without opening the live Photos database.
-- Reject foreign, unsupported, or hardlinked archive databases before writable access changes schema, permissions, or sidecars.
-- Refuse orphan SQLite sidecars beside a zero-byte archive before initialization.
-- Validate the same normalized archive filename SQLite opens when a path contains a symlink followed by `..`.
-- Normalize trailing whitespace before archive and library-binding checks, and reject unstable archive filenames before initialization creates directories.
-- Bound photo-card preparation attempts and downloaded originals (256 MiB each, 512 MiB per run); enforce the byte limit while streaming and remove owned temporary originals after preparation.
-
+- Scope Apple observation replacement to the selected archived library, including valid empty libraries, and reject ambiguous bindings; thanks @vincentkoc.
+- Preserve asset IDs and full native identifiers across evidence-backed PhotoKit/SQLite fallback changes within one library; reject ambiguous historical duplicates without merging or rekeying them; thanks @vincentkoc.
+- Reuse one verified private archive snapshot for Apple library-binding and schema checks, reducing duplicate temporary copying during Apple imports; ordinary writable archive opens still require a complete copy; thanks @vincentkoc.
+- Reject foreign, unsupported, or hardlinked archive databases before writable access changes schema, permissions, or sidecars, and refuse orphan sidecars beside an uninitialized archive; thanks @vincentkoc.
+- Validate the filename SQLite actually opens, including symlinks followed by `..` and trailing whitespace, preserve the selected source during private verification, and reject unstable archive filenames before creating directories; thanks @vincentkoc.
+- Read fallback SQLite library metadata from a verified private snapshot without opening the live Photos database; thanks @vincentkoc.
+- Bound photo-card preparation attempts and downloaded originals (256 MiB each, 512 MiB per run); enforce the byte limit while streaming and remove owned temporary originals after preparation; thanks @vincentkoc.
 - Name the SQLite source in snapshot cancellation errors so an aborted Photos snapshot reports which database it was copying.
+- Update CrawlKit to v0.16.1, the SQLite libc runtime to v1.75.7, and x/sys to v0.48.0; preserve the Go 1.27.0 minimum and preferred Go 1.27.1 toolchain, and refresh deadcode, govulncheck, and CI artifact uploads.
 
 ## 0.3.2 - 2026-09-05
 

@@ -236,7 +236,7 @@ def scan(database, scanner, output, version, platform):
         raise ValueError("frozen advisory bytes changed during scan")
     summary = evaluate((output / "scan.json").read_text(), {
         "protocol_version": "v1.0.0", "scanner_name": "govulncheck",
-        "scanner_version": "v1.7.0", "db": db_uri,
+        "scanner_version": "v1.8.0", "db": db_uri,
         "db_last_modified": frozen["database"]["modified"],
         "go_version": version, "scan_level": "symbol", "scan_mode": "source",
     }, packages)

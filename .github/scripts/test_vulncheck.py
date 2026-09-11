@@ -6,7 +6,7 @@ import vulncheck
 
 class StructuredScanTest(unittest.TestCase):
     def setUp(self):
-        self.expected = {"scanner_version": "v1.7.0", "go_version": "go1.27.1"}
+        self.expected = {"scanner_version": "v1.8.0", "go_version": "go1.27.1"}
         self.packages = {
             "roots": ["example.invalid/app"],
             "modules": {"example.invalid/app": "", "stdlib": "v1.27.1"},
