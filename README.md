@@ -125,6 +125,11 @@ places, people, camera/source clues, and photo types. Both the current
 import is an authoritative refresh of only the Apple-derived observation rows;
 it never writes to the Photos library or uploads the source databases.
 
+Before writing, Apple imports share one verified private archive copy for schema
+and library-binding checks. Writable archive opens still require temporary disk
+space for a complete archive copy; the shared check avoids a second concurrent
+copy during Apple imports.
+
 Apple's Photos database is a private schema and can change between macOS
 releases. The importer validates every required table and column before it
 writes observations, so an unknown schema fails closed instead of silently
