@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	"github.com/openclaw/crawlkit/store"
-	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
 type appleAssetScope struct {
@@ -69,27 +68,12 @@ func libraryComparisonPath(path string) (string, error) {
 }
 
 func openAppleArchive(ctx context.Context, path, libraryPath string) (*store.Store, error) {
-	sqlitePath, err := archiveFilename(path)
-	if err != nil {
-		return nil, err
-	}
-	// Check the binding on a private copy before a writable open can migrate or
-	// change permissions. The transaction resolves it again before replacement.
-	private, cleanup, err := photos.CopySQLite(ctx, sqlitePath, "photoscrawl-library-preflight-")
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-	db, err := store.OpenReadOnly(ctx, private)
-	if err != nil {
-		return nil, err
-	}
-	_, bindingErr := libraryIdentity(ctx, db.DB(), libraryPath)
-	_ = db.Close()
-	if bindingErr != nil {
-		return nil, bindingErr
-	}
-	return openArchiveStore(ctx, sqlitePath)
+	// Share the schema preflight's private snapshot before any writable open.
+	// The transaction still resolves the binding again before replacement.
+	return openArchiveStoreWithValidation(ctx, path, func(db *sql.DB) error {
+		_, err := libraryIdentity(ctx, db, libraryPath)
+		return err
+	})
 }
 
 func archiveAssetMap(ctx context.Context, tx *sql.Tx, libraryPath string) (appleAssetScope, error) {

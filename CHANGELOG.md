@@ -8,6 +8,7 @@
 
 ### Archive safety
 
+- Reuse one verified private archive snapshot for Apple library-binding and schema checks, reducing duplicate temporary copying during Apple imports; ordinary archive preflight still copies the archive.
 - Preserve the selected SQLite data during private verification when the resolved source filename ends in whitespace.
 - Scope Apple observation replacement to the selected archived library, including valid empty libraries, and reject ambiguous bindings.
 - Preserve asset IDs and full native identifiers across evidence-backed PhotoKit/SQLite fallback changes within one library; reject ambiguous historical duplicates without merging or rekeying them.
