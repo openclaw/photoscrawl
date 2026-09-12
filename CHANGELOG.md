@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 - 2026-09-11
 
 **Highlights:** Safer archive updates preserve library bindings and asset identities, and Apple imports avoid a redundant temporary archive copy.
 
