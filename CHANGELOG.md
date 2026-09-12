@@ -12,7 +12,7 @@
 - Read fallback SQLite library metadata from a verified private snapshot without opening the live Photos database; thanks @vincentkoc.
 - Bound photo-card preparation attempts and downloaded originals (256 MiB each, 512 MiB per run); enforce the byte limit while streaming and remove owned temporary originals after preparation; thanks @vincentkoc.
 - Name the SQLite source in snapshot cancellation errors so an aborted Photos snapshot reports which database it was copying.
-- Update CrawlKit to v0.16.1, the SQLite libc runtime to v1.75.7, and x/sys to v0.48.0; preserve the Go 1.27.0 minimum and preferred Go 1.27.1 toolchain, and refresh deadcode, govulncheck, and CI artifact uploads.
+- Update CrawlKit to v0.16.1, the SQLite libc runtime to v1.75.7, and x/sys to v0.48.0; preserve the Go 1.27.0 minimum and preferred Go 1.27.1 toolchain, refresh deadcode, govulncheck, and CI artifact uploads, and retry transient advisory-download failures without skipping scans.
 
 ## 0.3.2 - 2026-09-05
 

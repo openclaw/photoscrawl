@@ -1,7 +1,65 @@
+import http.client
+import io
 import json
 import unittest
+from unittest import mock
+import urllib.error
 
 import vulncheck
+
+
+class AdvisoryDownloadTest(unittest.TestCase):
+    @mock.patch.object(vulncheck.time, "sleep")
+    @mock.patch.object(vulncheck.urllib.request, "urlopen")
+    def test_transport_timeout_retries_complete_download(self, urlopen, sleep):
+        urlopen.side_effect = [urllib.error.URLError(TimeoutError("timed out")), io.BytesIO(b"complete")]
+        self.assertEqual(vulncheck.public_bytes("index/db.json.gz"), b"complete")
+        self.assertEqual(urlopen.call_count, 2)
+        urlopen.assert_called_with("https://vuln.go.dev/index/db.json.gz", timeout=30)
+        sleep.assert_called_once_with(1)
+
+    @mock.patch.object(vulncheck.time, "sleep")
+    @mock.patch.object(vulncheck.urllib.request, "urlopen")
+    def test_interrupted_read_restarts_download(self, urlopen, sleep):
+        for error in (TimeoutError("read timed out"), ConnectionResetError("reset"), http.client.IncompleteRead(b"partial", 100)):
+            with self.subTest(error=type(error).__name__):
+                urlopen.reset_mock()
+                response = mock.MagicMock()
+                response.__enter__.return_value.read.side_effect = error
+                urlopen.side_effect = [response, io.BytesIO(b"complete")]
+                self.assertEqual(vulncheck.public_bytes("ID/GO-2099-0001.json"), b"complete")
+                self.assertEqual(urlopen.call_count, 2)
+                response.__exit__.assert_called_once()
+
+    @mock.patch.object(vulncheck.time, "sleep")
+    @mock.patch.object(vulncheck.urllib.request, "urlopen")
+    def test_temporary_http_errors_retry(self, urlopen, sleep):
+        for code in (408, 429, 500, 503):
+            with self.subTest(code=code):
+                urlopen.reset_mock()
+                urlopen.side_effect = [urllib.error.HTTPError("https://vuln.go.dev", code, "temporary", {}, None), io.BytesIO(b"complete")]
+                self.assertEqual(vulncheck.public_bytes("index/db.json.gz"), b"complete")
+                self.assertEqual(urlopen.call_count, 2)
+
+    @mock.patch.object(vulncheck.time, "sleep")
+    @mock.patch.object(vulncheck.urllib.request, "urlopen")
+    def test_permanent_http_failure_is_not_retried(self, urlopen, sleep):
+        urlopen.side_effect = urllib.error.HTTPError("https://vuln.go.dev", 404, "missing", {}, None)
+        with self.assertRaises(urllib.error.HTTPError):
+            vulncheck.public_bytes("ID/GO-2099-0001.json")
+        self.assertEqual(urlopen.call_count, 1)
+        sleep.assert_not_called()
+
+    @mock.patch.object(vulncheck.time, "sleep")
+    @mock.patch.object(vulncheck.urllib.request, "urlopen")
+    def test_repeated_timeout_fails_after_three_attempts(self, urlopen, sleep):
+        failure = urllib.error.URLError(TimeoutError("timed out"))
+        urlopen.side_effect = failure
+        with self.assertRaises(urllib.error.URLError) as result:
+            vulncheck.public_bytes("index/db.json.gz")
+        self.assertIs(result.exception, failure)
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [mock.call(1), mock.call(2)])
 
 
 class StructuredScanTest(unittest.TestCase):
