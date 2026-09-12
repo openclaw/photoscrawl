@@ -12,11 +12,15 @@ import (
 )
 
 func openArchiveStore(ctx context.Context, path string) (*store.Store, error) {
+	return openArchiveStoreWithValidation(ctx, path, nil)
+}
+
+func openArchiveStoreWithValidation(ctx context.Context, path string, validate func(*sql.DB) error) (*store.Store, error) {
 	sqlitePath, err := archiveFilename(path)
 	if err != nil {
 		return nil, err
 	}
-	if err := preflightArchive(ctx, sqlitePath); err != nil {
+	if err := preflightArchive(ctx, sqlitePath, validate); err != nil {
 		return nil, err
 	}
 	db, err := store.Open(ctx, store.Options{Path: sqlitePath})
@@ -64,11 +68,11 @@ func openArchiveStore(ctx context.Context, path string) (*store.Store, error) {
 	return db, nil
 }
 
-func preflightArchive(ctx context.Context, path string) error {
+func preflightArchive(ctx context.Context, path string, validate func(*sql.DB) error) error {
 	// Reject accidental foreign-file selection without opening it writable.
 	// As with SQLite's pathname API, callers must keep the path stable through open.
 	info, err := os.Stat(path)
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, os.ErrNotExist) && validate == nil {
 		return inspectArchiveSidecars(path, true)
 	}
 	if err != nil {
@@ -114,6 +118,11 @@ func preflightArchive(ctx context.Context, path string) error {
 	}
 	if !isArchive && (!empty || current != 0) {
 		return errors.New("database is not a photoscrawl archive")
+	}
+	if validate != nil {
+		if err := validate(db.DB()); err != nil {
+			return err
+		}
 	}
 	after, err := os.Stat(path)
 	if err != nil {
