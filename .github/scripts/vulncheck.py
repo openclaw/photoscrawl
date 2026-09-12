@@ -5,12 +5,15 @@ import concurrent.futures
 import datetime
 import gzip
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 
 
@@ -37,8 +40,18 @@ def command(*args):
 
 
 def public_bytes(path):
-    with urllib.request.urlopen("https://vuln.go.dev/" + path, timeout=30) as response:
-        return response.read()
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen("https://vuln.go.dev/" + path, timeout=30) as response:
+                return response.read()
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead) as error:
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+                if error.code not in (408, 429) and not 500 <= error.code < 600:
+                    raise
+            if attempt == 2:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def graph():
@@ -236,7 +249,7 @@ def scan(database, scanner, output, version, platform):
         raise ValueError("frozen advisory bytes changed during scan")
     summary = evaluate((output / "scan.json").read_text(), {
         "protocol_version": "v1.0.0", "scanner_name": "govulncheck",
-        "scanner_version": "v1.7.0", "db": db_uri,
+        "scanner_version": "v1.8.0", "db": db_uri,
         "db_last_modified": frozen["database"]["modified"],
         "go_version": version, "scan_level": "symbol", "scan_mode": "source",
     }, packages)

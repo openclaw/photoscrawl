@@ -41,7 +41,7 @@ jobs:
       - name: Deadcode
         run: |
           output_file=$(mktemp)
-          GOWORK=off go run golang.org/x/tools/cmd/deadcode@v0.49.0 -test ./... > "$output_file"
+          GOWORK=off go run golang.org/x/tools/cmd/deadcode@v0.50.0 -test ./... > "$output_file"
           if [ -s "$output_file" ]; then
             cat "$output_file"
             exit 1
@@ -83,7 +83,7 @@ jobs:
           go version
           test "$(go env GOVERSION)" = "go1.27.1"
           go mod download
-          GOBIN="$RUNNER_TEMP/vulntools" go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          GOBIN="$RUNNER_TEMP/vulntools" go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           python3 .github/scripts/vulncheck.py stage "$RUNNER_TEMP/vulndb"
 
       - name: Scan native configuration
@@ -91,7 +91,7 @@ jobs:
 
       - name: Retain complete advisory evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: darwin-vulnerability-evidence
           path: |
