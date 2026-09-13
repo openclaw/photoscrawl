@@ -517,7 +517,7 @@ int photoscrawl_export_image_preview(const char *localIdentifier, const char *de
       return 0;
     }
 
-    PHAuthorizationStatus status = pcEnsureAuthorized();
+    PHAuthorizationStatus status = pcEnsureAuthorized(NULL);
     if (status != PHAuthorizationStatusAuthorized && status != PHAuthorizationStatusLimited) {
       pcSetError(errorOut, [NSString stringWithFormat:@"Photos access is %@ for this process", pcAuthorizationStatus(status)]);
       return 0;
