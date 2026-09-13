@@ -48,6 +48,11 @@ make check
 make snapshot
 ```
 
+CI runs `make check` on native macOS with the preferred Go toolchain and on
+Linux without CGO using the declared Go 1.27.0 minimum. The portable check covers
+archive logic and synthetic providers; release builds remain macOS-only.
+`devenv shell verify` runs the same gates.
+
 `make snapshot` builds local GoReleaser artifacts without credentials and never
 publishes them.
 
