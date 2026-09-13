@@ -3,12 +3,14 @@ package archive
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
 	_ "image/png"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -292,9 +294,18 @@ func decodeSheetImage(ctx context.Context, outputDir, sourcePath string, rendere
 		return nil, err
 	}
 	decoded, format, decodeErr := image.Decode(file)
+	orientation := 1
+	if decodeErr == nil && format == "jpeg" {
+		if _, err := file.Seek(0, io.SeekStart); err == nil {
+			orientation = readJPEGOrientation(file)
+		}
+	}
 	closeErr := file.Close()
 	if decodeErr == nil && (format == "jpeg" || format == "png") {
-		return decoded, closeErr
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		return applyEXIFOrientation(decoded, orientation), nil
 	}
 	if closeErr != nil {
 		return nil, closeErr
@@ -327,6 +338,129 @@ func decodeSheetImage(ctx context.Context, outputDir, sourcePath string, rendere
 		return nil, fmt.Errorf("renderer returned unsupported image format %q", format)
 	}
 	return decoded, nil
+}
+
+func readJPEGOrientation(reader io.Reader) int {
+	var signature [2]byte
+	if _, err := io.ReadFull(reader, signature[:]); err != nil || signature != [2]byte{0xff, 0xd8} {
+		return 1
+	}
+	for {
+		var markerPrefix [1]byte
+		if _, err := io.ReadFull(reader, markerPrefix[:]); err != nil {
+			return 1
+		}
+		if markerPrefix[0] != 0xff {
+			continue
+		}
+		var marker [1]byte
+		if _, err := io.ReadFull(reader, marker[:]); err != nil {
+			return 1
+		}
+		for marker[0] == 0xff {
+			if _, err := io.ReadFull(reader, marker[:]); err != nil {
+				return 1
+			}
+		}
+		if marker[0] == 0xd9 || marker[0] == 0xda {
+			return 1
+		}
+		if marker[0] == 0x01 || marker[0] >= 0xd0 && marker[0] <= 0xd7 {
+			continue
+		}
+		var sizeBytes [2]byte
+		if _, err := io.ReadFull(reader, sizeBytes[:]); err != nil {
+			return 1
+		}
+		size := int(binary.BigEndian.Uint16(sizeBytes[:]))
+		if size < 2 {
+			return 1
+		}
+		payload := make([]byte, size-2)
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			return 1
+		}
+		if marker[0] == 0xe1 {
+			if orientation := exifOrientation(payload); orientation != 1 {
+				return orientation
+			}
+		}
+	}
+}
+
+func exifOrientation(payload []byte) int {
+	if len(payload) < 14 || string(payload[:6]) != "Exif\x00\x00" {
+		return 1
+	}
+	tiff := payload[6:]
+	var order binary.ByteOrder
+	switch string(tiff[:2]) {
+	case "II":
+		order = binary.LittleEndian
+	case "MM":
+		order = binary.BigEndian
+	default:
+		return 1
+	}
+	if order.Uint16(tiff[2:4]) != 42 {
+		return 1
+	}
+	offset := int(order.Uint32(tiff[4:8]))
+	if offset < 0 || offset+2 > len(tiff) {
+		return 1
+	}
+	count := int(order.Uint16(tiff[offset : offset+2]))
+	for index := 0; index < count; index++ {
+		entry := offset + 2 + index*12
+		if entry < 0 || entry+12 > len(tiff) {
+			return 1
+		}
+		if order.Uint16(tiff[entry:entry+2]) != 0x0112 || order.Uint16(tiff[entry+2:entry+4]) != 3 || order.Uint32(tiff[entry+4:entry+8]) < 1 {
+			continue
+		}
+		value := int(order.Uint16(tiff[entry+8 : entry+10]))
+		if value >= 1 && value <= 8 {
+			return value
+		}
+		return 1
+	}
+	return 1
+}
+
+func applyEXIFOrientation(source image.Image, orientation int) image.Image {
+	if orientation < 2 || orientation > 8 {
+		return source
+	}
+	bounds := source.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	destinationWidth, destinationHeight := width, height
+	if orientation >= 5 {
+		destinationWidth, destinationHeight = height, width
+	}
+	destination := image.NewRGBA(image.Rect(0, 0, destinationWidth, destinationHeight))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			destinationX, destinationY := x, y
+			switch orientation {
+			case 2:
+				destinationX = width - 1 - x
+			case 3:
+				destinationX, destinationY = width-1-x, height-1-y
+			case 4:
+				destinationY = height - 1 - y
+			case 5:
+				destinationX, destinationY = y, x
+			case 6:
+				destinationX, destinationY = height-1-y, x
+			case 7:
+				destinationX, destinationY = height-1-y, width-1-x
+			case 8:
+				destinationX, destinationY = y, width-1-x
+			}
+			destination.Set(destinationX, destinationY, source.At(bounds.Min.X+x, bounds.Min.Y+y))
+		}
+	}
+	return destination
 }
 
 func placeholderImage() image.Image {

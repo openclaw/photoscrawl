@@ -500,13 +500,52 @@ void *photoscrawl_copy_original_resource(const char *localIdentifier, void *expo
   return [resource retain];
 }
 
-int photoscrawl_export_image_preview(const char *localIdentifier, const char *destinationPath, int maxDimension, int allowNetwork, char **errorOut) {
+@interface PCPreviewRequest : NSObject {
+@public
+  dispatch_semaphore_t completed;
+  BOOL finished;
+  NSImage *preview;
+  NSDictionary *resultInfo;
+}
+- (void)complete:(NSImage *)result info:(NSDictionary *)info;
+@end
+
+@implementation PCPreviewRequest
+- (id)init {
+  if ((self = [super init])) {
+    completed = dispatch_semaphore_create(0);
+  }
+  return self;
+}
+- (void)dealloc {
+  [preview release];
+  [resultInfo release];
+  dispatch_release(completed);
+  [super dealloc];
+}
+- (void)complete:(NSImage *)result info:(NSDictionary *)info {
+  if ([info[PHImageResultIsDegradedKey] boolValue]) return;
+  @synchronized(self) {
+    if (finished) return;
+    preview = [result retain];
+    resultInfo = [info retain];
+    finished = YES;
+    dispatch_semaphore_signal(completed);
+  }
+}
+@end
+
+int photoscrawl_export_image_preview(const char *localIdentifier, const char *destinationPath, int maxDimension, int allowNetwork, void *exportControl, char **errorOut) {
   @autoreleasepool {
     if (errorOut != NULL) {
       *errorOut = NULL;
     }
     if (!@available(macOS 10.15, *)) {
       pcSetError(errorOut, @"PhotoKit preview export requires macOS 10.15 or newer");
+      return 0;
+    }
+    if (photoscrawl_export_cancelled(exportControl)) {
+      pcSetError(errorOut, @"PhotoKit preview request was cancelled");
       return 0;
     }
 
@@ -544,28 +583,43 @@ int photoscrawl_export_image_preview(const char *localIdentifier, const char *de
     CGSize targetSize = CGSizeMake(MAX(1.0, floor(width * scale)), MAX(1.0, floor(height * scale)));
 
     PHImageRequestOptions *options = [[PHImageRequestOptions alloc] init];
-    options.synchronous = YES;
+    options.synchronous = NO;
     options.deliveryMode = PHImageRequestOptionsDeliveryModeHighQualityFormat;
     options.resizeMode = PHImageRequestOptionsResizeModeExact;
     options.networkAccessAllowed = allowNetwork ? YES : NO;
 
-    __block NSImage *preview = nil;
-    __block NSDictionary *resultInfo = nil;
-    [[PHImageManager defaultManager] requestImageForAsset:asset
-                                              targetSize:targetSize
-                                             contentMode:PHImageContentModeAspectFit
-                                                 options:options
-                                           resultHandler:^(NSImage *result, NSDictionary *info) {
-      [preview release];
-      preview = [result retain];
-      [resultInfo release];
-      resultInfo = [info retain];
+    PCPreviewRequest *request = [[PCPreviewRequest alloc] init];
+    PHImageRequestID requestID = [[PHImageManager defaultManager] requestImageForAsset:asset
+                                                                                targetSize:targetSize
+                                                                               contentMode:PHImageContentModeAspectFit
+                                                                                   options:options
+                                                                             resultHandler:^(NSImage *result, NSDictionary *info) {
+      [request complete:result info:info];
     }];
+    [options release];
+    photoscrawl_export_register_image_request(exportControl, requestID);
+    if (requestID == PHInvalidImageRequestID) {
+      [request complete:nil info:nil];
+    }
+    dispatch_semaphore_wait(request->completed, DISPATCH_TIME_FOREVER);
+    NSImage *preview = nil;
+    NSDictionary *resultInfo = nil;
+    @synchronized(request) {
+      preview = [request->preview retain];
+      resultInfo = [request->resultInfo retain];
+    }
+    [request release];
 
     NSError *requestError = [resultInfo[PHImageErrorKey] retain];
     BOOL cancelled = [resultInfo[PHImageCancelledKey] boolValue];
     BOOL inCloud = [resultInfo[PHImageResultIsInCloudKey] boolValue];
     [resultInfo release];
+    if (photoscrawl_export_cancelled(exportControl)) {
+      [requestError release];
+      [preview release];
+      pcSetError(errorOut, @"PhotoKit preview request was cancelled");
+      return 0;
+    }
     if (requestError != nil) {
       pcSetError(errorOut, [NSString stringWithFormat:@"request PhotoKit preview: %@", requestError.localizedDescription]);
       [requestError release];

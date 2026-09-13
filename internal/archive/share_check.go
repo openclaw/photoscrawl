@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 type ShareCheckOptions struct {
@@ -65,6 +66,8 @@ var blockedPrivacyCategories = []privacyCategory{
 
 var privacyClauseSeparator = regexp.MustCompile(`(?i)\s*,\s*|\s+\band\b\s+`)
 
+const privacyAssessmentChunk = 500
+
 var privacyNoteTerms = []string{
 	"baby",
 	"babies",
@@ -107,10 +110,7 @@ func ShareCheck(ctx context.Context, paths Paths, options ShareCheckOptions) (Sh
 		byID[asset.LocalIdentifier] = asset
 		byID[normalizeAssetLocalIdentifier(asset.LocalIdentifier)] = asset
 	}
-	result := ShareCheckResult{
-		Assets: []ShareCheckAsset{},
-		Counts: map[string]int{"pass": 0, "blocked": 0, "unreviewed": 0},
-	}
+	selected := make([]fullAsset, 0, len(ids))
 	seen := map[string]bool{}
 	for _, requestedID := range ids {
 		asset, ok := byID[requestedID]
@@ -121,7 +121,18 @@ func ShareCheck(ctx context.Context, paths Paths, options ShareCheckOptions) (Sh
 			continue
 		}
 		seen[asset.ID] = true
-		row, err := shareCheckAsset(ctx, db.DB(), asset)
+		selected = append(selected, asset)
+	}
+	assessed, err := loadPrivacyAssessments(ctx, db.DB(), selected)
+	if err != nil {
+		return ShareCheckResult{}, err
+	}
+	result := ShareCheckResult{
+		Assets: []ShareCheckAsset{},
+		Counts: map[string]int{"pass": 0, "blocked": 0, "unreviewed": 0},
+	}
+	for _, asset := range selected {
+		row, err := shareCheckAsset(ctx, db.DB(), asset, assessed[asset.ID])
 		if err != nil {
 			return ShareCheckResult{}, err
 		}
@@ -131,7 +142,7 @@ func ShareCheck(ctx context.Context, paths Paths, options ShareCheckOptions) (Sh
 	return result, nil
 }
 
-func shareCheckAsset(ctx context.Context, db *sql.DB, asset fullAsset) (ShareCheckAsset, error) {
+func shareCheckAsset(ctx context.Context, db *sql.DB, asset fullAsset, privacyAssessed bool) (ShareCheckAsset, error) {
 	row := ShareCheckAsset{
 		AssetRow: asset.AssetRow,
 		Status:   "pass",
@@ -187,7 +198,94 @@ func shareCheckAsset(ctx context.Context, db *sql.DB, asset fullAsset) (ShareChe
 		row.Reasons = append(row.Reasons, "content classification not completed")
 		return row, nil
 	}
+	if !privacyAssessed {
+		row.Status = "unreviewed"
+		row.Reasons = append(row.Reasons, "privacy not assessed")
+	}
 	return row, nil
+}
+
+type privacyAssessmentEvidence struct {
+	assessed     bool
+	classifiedAt time.Time
+	dateText     string
+	id           string
+}
+
+func loadPrivacyAssessments(ctx context.Context, db *sql.DB, assets []fullAsset) (map[string]bool, error) {
+	latest := map[string]privacyAssessmentEvidence{}
+	for start := 0; start < len(assets); start += privacyAssessmentChunk {
+		end := min(start+privacyAssessmentChunk, len(assets))
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", end-start), ",")
+		args := make([]any, 0, end-start+2)
+		args = append(args, "content_classification", localModelClassifierSource)
+		for _, asset := range assets[start:end] {
+			args = append(args, asset.ID)
+		}
+		rows, err := db.QueryContext(ctx, `
+select id, asset_id, value_json
+from evidence_ref
+where evidence_kind = ? and source = ? and asset_id in (`+placeholders+`)
+`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("load privacy assessments: %w", err)
+		}
+		for rows.Next() {
+			var id, assetID, raw string
+			if err := rows.Scan(&id, &assetID, &raw); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			candidate := parsePrivacyAssessmentEvidence(id, raw)
+			current, ok := latest[assetID]
+			if !ok || privacyAssessmentLater(candidate, current) {
+				latest[assetID] = candidate
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	assessed := make(map[string]bool, len(latest))
+	for assetID, evidence := range latest {
+		assessed[assetID] = evidence.assessed
+	}
+	return assessed, nil
+}
+
+func parsePrivacyAssessmentEvidence(id, raw string) privacyAssessmentEvidence {
+	evidence := privacyAssessmentEvidence{id: id}
+	var value struct {
+		ClassifiedAt   string                     `json:"classified_at"`
+		ParsedResponse map[string]json.RawMessage `json:"parsed_response"`
+	}
+	if json.Unmarshal([]byte(raw), &value) != nil {
+		return evidence
+	}
+	evidence.dateText = value.ClassifiedAt
+	evidence.classifiedAt = parseAssetCreationDate(value.ClassifiedAt)
+	privacy, ok := value.ParsedResponse["privacy_sensitivity"]
+	privacy = json.RawMessage(strings.TrimSpace(string(privacy)))
+	if !ok || len(privacy) == 0 || privacy[0] != '[' {
+		return evidence
+	}
+	var entries []json.RawMessage
+	evidence.assessed = json.Unmarshal(privacy, &entries) == nil
+	return evidence
+}
+
+func privacyAssessmentLater(candidate, current privacyAssessmentEvidence) bool {
+	if !candidate.classifiedAt.Equal(current.classifiedAt) {
+		return candidate.classifiedAt.After(current.classifiedAt)
+	}
+	if candidate.dateText != current.dateText {
+		return candidate.dateText > current.dateText
+	}
+	return candidate.id > current.id
 }
 
 func loadPrivacyPhrases(ctx context.Context, db *sql.DB, assetID string) ([]string, bool, error) {
@@ -259,7 +357,6 @@ func categoriesInClause(clause string) []categoryMention {
 				end := index + len(alias)
 				if wordBoundary(clause, index-1) && wordBoundary(clause, end) {
 					mentions = append(mentions, categoryMention{name: category.name, alias: alias, start: index})
-					break
 				}
 				offset = end
 			}

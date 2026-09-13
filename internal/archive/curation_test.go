@@ -265,6 +265,35 @@ func TestCurationQueriesEndToEnd(t *testing.T) {
 	})
 }
 
+func TestCurationCommandsKeepUnknownCreationDates(t *testing.T) {
+	ctx, paths := context.Background(), curationFixture(t)
+	found, err := Find(ctx, paths, FindOptions{Limit: 100})
+	if err != nil || len(found.Assets) == 0 || found.Assets[len(found.Assets)-1].ID != "undated" {
+		t.Fatalf("find unknown-date ordering = %#v, %v", found, err)
+	}
+	bounded, err := Find(ctx, paths, FindOptions{From: "2019-01-01", Limit: 100})
+	if err != nil || hasID(bounded.Assets, "undated") {
+		t.Fatalf("date-bounded find included unknown date = %#v, %v", bounded, err)
+	}
+	ids := writeCurationIDs(t, paths.DataDir, "undated-rank.txt", "time-one", "undated")
+	for _, group := range []string{"none", "burst", "time", "day"} {
+		ranked, err := Rank(ctx, paths, RankOptions{IDsFile: ids, Group: group})
+		if err != nil {
+			t.Fatalf("rank group %s: %v", group, err)
+		}
+		if (group == "time" || group == "day") && (len(ranked.Groups) != 2 || ranked.Groups[1].Key != "asset:undated") {
+			t.Fatalf("rank group %s merged or reordered unknown date = %#v", group, ranked.Groups)
+		}
+	}
+	shots, err := Junk(ctx, paths, JunkOptions{Kind: "screenshots", OlderThan: "1d", Limit: 100})
+	if err != nil || hasCandidateID(shots.Candidates, "undated") {
+		t.Fatalf("junk treated unknown date as old = %#v, %v", shots, err)
+	}
+	if got := parseAssetCreationDate("not-a-date"); !got.IsZero() {
+		t.Fatalf("malformed creation date = %v, want unknown", got)
+	}
+}
+
 func curationFixture(t *testing.T) Paths {
 	t.Helper()
 	paths := testPaths(t)
@@ -332,6 +361,7 @@ func curationFixture(t *testing.T) Paths {
 	add("shot-portrait", "shot-portrait-local", "image", "2020-01-01T00:00:00Z", "UTC", "", "16", 0, 0, 100, 100, nil, nil)
 	add("shot-favorite", "shot-favorite-local", "image", "2020-01-01T00:00:00Z", "UTC", "", "4", 0, 1, 100, 100, nil, nil)
 	add("shot-recent", "shot-recent-local", "image", "2099-01-01T00:00:00Z", "UTC", "", "4", 0, 0, 100, 100, nil, nil)
+	add("undated", "undated-local", "image", "", "UTC", "", "4", 0, 0, 100, 100, nil, nil)
 	add("blurry-low", "blurry-local/L0/001", "image", "2025-02-01T00:00:00Z", "UTC", "", "0", 0, 0, 100, 100, &low, &low)
 	add("dull-sharp", "dull-sharp-local", "image", "2025-02-01T01:00:00Z", "UTC", "", "0", 0, 0, 100, 100, &low, &low)
 	blurriness := func(id string, value float64) {

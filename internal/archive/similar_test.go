@@ -471,6 +471,23 @@ values(?,?,?,?,?,'','','UTC',100,100,0,0,0,?,0,'similar-library','{}',?)
 	return paths
 }
 
+func TestSimilarAllowsUnknownCreationDates(t *testing.T) {
+	ctx := context.Background()
+	paths := similarFixture(t)
+	db, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execTestSQL(t, db.DB(), `update asset set creation_date='' where id='strong'`)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Similar(ctx, paths, SimilarOptions{ID: "seed", Limit: 30})
+	if err != nil || !hasSimilarID(got.Assets, "strong") {
+		t.Fatalf("similar with undated candidate = %#v, %v", got, err)
+	}
+}
+
 func similarFoodFixture(t *testing.T) Paths {
 	t.Helper()
 	paths := testPaths(t)

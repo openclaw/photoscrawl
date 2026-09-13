@@ -402,7 +402,7 @@ func TestClassifyLocalModelKeepsRemoteImagesRetryable(t *testing.T) {
 	}
 }
 
-func TestClassifyLocalModelFinishesUnavailableImagesWithoutDownloadSignal(t *testing.T) {
+func TestClassifyLocalModelRetriesUnavailableImagesOnlyWithDownloadsEnabled(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	paths := testPaths(t)
@@ -440,6 +440,27 @@ func TestClassifyLocalModelFinishesUnavailableImagesWithoutDownloadSignal(t *tes
 	}
 	if second.Processed != 0 {
 		t.Fatalf("unavailable image stayed retryable = %#v", second)
+	}
+	archiveDB, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archiveDB.Close()
+	tx, err := archiveDB.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	withoutDownloads, err := loadClassifyInputs(ctx, tx, 0, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withDownloads, err := loadClassifyInputs(ctx, tx, 0, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withoutDownloads) != 0 || len(withDownloads) != 1 || withDownloads[0].MediaType != "image" {
+		t.Fatalf("unavailable queue selection without=%#v with=%#v", withoutDownloads, withDownloads)
 	}
 }
 

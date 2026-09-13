@@ -1,7 +1,9 @@
 package archive
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -148,6 +150,107 @@ func TestSheetFilesUseOriginalOrPlaceholderAndDoNotDrawTitle(t *testing.T) {
 	if !slices.Equal(firstJPEG, secondJPEG) {
 		t.Fatal("title changed rendered sheet pixels")
 	}
+}
+
+func TestSheetAppliesJPEGEXIFOrientation(t *testing.T) {
+	tests := []struct {
+		orientation int
+		width       int
+		height      int
+		rawColors   [4]color.RGBA
+	}{
+		{
+			orientation: 6,
+			width:       30,
+			height:      20,
+			rawColors: [4]color.RGBA{
+				{G: 240, A: 255}, {R: 240, G: 240, A: 255},
+				{R: 240, A: 255}, {B: 240, A: 255},
+			},
+		},
+		{
+			orientation: 3,
+			width:       20,
+			height:      30,
+			rawColors: [4]color.RGBA{
+				{R: 240, G: 240, A: 255}, {B: 240, A: 255},
+				{G: 240, A: 255}, {R: 240, A: 255},
+			},
+		},
+	}
+	want := [4]color.RGBA{{R: 240, A: 255}, {G: 240, A: 255}, {B: 240, A: 255}, {R: 240, G: 240, A: 255}}
+	for _, test := range tests {
+		t.Run(string(rune('0'+test.orientation)), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "oriented.jpg")
+			writeOrientedJPEG(t, path, test.width, test.height, test.rawColors, test.orientation)
+			decoded, err := decodeSheetImage(context.Background(), t.TempDir(), path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decoded.Bounds().Dx() != 20 || decoded.Bounds().Dy() != 30 {
+				t.Fatalf("oriented bounds = %v, want 20x30", decoded.Bounds())
+			}
+			points := []image.Point{{3, 3}, {16, 3}, {3, 26}, {16, 26}}
+			for index, point := range points {
+				if !colorNear(decoded.At(point.X, point.Y), want[index]) {
+					t.Fatalf("pixel %v = %v, want near %v", point, decoded.At(point.X, point.Y), want[index])
+				}
+			}
+		})
+	}
+}
+
+func writeOrientedJPEG(t *testing.T, path string, width, height int, quadrants [4]color.RGBA, orientation int) {
+	t.Helper()
+	imageData := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			index := 0
+			if x >= width/2 {
+				index++
+			}
+			if y >= height/2 {
+				index += 2
+			}
+			imageData.SetRGBA(x, y, quadrants[index])
+		}
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, imageData, &jpeg.Options{Quality: 100}); err != nil {
+		t.Fatal(err)
+	}
+	tiff := make([]byte, 26)
+	copy(tiff[:2], "II")
+	binary.LittleEndian.PutUint16(tiff[2:4], 42)
+	binary.LittleEndian.PutUint32(tiff[4:8], 8)
+	binary.LittleEndian.PutUint16(tiff[8:10], 1)
+	binary.LittleEndian.PutUint16(tiff[10:12], 0x0112)
+	binary.LittleEndian.PutUint16(tiff[12:14], 3)
+	binary.LittleEndian.PutUint32(tiff[14:18], 1)
+	binary.LittleEndian.PutUint16(tiff[18:20], uint16(orientation))
+	payload := append([]byte("Exif\x00\x00"), tiff...)
+	segment := []byte{0xff, 0xe1, 0, byte(len(payload) + 2)}
+	segment = append(segment, payload...)
+	jpegBytes := encoded.Bytes()
+	withEXIF := append([]byte{}, jpegBytes[:2]...)
+	withEXIF = append(withEXIF, segment...)
+	withEXIF = append(withEXIF, jpegBytes[2:]...)
+	if err := os.WriteFile(path, withEXIF, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func colorNear(got color.Color, want color.RGBA) bool {
+	r, g, b, _ := got.RGBA()
+	const tolerance = 30
+	return absInt(int(r/257)-int(want.R)) <= tolerance && absInt(int(g/257)-int(want.G)) <= tolerance && absInt(int(b/257)-int(want.B)) <= tolerance
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 type sheetFixtureAsset struct {

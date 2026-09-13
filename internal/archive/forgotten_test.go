@@ -74,6 +74,61 @@ func TestForgottenRejectsNegativeGap(t *testing.T) {
 	}
 }
 
+func TestUserOrSharedAlbumKindProviderMappings(t *testing.T) {
+	tests := []struct {
+		kind string
+		want bool
+	}{
+		{kind: "album:1:2", want: true},
+		{kind: "album:1:101", want: true},
+		{kind: "album:2:1", want: false},
+		{kind: "generic_album:2:0", want: true},
+		{kind: "generic_album:1505:0", want: true},
+		{kind: "generic_album:4000:0", want: false},
+		{kind: "generic_album:folder:0", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.kind, func(t *testing.T) {
+			if got := isUserOrSharedAlbumKind(test.kind); got != test.want {
+				t.Fatalf("isUserOrSharedAlbumKind(%q) = %v, want %v", test.kind, got, test.want)
+			}
+		})
+	}
+}
+
+func TestForgottenExcludesSQLiteUserAndSharedAlbums(t *testing.T) {
+	got, err := Forgotten(context.Background(), forgottenFixture(t), ForgottenOptions{GapHours: 3, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"sqlite-user-album", "sqlite-shared-album"} {
+		if hasForgottenID(got.Assets, id) {
+			t.Fatalf("SQLite album member %q was recommended: %#v", id, got.Assets)
+		}
+	}
+}
+
+func TestForgottenKeepsUnknownCreationDateAsOwnMoment(t *testing.T) {
+	ctx := context.Background()
+	paths := forgottenFixture(t)
+	db, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execTestSQL(t, db.DB(), `update asset set creation_date='' where id='group-third'`)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Forgotten(ctx, paths, ForgottenOptions{GapHours: 3, Limit: 100})
+	if err != nil || !hasForgottenID(got.Assets, "group-third") {
+		t.Fatalf("undated forgotten result = %#v, %v", got, err)
+	}
+	bounded, err := Forgotten(ctx, paths, ForgottenOptions{From: "2025-01-01", GapHours: 3, Limit: 100})
+	if err != nil || hasForgottenID(bounded.Assets, "group-third") {
+		t.Fatalf("date-bounded forgotten result = %#v, %v", bounded, err)
+	}
+}
+
 func forgottenFixture(t *testing.T) Paths {
 	t.Helper()
 	paths := testPaths(t)
@@ -132,6 +187,10 @@ func forgottenFixture(t *testing.T) Paths {
 	addAlbum("user-album", "album:1:2")
 	add("shared-album", "image", "2025-01-12T06:00:00Z", "0", 0, 0, &high, nil, nil)
 	addAlbum("shared-album", "album:1:101")
+	add("sqlite-user-album", "image", "2025-01-12T07:00:00Z", "0", 0, 0, &high, nil, nil)
+	addAlbum("sqlite-user-album", "generic_album:2:0")
+	add("sqlite-shared-album", "image", "2025-01-12T08:00:00Z", "0", 0, 0, &high, nil, nil)
+	addAlbum("sqlite-shared-album", "generic_album:1505:0")
 	add("screenshot", "image", "2025-01-12T12:00:00Z", "4", 0, 0, &high, nil, nil)
 	blurry := .3
 	add("blurry", "image", "2025-01-12T18:00:00Z", "0", 0, 0, &high, nil, &blurry)
@@ -146,6 +205,15 @@ func forgottenFixture(t *testing.T) Paths {
 		t.Fatal(err)
 	}
 	return paths
+}
+
+func hasForgottenID(assets []ForgottenAsset, id string) bool {
+	for _, asset := range assets {
+		if asset.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func sameForgottenIDs(assets []ForgottenAsset, ids ...string) bool {

@@ -213,10 +213,7 @@ where id = ? and deleted_at is null
 		return fullAsset{}, err
 	}
 	asset.CreationDate = created
-	asset.created, err = time.Parse(time.RFC3339Nano, created)
-	if err != nil {
-		return fullAsset{}, fmt.Errorf("parse creation date for asset %q: %w", asset.ID, err)
-	}
+	asset.created = parseAssetCreationDate(created)
 	return asset, nil
 }
 
@@ -525,11 +522,7 @@ where deleted_at is null and id in (`+placeholders+`)
 				return nil, err
 			}
 			asset.CreationDate = created
-			asset.created, err = time.Parse(time.RFC3339Nano, created)
-			if err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("parse creation date for asset %q: %w", asset.ID, err)
-			}
+			asset.created = parseAssetCreationDate(created)
 			assets = append(assets, asset)
 		}
 		if err := rows.Err(); err != nil {
@@ -619,21 +612,23 @@ func includeSimilarAssetCandidate(seed, candidate fullAsset, excluded map[string
 		if seed.burst != "" && candidate.burst == seed.burst {
 			return false
 		}
-		delta := candidate.created.Sub(seed.created)
-		if delta < 0 {
-			delta = -delta
-		}
-		if delta <= similarEventWindow {
-			return false
-		}
-		location := time.UTC
-		if seed.tz != "" {
-			if candidateLocation, err := time.LoadLocation(seed.tz); err == nil {
-				location = candidateLocation
+		if seed.hasCreationDate() && candidate.hasCreationDate() {
+			delta := candidate.created.Sub(seed.created)
+			if delta < 0 {
+				delta = -delta
 			}
-		}
-		if candidate.created.In(location).Format("2006-01-02") == seed.created.In(location).Format("2006-01-02") {
-			return false
+			if delta <= similarEventWindow {
+				return false
+			}
+			location := time.UTC
+			if seed.tz != "" {
+				if candidateLocation, err := time.LoadLocation(seed.tz); err == nil {
+					location = candidateLocation
+				}
+			}
+			if candidate.created.In(location).Format("2006-01-02") == seed.created.In(location).Format("2006-01-02") {
+				return false
+			}
 		}
 	}
 	if isScreenshotSubtype(candidate.subtypes) {

@@ -248,7 +248,7 @@ func Junk(ctx context.Context, paths Paths, o JunkOptions) (JunkResult, error) {
 	}
 	if kind == "screenshots" || kind == "all" {
 		for _, a := range as {
-			if a.MediaType == "image" && !a.favoriteBool() && isScreenshotSubtype(a.subtypes) && a.created.Before(cutoff) {
+			if a.MediaType == "image" && !a.favoriteBool() && isScreenshotSubtype(a.subtypes) && a.hasCreationDate() && a.created.Before(cutoff) {
 				add(JunkCandidate{AssetRow: a.AssetRow, Kind: "screenshots", Reason: "old non-favorite screenshot", Signals: map[string]any{"media_subtypes": a.subtypes}})
 			}
 		}
@@ -302,10 +302,7 @@ func loadAssets(ctx context.Context, db *sql.DB) ([]fullAsset, error) {
 			return nil, e
 		}
 		a.CreationDate = d
-		a.created, e = time.Parse(time.RFC3339Nano, d)
-		if e != nil {
-			return nil, fmt.Errorf("parse creation date for asset %q: %w", a.ID, e)
-		}
+		a.created = parseAssetCreationDate(d)
 		out = append(out, a)
 	}
 	return out, rs.Err()
@@ -424,7 +421,7 @@ func filterAssets(ctx context.Context, db *sql.DB, as []fullAsset, s signals, o 
 	}
 	out := []fullAsset{}
 	for _, a := range as {
-		if excludedMatch(a, ex) || (!o.IncludeHidden && a.hidden != 0) || (media != "any" && a.MediaType != media) || (from.Valid && a.created.Before(from.Time)) || (to.Valid && a.created.After(to.Time)) || (o.Query != "" && !textIDs[a.ID]) || !peopleMatch(s.faces[a.ID], o.People) {
+		if excludedMatch(a, ex) || (!o.IncludeHidden && a.hidden != 0) || (media != "any" && a.MediaType != media) || ((from.Valid || to.Valid) && !a.hasCreationDate()) || (from.Valid && a.created.Before(from.Time)) || (to.Valid && a.created.After(to.Time)) || (o.Query != "" && !textIDs[a.ID]) || !peopleMatch(s.faces[a.ID], o.People) {
 			continue
 		}
 		if o.Place != "" && !placeIDs[a.ID] {
@@ -440,6 +437,9 @@ func sortAssets(as []fullAsset, s signals, people []string, quality bool) {
 			if c := compareQuality(as[i], as[j], s, people); c != 0 {
 				return c < 0
 			}
+		}
+		if as[i].hasCreationDate() != as[j].hasCreationDate() {
+			return as[i].hasCreationDate()
 		}
 		if !as[i].created.Equal(as[j].created) {
 			return as[i].created.After(as[j].created)
@@ -458,6 +458,12 @@ func compareQuality(a, b fullAsset, s signals, people []string) int {
 	}
 	if x, y := qualityScore(a, s), qualityScore(b, s); x != y {
 		return cmpFloatDesc(x, y)
+	}
+	if a.hasCreationDate() != b.hasCreationDate() {
+		if a.hasCreationDate() {
+			return -1
+		}
+		return 1
 	}
 	if !a.created.Equal(b.created) {
 		if a.created.After(b.created) {
@@ -497,9 +503,25 @@ func groupRank(as []fullAsset, s signals, o RankOptions) (RankResult, error) {
 			buckets = append(buckets, b)
 		}
 	} else {
-		sort.Slice(as, func(i, j int) bool { return as[i].created.Before(as[j].created) })
+		sort.Slice(as, func(i, j int) bool {
+			if as[i].hasCreationDate() != as[j].hasCreationDate() {
+				return as[i].hasCreationDate()
+			}
+			if !as[i].created.Equal(as[j].created) {
+				return as[i].created.Before(as[j].created)
+			}
+			return as[i].ID < as[j].ID
+		})
 		var cur []fullAsset
 		for _, a := range as {
+			if !a.hasCreationDate() {
+				if len(cur) > 0 {
+					buckets = append(buckets, cur)
+					cur = nil
+				}
+				buckets = append(buckets, []fullAsset{a})
+				continue
+			}
 			split := len(cur) > 0 && (g == "day" && dayKey(cur[len(cur)-1]) != dayKey(a) || g == "time" && a.created.Sub(cur[len(cur)-1].created) > time.Duration(defaultInt(o.GapSeconds, 90))*time.Second)
 			if split {
 				buckets = append(buckets, cur)
@@ -527,7 +549,9 @@ func groupRank(as []fullAsset, s signals, o RankOptions) (RankResult, error) {
 		}
 		out.Groups = append(out.Groups, rg)
 	}
-	sort.Slice(out.Groups, func(i, j int) bool { return out.Groups[i].Key < out.Groups[j].Key })
+	if g == "burst" {
+		sort.Slice(out.Groups, func(i, j int) bool { return out.Groups[i].Key < out.Groups[j].Key })
+	}
 	return out, nil
 }
 func rankAsset(a fullAsset, s signals, p []string) RankAsset {
@@ -609,6 +633,18 @@ func parseDate(x string, end bool) (sql.NullTime, error) {
 		return sql.NullTime{Time: t, Valid: true}, nil
 	}
 	return sql.NullTime{}, fmt.Errorf("invalid date %q (use RFC 3339 or YYYY-MM-DD)", x)
+}
+
+func parseAssetCreationDate(value string) time.Time {
+	created, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}
+	}
+	return created
+}
+
+func (a fullAsset) hasCreationDate() bool {
+	return !a.created.IsZero()
 }
 func parseDuration(x string) (time.Duration, error) {
 	if x == "" {
@@ -864,7 +900,17 @@ func closedEyeSiblings(as []fullAsset, s signals) []eyeSibling {
 			bursts[a.burst] = append(bursts[a.burst], a)
 		}
 	}
-	sort.Slice(images, func(i, j int) bool { return images[i].created.Before(images[j].created) })
+	sort.Slice(images, func(i, j int) bool {
+		if images[i].hasCreationDate() != images[j].hasCreationDate() {
+			return images[i].hasCreationDate()
+		}
+		if !images[i].created.Equal(images[j].created) {
+			return images[i].created.Before(images[j].created)
+		}
+		return images[i].ID < images[j].ID
+	})
+	datedCount := sort.Search(len(images), func(i int) bool { return !images[i].hasCreationDate() })
+	datedImages := images[:datedCount]
 	out := []eyeSibling{}
 	for _, a := range images {
 		if !allClosed(s.faces[a.ID]) {
@@ -874,12 +920,15 @@ func closedEyeSiblings(as []fullAsset, s signals) []eyeSibling {
 			out = append(out, eyeSibling{closed: a, open: sibling})
 			continue
 		}
-		i := sort.Search(len(images), func(i int) bool {
-			return !images[i].created.Before(a.created.Add(-90 * time.Second))
+		if !a.hasCreationDate() {
+			continue
+		}
+		i := sort.Search(len(datedImages), func(i int) bool {
+			return !datedImages[i].created.Before(a.created.Add(-90 * time.Second))
 		})
-		for ; i < len(images) && !images[i].created.After(a.created.Add(90*time.Second)); i++ {
-			if images[i].ID != a.ID && allOpen(s.faces[images[i].ID]) {
-				out = append(out, eyeSibling{closed: a, open: images[i]})
+		for ; i < len(datedImages) && !datedImages[i].created.After(a.created.Add(90*time.Second)); i++ {
+			if datedImages[i].ID != a.ID && allOpen(s.faces[datedImages[i].ID]) {
+				out = append(out, eyeSibling{closed: a, open: datedImages[i]})
 				break
 			}
 		}
@@ -1068,7 +1117,13 @@ func keeperBefore(a, b fullAsset, s signals) bool {
 	if xok != yok {
 		return xok
 	}
-	return a.created.Before(b.created)
+	if a.hasCreationDate() != b.hasCreationDate() {
+		return a.hasCreationDate()
+	}
+	if !a.created.Equal(b.created) {
+		return a.created.Before(b.created)
+	}
+	return a.ID < b.ID
 }
 func dayKey(a fullAsset) string {
 	l := time.UTC
@@ -1087,9 +1142,15 @@ func groupKey(g string, a fullAsset) string {
 		return "asset:" + a.ID
 	}
 	if g == "day" {
+		if !a.hasCreationDate() {
+			return "asset:" + a.ID
+		}
 		return dayKey(a)
 	}
 	if g == "time" {
+		if !a.hasCreationDate() {
+			return "asset:" + a.ID
+		}
 		return a.created.Format(time.RFC3339)
 	}
 	return "all"

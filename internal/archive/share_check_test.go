@@ -25,6 +25,8 @@ func TestBlockedCategoriesInPhrase(t *testing.T) {
 		{phrase: "without a license plate", want: []string{}},
 		{phrase: "not a receipt", want: []string{}},
 		{phrase: "no document but passport", want: []string{"passport"}},
+		{phrase: "no passport in foreground but passport visible in background", want: []string{"passport"}},
+		{phrase: "no passport and no documents", want: []string{}},
 		{phrase: "child", want: []string{}},
 		{phrase: "driver's license visible", want: []string{"driver's license"}},
 		{phrase: "drivers license visible", want: []string{"driver's license"}},
@@ -84,6 +86,15 @@ func TestBlockedCategoriesInPhrase(t *testing.T) {
 	}
 }
 
+func TestBlockedCategoriesInspectEveryOccurrence(t *testing.T) {
+	if got := blockedCategoriesInPhrase("no passport in foreground but passport visible in background"); !reflect.DeepEqual(got, []string{"passport"}) {
+		t.Fatalf("mixed-negation occurrences = %#v, want passport blocked", got)
+	}
+	if got := blockedCategoriesInPhrase("no passport and no documents"); len(got) != 0 {
+		t.Fatalf("fully negated occurrences = %#v, want none blocked", got)
+	}
+}
+
 func TestShareCheckStatusesNotesCountsAndExclusions(t *testing.T) {
 	ctx := context.Background()
 	paths := shareCheckFixture(t)
@@ -131,6 +142,30 @@ func TestShareCheckRejectsMissingIDsFileAndUnknownAsset(t *testing.T) {
 	}
 }
 
+func TestShareCheckRequiresLatestPrivacyAssessment(t *testing.T) {
+	paths := shareCheckFixture(t)
+	ids := writeCurationIDs(t, paths.DataDir, "privacy-assessment.txt", "pass", "missing-assessment")
+	got, err := ShareCheck(context.Background(), paths, ShareCheckOptions{IDsFile: ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Assets) != 2 || got.Assets[0].Status != "pass" {
+		t.Fatalf("explicit empty privacy assessment = %#v", got.Assets)
+	}
+	if got.Assets[1].Status != "unreviewed" || !containsText(got.Assets[1].Reasons, "privacy not assessed") {
+		t.Fatalf("missing privacy assessment = %#v", got.Assets[1])
+	}
+}
+
+func TestShareCheckAllowsUndatedAsset(t *testing.T) {
+	paths := shareCheckFixture(t)
+	ids := writeCurationIDs(t, paths.DataDir, "undated-share.txt", "undated")
+	got, err := ShareCheck(context.Background(), paths, ShareCheckOptions{IDsFile: ids})
+	if err != nil || len(got.Assets) != 1 || got.Assets[0].Status != "pass" {
+		t.Fatalf("undated share check = %#v, %v", got, err)
+	}
+}
+
 func shareCheckFixture(t *testing.T) Paths {
 	t.Helper()
 	root := t.TempDir()
@@ -143,14 +178,18 @@ func shareCheckFixture(t *testing.T) Paths {
 		_ = db.Close()
 	})
 	execTestSQL(t, db.DB(), `insert into source_library values ('fixture-library', '/fixture', 'snapshot', '2025-01-01T00:00:00Z', 'test', '{}')`)
-	add := func(id, subtype string, hidden bool, state string, phrase string) {
+	add := func(id, subtype, created string, hidden bool, state string, phrase string) {
 		hiddenValue := 0
 		if hidden {
 			hiddenValue = 1
 		}
-		execTestSQL(t, db.DB(), `insert into asset(id,local_identifier,media_type,media_subtypes,creation_date,modification_date,added_date,timezone_name,width,height,duration_seconds,favorite,hidden,burst_identifier,represents_burst,source_library_id,metadata_json) values(?,?, 'image',?,'2025-01-01T00:00:00Z','','','UTC',100,100,0,0,?,'',0,'fixture-library','{}')`, id, id+"-local", subtype, hiddenValue)
+		execTestSQL(t, db.DB(), `insert into asset(id,local_identifier,media_type,media_subtypes,creation_date,modification_date,added_date,timezone_name,width,height,duration_seconds,favorite,hidden,burst_identifier,represents_burst,source_library_id,metadata_json) values(?,?, 'image',?,?,'','','UTC',100,100,0,0,?,'',0,'fixture-library','{}')`, id, id+"-local", subtype, created, hiddenValue)
 		if state != "" {
 			execTestSQL(t, db.DB(), `insert into classification_queue values(?,?, 'fixture-library',?,'fixture',0,'2025-01-01T00:00:00Z')`, "queue-"+id, id, state)
+		}
+		if state == "content_classified" {
+			evidence := `{"classified_at":"2025-01-01T00:00:00Z","parsed_response":{"privacy_sensitivity":[]}}`
+			execTestSQL(t, db.DB(), `insert into evidence_ref values(?,?,'content_classification',?,?,?)`, "classification-"+id, id, localModelClassifierSource, "fixture", evidence)
 		}
 		if phrase != "" {
 			body, marshalErr := json.Marshal(map[string]string{"text": phrase})
@@ -160,13 +199,17 @@ func shareCheckFixture(t *testing.T) Paths {
 			execTestSQL(t, db.DB(), `insert into model_observation values(?,?,'privacy_sensitivity','',?,1,'fixture','fixture','fixture',?)`, "privacy-"+id, id, string(body), "evidence-"+id)
 		}
 	}
-	add("pass", "0", false, "content_classified", "no documents or receipts")
-	add("hidden", "0", true, "content_classified", "")
-	add("screenshot", "4", false, "content_classified", "")
-	add("privacy", "0", false, "content_classified", "passport visible, no faces")
-	add("unreviewed", "0", false, "pending", "")
-	add("child", "0", false, "content_classified", "child and face visible")
-	add("sqlite-screenshot", "kind_subtype:10", false, "content_classified", "")
+	add("pass", "0", "2025-01-01T00:00:00Z", false, "content_classified", "no documents or receipts")
+	add("hidden", "0", "2025-01-01T00:00:00Z", true, "content_classified", "")
+	add("screenshot", "4", "2025-01-01T00:00:00Z", false, "content_classified", "")
+	add("privacy", "0", "2025-01-01T00:00:00Z", false, "content_classified", "passport visible, no faces")
+	add("unreviewed", "0", "2025-01-01T00:00:00Z", false, "pending", "")
+	add("child", "0", "2025-01-01T00:00:00Z", false, "content_classified", "child and face visible")
+	add("sqlite-screenshot", "kind_subtype:10", "2025-01-01T00:00:00Z", false, "content_classified", "")
+	add("missing-assessment", "0", "2025-01-01T00:00:00Z", false, "content_classified", "")
+	execTestSQL(t, db.DB(), `update evidence_ref set value_json=? where id='classification-missing-assessment'`, `{"classified_at":"2025-01-02T00:00:00Z","parsed_response":{"scene_summary":"a passport"}}`)
+	execTestSQL(t, db.DB(), `insert into evidence_ref values('older-assessment','missing-assessment','content_classification',?,?,?)`, localModelClassifierSource, "fixture", `{"classified_at":"2025-01-01T00:00:00Z","parsed_response":{"privacy_sensitivity":[]}}`)
+	add("undated", "0", "", false, "content_classified", "")
 	return paths
 }
 

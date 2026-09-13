@@ -17,6 +17,7 @@
   uint64_t byteLimit;
   uint64_t bytesWritten;
   PHAssetResourceDataRequestID requestID;
+  PHImageRequestID imageRequestID;
   NSString *stagingPath;
   NSString *destinationPath;
   NSString *errorDescription;
@@ -24,6 +25,7 @@
 - (BOOL)prepare:(NSString *)path;
 - (void)cancel;
 - (void)registerRequest:(PHAssetResourceDataRequestID)value;
+- (void)registerImageRequest:(PHImageRequestID)value;
 - (void)receive:(NSData *)data;
 - (void)complete:(NSError *)error;
 @end
@@ -57,10 +59,27 @@
 }
 - (void)cancelRequest {
   PHAssetResourceDataRequestID value;
-  @synchronized(self) { value = requestID; }
+  PHImageRequestID imageValue;
+  @synchronized(self) {
+    value = requestID;
+    imageValue = imageRequestID;
+  }
   // PhotoKit may invoke a callback synchronously while cancelling.
   if (value != PHInvalidAssetResourceDataRequestID) {
     [[PHAssetResourceManager defaultManager] cancelDataRequest:value];
+  }
+  if (imageValue != PHInvalidImageRequestID) {
+    [[PHImageManager defaultManager] cancelImageRequest:imageValue];
+  }
+}
+- (void)registerImageRequest:(PHImageRequestID)value {
+  BOOL shouldCancel;
+  @synchronized(self) {
+    imageRequestID = value;
+    shouldCancel = cancelled;
+  }
+  if (shouldCancel && value != PHInvalidImageRequestID) {
+    [[PHImageManager defaultManager] cancelImageRequest:value];
   }
 }
 - (void)cancel {
@@ -170,6 +189,9 @@ int photoscrawl_export_cancelled(void *control) {
   if (control == NULL) return 0;
   PCOriginalExport *state = (PCOriginalExport *)control;
   @synchronized(state) { return state->cancelled; }
+}
+void photoscrawl_export_register_image_request(void *control, int32_t requestID) {
+  @autoreleasepool { [(PCOriginalExport *)control registerImageRequest:(PHImageRequestID)requestID]; }
 }
 void photoscrawl_export_release(void *control) {
   @autoreleasepool { [(PCOriginalExport *)control release]; }

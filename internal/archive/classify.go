@@ -149,7 +149,7 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 	var inputs []classifyInput
 	err = db.WithTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		inputs, err = loadClassifyInputs(ctx, tx, limit, classifier != nil)
+		inputs, err = loadClassifyInputs(ctx, tx, limit, classifier != nil, classifier != nil && opts.AllowICloudDownloads)
 		return err
 	})
 	if err != nil {
@@ -239,18 +239,23 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 	return result, nil
 }
 
-func loadClassifyInputs(ctx context.Context, tx *sql.Tx, limit int, includeMetadataClassified bool) ([]classifyInput, error) {
+func loadClassifyInputs(ctx context.Context, tx *sql.Tx, limit int, includeMetadataClassified, retryUnavailableImages bool) ([]classifyInput, error) {
 	query := `
 select q.id, q.asset_id, a.local_identifier, q.source_library_id, q.needs_download,
        a.media_type, a.media_subtypes, a.creation_date, a.width, a.height,
        a.favorite, a.hidden, a.burst_identifier, a.metadata_json
 from classification_queue q
 join asset a on a.id = q.asset_id
-where q.state in (` + classifyQueueStates(includeMetadataClassified) + `)
+where (q.state in (` + classifyQueueStates(includeMetadataClassified) + `)
+       or (? <> 0 and q.state = 'content_unavailable' and a.media_type = 'image'))
   and a.deleted_at is null
 order by case q.state when 'pending' then 0 else 1 end, a.creation_date desc, q.id
 `
-	args := []any{}
+	retryUnavailable := 0
+	if retryUnavailableImages {
+		retryUnavailable = 1
+	}
+	args := []any{retryUnavailable}
 	if limit > 0 {
 		query += "limit ?"
 		args = append(args, limit)

@@ -110,6 +110,13 @@ func TestUsageListsPhotoAssistCommands(t *testing.T) {
 	}
 }
 
+func TestRankRejectsLimitFlag(t *testing.T) {
+	err := run(context.Background(), []string{"rank", "--limit", "1"})
+	if !output.IsUsage(err) || !strings.Contains(err.Error(), "flag provided but not defined: -limit") {
+		t.Fatalf("rank --limit error = %v, want usage error", err)
+	}
+}
+
 func TestJoinedQueryPreservesLauncherArguments(t *testing.T) {
 	if got := joinedQuery("hello", []string{"world", "photos"}); got != "hello world photos" {
 		t.Fatalf("joined query = %q", got)

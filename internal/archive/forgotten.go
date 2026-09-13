@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -98,7 +100,7 @@ func Forgotten(ctx context.Context, paths Paths, o ForgottenOptions) (ForgottenR
 		if allClosed(s.faces[asset.ID]) || !scoredAsset || !aesthetic.Valid || aesthetic.Float64 < threshold {
 			continue
 		}
-		if from.Valid && asset.created.Before(from.Time) || to.Valid && asset.created.After(to.Time) {
+		if (from.Valid || to.Valid) && !asset.hasCreationDate() || from.Valid && asset.created.Before(from.Time) || to.Valid && asset.created.After(to.Time) {
 			continue
 		}
 		candidates = append(candidates, asset)
@@ -138,18 +140,20 @@ func Forgotten(ctx context.Context, paths Paths, o ForgottenOptions) (ForgottenR
 }
 
 func loadUserAlbumAssets(ctx context.Context, db *sql.DB) (map[string]bool, error) {
-	rows, err := db.QueryContext(ctx, `select distinct asset_id from album_membership where album_kind glob 'album:1:*'`)
+	rows, err := db.QueryContext(ctx, `select asset_id, album_kind from album_membership`)
 	if err != nil {
 		return nil, fmt.Errorf("load user and shared album memberships: %w", err)
 	}
 	defer rows.Close()
 	assets := map[string]bool{}
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var id, kind string
+		if err := rows.Scan(&id, &kind); err != nil {
 			return nil, err
 		}
-		assets[id] = true
+		if isUserOrSharedAlbumKind(kind) {
+			assets[id] = true
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -157,8 +161,26 @@ func loadUserAlbumAssets(ctx context.Context, db *sql.DB) (map[string]bool, erro
 	return assets, nil
 }
 
+func isUserOrSharedAlbumKind(value string) bool {
+	parts := strings.Split(strings.TrimSpace(value), ":")
+	if len(parts) != 3 {
+		return false
+	}
+	if parts[0] == "album" {
+		return parts[1] == "1"
+	}
+	if parts[0] != "generic_album" {
+		return false
+	}
+	kind, err := strconv.ParseInt(parts[1], 10, 64)
+	return err == nil && (kind == 2 || kind == 1505)
+}
+
 func groupForgottenCandidates(assets []fullAsset, gap time.Duration) [][]fullAsset {
 	sort.SliceStable(assets, func(i, j int) bool {
+		if assets[i].hasCreationDate() != assets[j].hasCreationDate() {
+			return assets[i].hasCreationDate()
+		}
 		if !assets[i].created.Equal(assets[j].created) {
 			return assets[i].created.Before(assets[j].created)
 		}
@@ -167,6 +189,14 @@ func groupForgottenCandidates(assets []fullAsset, gap time.Duration) [][]fullAss
 	groups := [][]fullAsset{}
 	var current []fullAsset
 	for _, asset := range assets {
+		if !asset.hasCreationDate() {
+			if len(current) > 0 {
+				groups = append(groups, current)
+				current = nil
+			}
+			groups = append(groups, []fullAsset{asset})
+			continue
+		}
 		if len(current) > 0 && asset.created.Sub(current[len(current)-1].created) > gap {
 			groups = append(groups, current)
 			current = nil

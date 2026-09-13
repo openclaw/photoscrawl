@@ -80,7 +80,7 @@ func run(ctx context.Context, args []string) error {
 		return output.Write(os.Stdout, format, "find", result)
 	case "rank":
 		fs := newCommandFlags("rank", &paths)
-		find := findFlags(fs)
+		find := rankFindFlags(fs)
 		ids := fs.String("ids-file", "", "JSON array or line-separated asset ids")
 		group := fs.String("group", "none", "group: none, burst, time, or day")
 		gap := fs.Int("gap-seconds", 90, "split time groups after this gap")
@@ -462,6 +462,12 @@ func usage() error {
 }
 
 func findFlags(fs *commandFlags) *archive.FindOptions {
+	o := rankFindFlags(fs)
+	fs.IntVar(&o.Limit, "limit", 50, "max assets")
+	return o
+}
+
+func rankFindFlags(fs *commandFlags) *archive.FindOptions {
 	o := &archive.FindOptions{}
 	fs.Func("person", "required named person (repeatable)", func(v string) error { o.People = append(o.People, v); return nil })
 	fs.StringVar(&o.From, "from", "", "inclusive RFC 3339 timestamp or YYYY-MM-DD")
@@ -471,7 +477,6 @@ func findFlags(fs *commandFlags) *archive.FindOptions {
 	fs.StringVar(&o.Media, "media", "image", "image, video, or any")
 	fs.BoolVar(&o.IncludeHidden, "include-hidden", false, "include hidden assets")
 	fs.StringVar(&o.Rank, "rank", "date", "quality or date")
-	fs.IntVar(&o.Limit, "limit", 50, "max assets")
 	fs.StringVar(&o.ExcludeIDsFile, "exclude-ids-file", "", "JSON array or line-separated ids to exclude")
 	return o
 }

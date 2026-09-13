@@ -7,7 +7,6 @@ package photos
 #include <stdlib.h>
 
 #include "original_export_darwin.h"
-int photoscrawl_export_image_preview(const char *localIdentifier, const char *destinationPath, int maxDimension, int allowNetwork, char **errorOut);
 int photoscrawl_render_canonical_jpeg(const char *sourcePath, const char *destinationPath, double quality, char **errorOut);
 char *photoscrawl_image_metadata_json(const char *sourcePath, char **errorOut);
 */
@@ -77,21 +76,37 @@ func exportOriginalResource(ctx context.Context, localIdentifier, destinationPat
 }
 
 func ExportImagePreview(ctx context.Context, localIdentifier, destinationPath string, maxDimension int, allowNetwork bool) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
-		return err
-	}
+	return exportImagePreview(ctx, localIdentifier, destinationPath, maxDimension, allowNetwork, photoKitPreviewExportBridge{})
+}
+
+type previewExportBridge interface {
+	create() unsafe.Pointer
+	cancel(unsafe.Pointer)
+	release(unsafe.Pointer)
+	export(string, string, int, bool, unsafe.Pointer) error
+}
+
+type photoKitPreviewExportBridge struct{}
+
+func (photoKitPreviewExportBridge) create() unsafe.Pointer {
+	return C.photoscrawl_export_create()
+}
+
+func (photoKitPreviewExportBridge) cancel(control unsafe.Pointer) {
+	C.photoscrawl_export_cancel(control)
+}
+
+func (photoKitPreviewExportBridge) release(control unsafe.Pointer) {
+	C.photoscrawl_export_release(control)
+}
+
+func (photoKitPreviewExportBridge) export(localIdentifier, destinationPath string, maxDimension int, allowNetwork bool, control unsafe.Pointer) error {
 	cIdentifier := C.CString(localIdentifier)
 	defer C.free(unsafe.Pointer(cIdentifier))
 	cDestination := C.CString(destinationPath)
 	defer C.free(unsafe.Pointer(cDestination))
-
 	var cErr *C.char
-	ok := C.photoscrawl_export_image_preview(cIdentifier, cDestination, C.int(maxDimension), boolInt(allowNetwork), &cErr)
+	ok := C.photoscrawl_export_image_preview(cIdentifier, cDestination, C.int(maxDimension), boolInt(allowNetwork), control, &cErr)
 	if cErr != nil {
 		defer C.free(unsafe.Pointer(cErr))
 		return errors.New(C.GoString(cErr))
@@ -100,6 +115,35 @@ func ExportImagePreview(ctx context.Context, localIdentifier, destinationPath st
 		return errors.New("export image preview failed")
 	}
 	return nil
+}
+
+func exportImagePreview(ctx context.Context, localIdentifier, destinationPath string, maxDimension int, allowNetwork bool, bridge previewExportBridge) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
+		return err
+	}
+	control := bridge.create()
+	if control == nil {
+		return errors.New("create preview export control")
+	}
+	defer bridge.release(control)
+	canceled := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		bridge.cancel(control)
+		close(canceled)
+	})
+	requestErr := bridge.export(localIdentifier, destinationPath, maxDimension, allowNetwork, control)
+	if !stop() {
+		<-canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return requestErr
 }
 
 func RenderCanonicalJPEG(ctx context.Context, sourcePath, destinationPath string, quality float64) error {
