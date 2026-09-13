@@ -144,6 +144,9 @@ func areaTrail(address *Address, area []AreaLevel) string {
 }
 
 func displayAddress(address *Address) string {
+	if address == nil {
+		return ""
+	}
 	value := strings.TrimSpace(address.Formatted)
 	if value == "" {
 		value = formattedAddress(address)

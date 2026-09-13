@@ -39,6 +39,8 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		var cached Result
 		if err := json.Unmarshal(data, &cached); err == nil {
 			if err := validateComplete(cached); err == nil {
+				// The cache identifies coordinates, not the asset requesting them.
+				cached.Input = input
 				cached.Cached = true
 				return cached, nil
 			}

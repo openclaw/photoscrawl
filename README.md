@@ -185,6 +185,10 @@ while real provider errors still fail. Text output is a compact deterministic
 place card; `--json` returns provider evidence. Apple address areas of interest
 are rendered as map context, not as POIs.
 
+Cached place evidence is shared by coordinates, accuracy, and search radius.
+Each response retains the current request's asset, image, and capture time while
+preserving the provider evidence's original generation time.
+
 `place-card` renders cached provider evidence into the same deterministic
 Markdown card without re-calling providers. It keeps address detail, normalizes
 map context, caps useful POIs, and omits raw coordinates, warnings, provider
