@@ -97,6 +97,10 @@ go run ./cmd/photoscrawl place-backfill --json
 go run ./cmd/photoscrawl eval-card --library "$HOME/Pictures/Photos Library.photoslibrary" --allow-icloud-downloads --limit 1 --models gemma4:31b-cloud --ollama-url https://ollama.com/api --json
 ```
 
+`status` reports the resolved archive filename used by `init` and other archive
+commands. Only a nonexistent archive is reported as missing; filesystem errors
+are returned to the caller.
+
 Default runtime paths come from crawlkit platform dirs. The primary database is
 `photos.sqlite` under the crawlkit data dir; provider caches and exported
 originals use the crawlkit cache dir.

@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,26 +34,34 @@ func Init(ctx context.Context, paths Paths) (InitResult, error) {
 }
 
 func Status(ctx context.Context, paths Paths) (control.Status, error) {
+	filename, err := archiveFilename(paths.Database)
+	if err != nil {
+		return control.Status{}, err
+	}
 	status := control.NewStatus("photoscrawl", "photos archive")
-	status.DatabasePath = paths.Database
-	if info, err := os.Stat(paths.Database); err == nil {
-		status.State = "ready"
-		status.DatabaseBytes = info.Size()
-		counts, summary, lastImportAt, warnings, err := counts(ctx, paths.Database)
-		if err != nil {
-			return control.Status{}, err
-		}
-		status.Counts = counts
-		status.Summary = summary
-		status.LastImportAt = lastImportAt
-		status.Warnings = warnings
-		status.Databases = []control.Database{
-			control.SQLiteDatabase("photos", "photos.sqlite", "primary", paths.Database, true, counts),
-		}
+	status.DatabasePath = filename
+	info, err := os.Stat(filename)
+	if errors.Is(err, os.ErrNotExist) {
+		status.State = "missing"
+		status.Summary = "photos.sqlite has not been initialized"
 		return status, nil
 	}
-	status.State = "missing"
-	status.Summary = "photos.sqlite has not been initialized"
+	if err != nil {
+		return control.Status{}, fmt.Errorf("inspect archive: %w", err)
+	}
+	counts, summary, lastImportAt, warnings, err := counts(ctx, filename)
+	if err != nil {
+		return control.Status{}, err
+	}
+	status.State = "ready"
+	status.DatabaseBytes = info.Size()
+	status.Counts = counts
+	status.Summary = summary
+	status.LastImportAt = lastImportAt
+	status.Warnings = warnings
+	status.Databases = []control.Database{
+		control.SQLiteDatabase("photos", "photos.sqlite", "primary", filename, true, counts),
+	}
 	return status, nil
 }
 
