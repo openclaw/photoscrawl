@@ -147,7 +147,7 @@ func TestCurationQueriesEndToEnd(t *testing.T) {
 			t.Fatalf("screenshots = %#v, %v", shots, err)
 		}
 		blurry, err := Junk(ctx, paths, JunkOptions{Kind: "blurry"})
-		if err != nil || !sameCandidateIDs(blurry.Candidates, "blurry-low") || blurry.Percentiles["sharply_focused_subject_p10"] != .1 || blurry.Percentiles["overall_aesthetic_p25"] != .1 {
+		if err != nil || !sameCandidateIDs(blurry.Candidates, "blurry-low") || blurry.Percentiles["media_blurriness_max"] != .3 {
 			t.Fatalf("blurry = %#v, %v", blurry, err)
 		}
 		eyes, err := Junk(ctx, paths, JunkOptions{Kind: "eyes-closed"})
@@ -249,6 +249,12 @@ func curationFixture(t *testing.T) Paths {
 	add("shot-favorite", "shot-favorite-local", "image", "2020-01-01T00:00:00Z", "UTC", "", "4", 0, 1, 100, 100, nil, nil)
 	add("shot-recent", "shot-recent-local", "image", "2099-01-01T00:00:00Z", "UTC", "", "4", 0, 0, 100, 100, nil, nil)
 	add("blurry-low", "blurry-local/L0/001", "image", "2025-02-01T00:00:00Z", "UTC", "", "0", 0, 0, 100, 100, &low, &low)
+	add("dull-sharp", "dull-sharp-local", "image", "2025-02-01T01:00:00Z", "UTC", "", "0", 0, 0, 100, 100, &low, &low)
+	blurriness := func(id string, value float64) {
+		execTestSQL(t, db.DB(), `update model_observation set value_json = json_set(value_json, '$.media_blurriness', ?) where id = ?`, value, "quality-"+id)
+	}
+	blurriness("blurry-low", 0.1)
+	blurriness("dull-sharp", 0.95)
 	add("time-closed", "time-closed-local", "image", "2025-02-02T00:00:00Z", "UTC", "", "0", 0, 0, 100, 100, nil, nil)
 	add("time-open", "time-open-local", "image", "2025-02-02T00:01:00Z", "UTC", "", "0", 0, 0, 100, 100, nil, nil)
 	add("closed-alone", "closed-alone-local", "image", "2025-02-03T00:00:00Z", "UTC", "", "0", 0, 0, 100, 100, nil, nil)

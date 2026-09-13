@@ -102,12 +102,13 @@ func run(ctx context.Context, args []string) error {
 		kind := fs.String("kind", "all", "screenshots, blurry, eyes-closed, duplicates, or all")
 		older := fs.String("older-than", "30d", "age for screenshots, such as 30d or 12h")
 		limit := fs.Int("limit", 200, "max candidates")
+		blurMax := fs.Float64("blur-max", 0.3, "highest Photos blurriness score flagged as blurry (1 is sharp)")
 		exclude := fs.String("exclude-ids-file", "", "JSON array or line-separated ids to exclude")
 		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
-		result, err := archive.Junk(ctx, paths, archive.JunkOptions{Kind: *kind, OlderThan: *older, Limit: *limit, ExcludeIDsFile: *exclude})
+		result, err := archive.Junk(ctx, paths, archive.JunkOptions{Kind: *kind, OlderThan: *older, Limit: *limit, ExcludeIDsFile: *exclude, BlurMax: *blurMax})
 		if err != nil {
 			return err
 		}

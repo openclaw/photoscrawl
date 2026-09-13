@@ -553,6 +553,34 @@ func createTestPhotosDB(t *testing.T, path string) {
 	execTestSQL(t, db, `insert into ZEXTENDEDATTRIBUTES(Z_PK, ZASSET, ZISO, ZFLASHFIRED, ZAPERTURE, ZFOCALLENGTH, ZCAMERAMAKE, ZCAMERAMODEL, ZLENSMODEL, ZCODEC) values (1, 1, 100, 0, 1.8, 26, 'Apple', 'iPhone 15 Pro', 'iPhone 15 Pro back camera', 'HEVC')`)
 	execTestSQL(t, db, `insert into ZCOMPUTEDASSETATTRIBUTES(Z_PK, ZASSET, ZFAILURESCORE, ZHARMONIOUSCOLORSCORE, ZINTERESTINGSUBJECTSCORE, ZPLEASANTCOMPOSITIONSCORE, ZSHARPLYFOCUSEDSUBJECTSCORE, ZWELLFRAMEDSUBJECTSCORE) values (1, 1, 0.01, 0.75, 0.88, 0.92, 0.86, 0.94)`)
 	execTestSQL(t, db, `insert into ZDETECTEDFACE(Z_PK, ZUUID, ZPERSONFORFACE, ZASSETFORFACE, ZCENTERX, ZCENTERY, ZSIZE, ZQUALITY, ZBLURSCORE, ZISLEFTEYECLOSED, ZISRIGHTEYECLOSED, ZHASSMILE, ZNAMESOURCE, ZCLOUDNAMESOURCE, ZSOURCEWIDTH, ZSOURCEHEIGHT) values (1, 'face-1', 1, 1, 0.5, 0.5, 0.2, 0.9, 0.12, 1, 0, 1, 1, 0, 100, 100)`)
+	execTestSQL(t, db, `create table ZMEDIAANALYSISASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZBLURRINESSSCORE real)`)
+	execTestSQL(t, db, `insert into ZMEDIAANALYSISASSETATTRIBUTES(Z_PK, ZASSET, ZBLURRINESSSCORE) values (1, 1, 0.12)`)
+}
+
+func TestPhotoMetadataReadsMediaAnalysisBlurriness(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "Photos.sqlite")
+	createTestPhotosDB(t, path)
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	input, err := loadPhotoMetadataInput(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(input.rows) != 1 || input.rows[0].quality["media_blurriness"] != 0.12 {
+		t.Fatalf("media blurriness = %#v", input.rows)
+	}
+	execTestSQL(t, db, `drop table ZMEDIAANALYSISASSETATTRIBUTES`)
+	input, err = loadPhotoMetadataInput(ctx, db)
+	if err != nil {
+		t.Fatalf("import without the media analysis table failed: %v", err)
+	}
+	if _, ok := input.rows[0].quality["media_blurriness"]; ok {
+		t.Fatalf("media blurriness present without its table: %#v", input.rows[0].quality)
+	}
 }
 
 func createTestPhotosDBWithoutFaceSignals(t *testing.T, path string) {

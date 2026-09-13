@@ -228,6 +228,9 @@ from %s a`,
 		row := ensure(stringValue(values["ZUUID"]))
 		row.quality = selectMetadataValues(values, qualityMap)
 	}
+	if err := loadMediaAnalysisBlurriness(ctx, db, assetTable, ensure); err != nil {
+		return photoMetadataImportInput{}, err
+	}
 
 	rows := make([]applePhotoMetadataRow, 0, len(byUUID))
 	for uuid, row := range byUUID {
@@ -450,4 +453,30 @@ func metadataSearchText(observationType, valueText string, values map[string]any
 		parts = append(parts, strings.ReplaceAll(key, "_", " "), fmt.Sprint(values[key]))
 	}
 	return strings.Join(nonEmpty(parts...), " ")
+}
+
+// loadMediaAnalysisBlurriness adds Photos' media-analysis blurriness score to
+// each asset's quality values as "media_blurriness". Despite Apple's column
+// name, 1 means sharp and values near 0 mean visibly blurred. The table is
+// optional; older libraries without it import unchanged.
+func loadMediaAnalysisBlurriness(ctx context.Context, db *sql.DB, assetTable string, ensure func(string) *applePhotoMetadataRow) error {
+	columns, err := tableColumns(ctx, db, "ZMEDIAANALYSISASSETATTRIBUTES")
+	if err != nil {
+		return err
+	}
+	if !columns["ZASSET"] || !columns["ZBLURRINESSSCORE"] {
+		return nil
+	}
+	blurRows, err := rows(ctx, db, fmt.Sprintf("select a.ZUUID, m.ZBLURRINESSSCORE from %s a join ZMEDIAANALYSISASSETATTRIBUTES m on m.ZASSET = a.Z_PK where m.ZBLURRINESSSCORE is not null", store.QuoteIdent(assetTable)))
+	if err != nil {
+		return fmt.Errorf("read Apple media analysis blurriness: %w", err)
+	}
+	for _, values := range blurRows {
+		row := ensure(stringValue(values["ZUUID"]))
+		if row.quality == nil {
+			row.quality = map[string]any{}
+		}
+		row.quality["media_blurriness"] = normalizeSQLValue(values["ZBLURRINESSSCORE"])
+	}
+	return nil
 }

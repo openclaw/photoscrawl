@@ -61,7 +61,20 @@ type RankResult struct {
 type JunkOptions struct {
 	Kind, OlderThan, ExcludeIDsFile string
 	Limit                           int
+	// BlurMax is the highest Photos blurriness score still flagged as
+	// blurry; zero selects the default.
+	BlurMax float64
 }
+
+const defaultBlurMax = 0.3
+
+func (o JunkOptions) blurMax() float64 {
+	if o.BlurMax <= 0 {
+		return defaultBlurMax
+	}
+	return o.BlurMax
+}
+
 type JunkCandidate struct {
 	AssetRow
 	Kind        string         `json:"kind"`
@@ -82,6 +95,7 @@ type faceSignal struct {
 type signals struct {
 	faces            map[string][]faceSignal
 	aesthetic, focus map[string]sql.NullFloat64
+	blurriness       map[string]sql.NullFloat64
 }
 type fullAsset struct {
 	AssetRow
@@ -234,14 +248,17 @@ func Junk(ctx context.Context, paths Paths, o JunkOptions) (JunkResult, error) {
 		}
 	}
 	if kind == "blurry" || kind == "all" {
-		fq, aq, mq := signalStats(as, s)
-		out.Percentiles = map[string]float64{"sharply_focused_subject_p10": fq, "overall_aesthetic_p25": aq, "named_face_quality_median": mq}
+		// Photos' media-analysis blurriness is 1 for sharp photos and near 0
+		// for visibly blurred ones. Low aesthetic or subject-focus scores are
+		// not blur: they also flag sharp but ordinary photos.
+		faceMedian := namedFaceQualityMedian(as, s)
+		out.Percentiles = map[string]float64{"media_blurriness_max": o.blurMax(), "named_face_quality_median": faceMedian}
 		for _, a := range as {
-			f, ff := s.focus[a.ID]
-			q, qq := s.aesthetic[a.ID]
-			if a.MediaType == "image" && ff && qq && f.Float64 <= fq && q.Float64 <= aq && !hasFaceQualityAbove(s.faces[a.ID], mq) {
-				add(JunkCandidate{AssetRow: a.AssetRow, Kind: "blurry", Reason: "low focus and aesthetic scores", Signals: map[string]any{"sharply_focused_subject": f.Float64, "overall_aesthetic": q.Float64}})
+			b, ok := s.blurriness[a.ID]
+			if a.MediaType != "image" || !ok || b.Float64 > o.blurMax() || hasFaceQualityAbove(s.faces[a.ID], faceMedian) {
+				continue
 			}
+			add(JunkCandidate{AssetRow: a.AssetRow, Kind: "blurry", Reason: fmt.Sprintf("Photos blurriness score %.2f (1 is sharp)", b.Float64), Signals: map[string]any{"media_blurriness": b.Float64}})
 		}
 	}
 	if kind == "eyes-closed" || kind == "all" {
@@ -288,7 +305,7 @@ func loadAssets(ctx context.Context, db *sql.DB) ([]fullAsset, error) {
 	return out, rs.Err()
 }
 func loadSignals(ctx context.Context, db *sql.DB) (signals, error) {
-	s := signals{map[string][]faceSignal{}, map[string]sql.NullFloat64{}, map[string]sql.NullFloat64{}}
+	s := signals{faces: map[string][]faceSignal{}, aesthetic: map[string]sql.NullFloat64{}, focus: map[string]sql.NullFloat64{}, blurriness: map[string]sql.NullFloat64{}}
 	r, e := db.QueryContext(ctx, `select asset_id,person_label,quality,eyes_closed from face_observation where trim(person_label)<>''`)
 	if e != nil {
 		return s, e
@@ -327,7 +344,7 @@ func loadSignals(ctx context.Context, db *sql.DB) (signals, error) {
 		for _, pair := range []struct {
 			k string
 			p *map[string]sql.NullFloat64
-		}{{"overall_aesthetic", &s.aesthetic}, {"sharply_focused_subject", &s.focus}} {
+		}{{"overall_aesthetic", &s.aesthetic}, {"sharply_focused_subject", &s.focus}, {"media_blurriness", &s.blurriness}} {
 			if x, ok := number(m[pair.k]); ok {
 				(*pair.p)[id] = sql.NullFloat64{Float64: x, Valid: true}
 			}
@@ -817,17 +834,11 @@ func hasFaceQualityAbove(fs []faceSignal, x float64) bool {
 	}
 	return false
 }
-func signalStats(as []fullAsset, s signals) (float64, float64, float64) {
-	var f, q, face []float64
+func namedFaceQualityMedian(as []fullAsset, s signals) float64 {
+	var face []float64
 	for _, a := range as {
 		if a.MediaType != "image" {
 			continue
-		}
-		if x, ok := s.focus[a.ID]; ok {
-			f = append(f, x.Float64)
-		}
-		if x, ok := s.aesthetic[a.ID]; ok {
-			q = append(q, x.Float64)
 		}
 		for _, x := range s.faces[a.ID] {
 			if x.quality.Valid {
@@ -835,8 +846,9 @@ func signalStats(as []fullAsset, s signals) (float64, float64, float64) {
 			}
 		}
 	}
-	return percentile(f, .1), percentile(q, .25), percentile(face, .5)
+	return percentile(face, .5)
 }
+
 func percentile(v []float64, p float64) float64 {
 	if len(v) == 0 {
 		return 0
