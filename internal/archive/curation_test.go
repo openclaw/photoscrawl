@@ -6,39 +6,61 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/openclaw/crawlkit/store"
 )
 
-func TestQualityComparatorSkipsSignalsMissingOnOneSide(t *testing.T) {
+func TestQualityComparatorUsesMedianImputation(t *testing.T) {
 	landscape := fullAsset{AssetRow: AssetRow{ID: "landscape"}, created: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	portrait := fullAsset{AssetRow: AssetRow{ID: "portrait"}, created: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)}
 	s := signals{faces: map[string][]faceSignal{}, aesthetic: map[string]sql.NullFloat64{}, focus: map[string]sql.NullFloat64{}}
-	// With neither asset carrying a face signal, the comparator skips it.
-	if got := compareQuality(landscape, portrait, s, nil); got != 0 {
-		t.Fatalf("compareQuality with signal on one side = %d, want 0", got)
-	}
-	s.faces[portrait.ID] = []faceSignal{{quality: sql.NullFloat64{Float64: 0.1, Valid: true}}}
-	// A signal available to only one asset is skipped.
-	if got := compareQuality(landscape, portrait, s, nil); got != 0 {
-		t.Fatalf("one-sided face quality must be skipped: %d", got)
-	}
-	s.faces = map[string][]faceSignal{}
 	s.aesthetic[landscape.ID] = sql.NullFloat64{Float64: .9, Valid: true}
-	s.aesthetic[portrait.ID] = sql.NullFloat64{Float64: .2, Valid: true}
+	s.aesthetic[portrait.ID] = sql.NullFloat64{Float64: .1, Valid: true}
+	s.faces[portrait.ID] = []faceSignal{{quality: sql.NullFloat64{Float64: .9, Valid: true}}}
+	s.focus[portrait.ID] = sql.NullFloat64{Float64: .9, Valid: true}
+	s = s.withQualityMedians([]fullAsset{landscape, portrait})
 	if got := compareQuality(landscape, portrait, s, nil); got >= 0 {
-		t.Fatalf("aesthetic signal did not rank landscape first: %d", got)
+		t.Fatalf("high-aesthetic face-free landscape did not rank first: %d", got)
+	}
+	ranked := rankAsset(landscape, s, nil)
+	score := ranked.ScoreBreakdown["quality_score"].(float64)
+	if score < 1.574 || score > 1.576 || ranked.ScoreBreakdown["lowest_named_face_quality (imputed median)"] != .9 || ranked.ScoreBreakdown["sharply_focused_subject (imputed median)"] != .9 {
+		t.Fatalf("median-imputed score breakdown = %#v", ranked.ScoreBreakdown)
 	}
 }
 
-func TestQualityComparatorUsesSharedKeysInOrder(t *testing.T) {
+func TestQualityComparatorIsTransitiveAcrossMissingSignals(t *testing.T) {
+	a := fullAsset{AssetRow: AssetRow{ID: "a"}}
+	b := fullAsset{AssetRow: AssetRow{ID: "b"}}
+	c := fullAsset{AssetRow: AssetRow{ID: "c"}}
+	s := signals{faces: map[string][]faceSignal{}, aesthetic: map[string]sql.NullFloat64{}, focus: map[string]sql.NullFloat64{}}
+	s.faces[a.ID] = []faceSignal{{quality: sql.NullFloat64{Float64: .9, Valid: true}}}
+	s.aesthetic[a.ID] = sql.NullFloat64{Float64: .1, Valid: true}
+	s.faces[b.ID] = []faceSignal{{quality: sql.NullFloat64{Float64: .1, Valid: true}}}
+	s.focus[b.ID] = sql.NullFloat64{Float64: .9, Valid: true}
+	s.aesthetic[c.ID] = sql.NullFloat64{Float64: .9, Valid: true}
+	s.focus[c.ID] = sql.NullFloat64{Float64: .1, Valid: true}
+	s = s.withQualityMedians([]fullAsset{a, b, c})
+	want := []string{"c", "b", "a"}
+	for _, permutation := range [][]fullAsset{{a, b, c}, {a, c, b}, {b, a, c}, {b, c, a}, {c, a, b}, {c, b, a}} {
+		sortAssets(permutation, s, nil, true)
+		got := []string{permutation[0].ID, permutation[1].ID, permutation[2].ID}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("quality order = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestQualityComparatorUsesKeysInOrder(t *testing.T) {
 	a := fullAsset{AssetRow: AssetRow{ID: "a"}}
 	b := fullAsset{AssetRow: AssetRow{ID: "b"}}
 	s := signals{faces: map[string][]faceSignal{}, aesthetic: map[string]sql.NullFloat64{}, focus: map[string]sql.NullFloat64{}}
 	s.faces[a.ID] = []faceSignal{{label: "A", closed: sql.NullInt64{Valid: true}}, {quality: sql.NullFloat64{Float64: .2, Valid: true}}}
 	s.faces[b.ID] = []faceSignal{{label: "A", closed: sql.NullInt64{Int64: 1, Valid: true}}, {quality: sql.NullFloat64{Float64: .9, Valid: true}}}
+	s = s.withQualityMedians([]fullAsset{a, b})
 	if got := compareQuality(a, b, s, []string{"A"}); got >= 0 {
 		t.Fatalf("requested person key = %d, want a first", got)
 	}
@@ -46,20 +68,34 @@ func TestQualityComparatorUsesSharedKeysInOrder(t *testing.T) {
 		t.Fatalf("eyes-closed key = %d, want a first", got)
 	}
 	s.faces[b.ID][0].closed = sql.NullInt64{Valid: true}
+	s = s.withQualityMedians([]fullAsset{a, b})
 	if got := compareQuality(a, b, s, nil); got <= 0 {
-		t.Fatalf("face-quality key = %d, want b first", got)
+		t.Fatalf("quality score = %d, want b first", got)
 	}
 	s.faces = map[string][]faceSignal{}
 	s.aesthetic[a.ID] = sql.NullFloat64{Float64: .1, Valid: true}
 	s.aesthetic[b.ID] = sql.NullFloat64{Float64: .9, Valid: true}
+	s = s.withQualityMedians([]fullAsset{a, b})
 	if got := compareQuality(a, b, s, nil); got <= 0 {
-		t.Fatalf("aesthetic key = %d, want b first", got)
+		t.Fatalf("aesthetic contribution = %d, want b first", got)
 	}
 	s.aesthetic = map[string]sql.NullFloat64{}
 	s.focus[a.ID] = sql.NullFloat64{Float64: .1, Valid: true}
 	s.focus[b.ID] = sql.NullFloat64{Float64: .9, Valid: true}
+	s = s.withQualityMedians([]fullAsset{a, b})
 	if got := compareQuality(a, b, s, nil); got <= 0 {
-		t.Fatalf("focus key = %d, want b first", got)
+		t.Fatalf("focus contribution = %d, want b first", got)
+	}
+}
+
+func TestOpenRequestedRequiresKnownOpenEyes(t *testing.T) {
+	faces := []faceSignal{
+		{label: "open", closed: sql.NullInt64{Int64: 0, Valid: true}},
+		{label: "closed", closed: sql.NullInt64{Int64: 1, Valid: true}},
+		{label: "unknown", closed: sql.NullInt64{}},
+	}
+	if got := openRequested(faces, []string{"open", "closed", "unknown"}); got != 1 {
+		t.Fatalf("openRequested = %d, want only the known-open face", got)
 	}
 }
 
@@ -88,6 +124,54 @@ func TestCurationDurationAndScreenshotSubtype(t *testing.T) {
 	}
 	if !isScreenshotSubtype("4") || isScreenshotSubtype("16") {
 		t.Fatal("screenshot subtype must be bit 2, not portrait bit 4")
+	}
+}
+
+func TestDuplicateGroupsBuildsDeterministicConnectedComponents(t *testing.T) {
+	ctx := context.Background()
+	paths := testPaths(t)
+	db, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	execTestSQL(t, db.DB(), `insert into source_library values ('duplicate-library', '/fixture', 'snapshot', '2025-01-01T00:00:00Z', 'test', '{}')`)
+	for _, id := range []string{"a", "b", "c", "singleton", "x", "y"} {
+		execTestSQL(t, db.DB(), `insert into asset(id,local_identifier,media_type,media_subtypes,creation_date,modification_date,added_date,timezone_name,width,height,duration_seconds,favorite,hidden,burst_identifier,represents_burst,source_library_id,metadata_json) values(?,?,'image','0','2025-01-01T00:00:00Z','','','UTC',100,100,0,0,0,'',0,'duplicate-library','{}')`, id, id+"-local")
+	}
+	duplicateObservation := func(id, value string) {
+		execTestSQL(t, db.DB(), `insert into model_observation values(?,?,'apple_duplicate','',?,1,'fixture','fixture','fixture',?)`, "duplicate-"+id, id, value, "evidence-"+id)
+	}
+	duplicateObservation("a", `{"metadata_group":"apple"}`)
+	duplicateObservation("b", `{"metadata_group":"apple","perceptual_group":"perceptual"}`)
+	duplicateObservation("c", `{"perceptual_group":"perceptual"}`)
+	resource := func(id, hash string) {
+		execTestSQL(t, db.DB(), `insert into asset_resource(id,asset_id,source_identifier,resource_type,uti,original_filename,local_path,file_size,sha256,available_locally,needs_download) values(?,?,?,'original','public.jpeg','fixture.jpg','/tmp/fixture.jpg',1,?,0,0)`, "resource-"+id, id, "source-"+id, hash)
+	}
+	resource("a", "a-unique")
+	resource("singleton", "singleton-unique")
+	resource("x", "shared-hash")
+	resource("y", "shared-hash")
+
+	assets, err := loadAssets(ctx, db.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{{"a", "b", "c"}, {"x", "y"}}
+	for run := 0; run < 20; run++ {
+		groups, err := duplicateGroups(ctx, db.DB(), assets)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make([][]string, len(groups))
+		for i, group := range groups {
+			for _, asset := range group {
+				got[i] = append(got[i], asset.ID)
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("run %d duplicate groups = %#v, want %#v", run, got, want)
+		}
 	}
 }
 

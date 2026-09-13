@@ -103,6 +103,7 @@ func Forgotten(ctx context.Context, paths Paths, o ForgottenOptions) (ForgottenR
 		}
 		candidates = append(candidates, asset)
 	}
+	s = s.withQualityMedians(candidates)
 
 	groups := groupForgottenCandidates(candidates, time.Duration(gapHours*float64(time.Hour)))
 	result.GroupsConsidered = len(groups)
@@ -116,18 +117,7 @@ func Forgotten(ctx context.Context, paths Paths, o ForgottenOptions) (ForgottenR
 		selected = append(selected, selectedAsset{asset: group[0], groupSize: len(group)})
 	}
 	sort.SliceStable(selected, func(i, j int) bool {
-		x := s.aesthetic[selected[i].asset.ID].Float64
-		y := s.aesthetic[selected[j].asset.ID].Float64
-		if x != y {
-			return x > y
-		}
-		if c := compareQuality(selected[i].asset, selected[j].asset, s, nil); c != 0 {
-			return c < 0
-		}
-		if !selected[i].asset.created.Equal(selected[j].asset.created) {
-			return selected[i].asset.created.After(selected[j].asset.created)
-		}
-		return selected[i].asset.ID < selected[j].asset.ID
+		return compareQuality(selected[i].asset, selected[j].asset, s, nil) < 0
 	})
 	limit := bounded(o.Limit, 12, 500)
 	if len(selected) > limit {

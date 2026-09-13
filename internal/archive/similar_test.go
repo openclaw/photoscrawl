@@ -178,10 +178,20 @@ func TestSimilarScoringReasonsAndExclusions(t *testing.T) {
 	if peoplePlace.Score != similarPersonWeight+similarPlaceWeight || !sameStrings(peoplePlace.Shared, "Alex", "Italy") {
 		t.Fatalf("people and place bonuses = %#v", peoplePlace)
 	}
-	for _, excluded := range []string{"seed", "same-burst", "same-event", "screenshot", "blurry", "video", "privacy-only", "deleted"} {
+	for _, excluded := range []string{"seed", "same-burst", "same-event", "screenshot", "blurry", "video", "hidden", "privacy-only", "deleted"} {
 		if hasSimilarID(result.Assets, excluded) {
 			t.Fatalf("unexpected excluded asset %q in %#v", excluded, result.Assets)
 		}
+	}
+}
+
+func TestSimilarExcludesHiddenCandidates(t *testing.T) {
+	result, err := Similar(context.Background(), similarFixture(t), SimilarOptions{ID: "seed", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasSimilarID(result.Assets, "hidden") {
+		t.Fatalf("hidden candidate returned in %#v", result.Assets)
 	}
 }
 
@@ -271,6 +281,52 @@ func TestSimilarRequiresExistingID(t *testing.T) {
 	}
 }
 
+func TestSimilarFiltersIneligibleCandidatesBeforeShortlist(t *testing.T) {
+	ctx := context.Background()
+	paths := testPaths(t)
+	db, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execTestSQL(t, db.DB(), `insert into source_library values ('shortlist-library', '/fixture', 'snapshot', '2025-01-01T00:00:00Z', 'test', '{}')`)
+	addAsset := func(id, created string) {
+		execTestSQL(t, db.DB(), `insert into asset(id,local_identifier,media_type,media_subtypes,creation_date,modification_date,added_date,timezone_name,width,height,duration_seconds,favorite,hidden,burst_identifier,represents_burst,source_library_id,metadata_json) values(?,?,'image','0',?,'','','UTC',100,100,0,0,0,'',0,'shortlist-library','{}')`, id, id+"-local", created)
+	}
+	addVisual := func(id, label string) {
+		execTestSQL(t, db.DB(), `insert into visual_observation values(?,?,'apple_label',?,1,'{}','fixture','fixture',?)`, "visual-"+id+"-"+label, id, label, "evidence-"+id+"-"+label)
+	}
+	addAsset("shortlist-seed", "2025-01-10T12:00:00Z")
+	excludedIDs := make([]string, 0, similarShortlist/2)
+	for i := 0; i <= similarShortlist; i++ {
+		id := fmt.Sprintf("high-%03d", i)
+		created := "2025-01-10T13:00:00Z"
+		if i >= similarShortlist/2 {
+			created = "2020-01-01T12:00:00Z"
+			excludedIDs = append(excludedIDs, id)
+		}
+		addAsset(id, created)
+		for feature := 0; feature < 2; feature++ {
+			label := fmt.Sprintf("shortlist-%03d-%d", i, feature)
+			addVisual("shortlist-seed", label)
+			addVisual(id, label)
+		}
+	}
+	addAsset("eligible-lower-score", "2019-01-01T12:00:00Z")
+	addVisual("shortlist-seed", "eligible-label")
+	addVisual("eligible-lower-score", "eligible-label")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	excludePath := writeCurationIDs(t, paths.DataDir, "shortlist-exclude.txt", excludedIDs...)
+	result, err := Similar(ctx, paths, SimilarOptions{ID: "shortlist-seed", ExcludeIDsFile: excludePath, Limit: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameSimilarIDs(result.Assets, "eligible-lower-score") {
+		t.Fatalf("eligible candidate below the pre-filter top %d = %#v", similarShortlist, result.Assets)
+	}
+}
+
 func similarFixture(t *testing.T) Paths {
 	t.Helper()
 	paths := testPaths(t)
@@ -319,6 +375,8 @@ values(?,?,?,?,?,'','','UTC',100,100,0,0,0,?,0,'similar-library','{}',?)
 	add("video", "video-local", "video", "2020-04-01T12:00:00Z", "", "0", false)
 	add("people-place", "people-place-local", "image", "2020-04-15T12:00:00Z", "", "0", false)
 	add("privacy-only", "privacy-local", "image", "2020-05-01T12:00:00Z", "", "0", false)
+	add("hidden", "hidden-local", "image", "2020-05-15T12:00:00Z", "", "0", false)
+	execTestSQL(t, db.DB(), `update asset set hidden=1 where id='hidden'`)
 	add("deleted", "deleted-local", "image", "2020-06-01T12:00:00Z", "", "0", true)
 	for i := 0; i < 4; i++ {
 		id := fmt.Sprintf("corpus-%d", i)
@@ -348,6 +406,8 @@ values(?,?,?,?,?,'','','UTC',100,100,0,0,0,?,0,'similar-library','{}',?)
 	}
 	visual("people-place", "apple_place", "Italy")
 	person("people-place", "Alex")
+	visual("seed", "apple_label", "Private Landmark")
+	visual("hidden", "apple_label", "Private Landmark")
 	quality("strong", .8, .9)
 	quality("common", .8, .9)
 	quality("tie-low", .1, .9)

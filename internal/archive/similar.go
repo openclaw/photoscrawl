@@ -124,12 +124,8 @@ func Similar(ctx context.Context, paths Paths, opts SimilarOptions) (SimilarResu
 		return SimilarResult{}, err
 	}
 
-	features = pruneSimilarFeatures(features, documentCount, similarShortlist)
+	features = pruneSimilarFeatures(features, documentCount, 0)
 	assets, err := loadSimilarAssets(ctx, db.DB(), similarCandidateIDs(features))
-	if err != nil {
-		return SimilarResult{}, err
-	}
-	signalSet, err := loadSimilarSignals(ctx, db.DB(), similarCandidateIDs(features))
 	if err != nil {
 		return SimilarResult{}, err
 	}
@@ -137,16 +133,35 @@ func Similar(ctx context.Context, paths Paths, opts SimilarOptions) (SimilarResu
 	if err != nil {
 		return SimilarResult{}, err
 	}
-
-	candidates := make([]SimilarAsset, 0, len(assets))
-	qualityAssets := make(map[string]fullAsset, len(features))
+	assetByID := make(map[string]fullAsset, len(assets))
+	eligibleFeatures := make(map[string]map[string]similarFeature, len(assets))
 	for _, asset := range assets {
-		if !includeSimilarCandidate(seed, asset, signalSet, excluded, opts.IncludeSameEvent) {
+		if !includeSimilarAssetCandidate(seed, asset, excluded, opts.IncludeSameEvent) {
+			continue
+		}
+		assetByID[asset.ID] = asset
+		eligibleFeatures[asset.ID] = features[asset.ID]
+	}
+	features = shortlistSimilarFeatures(eligibleFeatures, similarShortlist)
+	shortlistIDs := similarCandidateIDs(features)
+	signalSet, err := loadSimilarSignals(ctx, db.DB(), shortlistIDs)
+	if err != nil {
+		return SimilarResult{}, err
+	}
+
+	candidates := make([]SimilarAsset, 0, len(shortlistIDs))
+	qualityInput := make([]fullAsset, 0, len(shortlistIDs))
+	qualityAssets := make(map[string]fullAsset, len(features))
+	for _, candidateID := range shortlistIDs {
+		asset := assetByID[candidateID]
+		if !includeSimilarSignalCandidate(asset, signalSet) {
 			continue
 		}
 		qualityAssets[asset.ID] = asset
+		qualityInput = append(qualityInput, asset)
 		candidates = append(candidates, similarAsset(asset, features[asset.ID]))
 	}
+	signalSet = signalSet.withQualityMedians(qualityInput)
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].Score != candidates[j].Score {
 			return candidates[i].Score > candidates[j].Score
@@ -156,10 +171,7 @@ func Similar(ctx context.Context, paths Paths, opts SimilarOptions) (SimilarResu
 		if quality := compareQuality(a, b, signalSet, nil); quality != 0 {
 			return quality < 0
 		}
-		if !a.created.Equal(b.created) {
-			return a.created.After(b.created)
-		}
-		return a.ID < b.ID
+		return false
 	})
 	if len(candidates) > limit {
 		candidates = candidates[:limit]
@@ -376,8 +388,8 @@ where source.asset_id = ?
 
 // pruneSimilarFeatures drops shared labels and people that appear on more than
 // the noise fraction of the library (Apple labels such as "Food" or the
-// library owner's own face), then keeps the highest-scoring shortlist. Terms
-// are already frequency-capped when their weights are computed.
+// library owner's own face). Terms are already frequency-capped when their
+// weights are computed. If requested, the shortlist is applied after pruning.
 func pruneSimilarFeatures(features map[string]map[string]similarFeature, documentCount, shortlist int) map[string]map[string]similarFeature {
 	keyCounts := map[string]int{}
 	for _, assetFeatures := range features {
@@ -386,30 +398,38 @@ func pruneSimilarFeatures(features map[string]map[string]similarFeature, documen
 		}
 	}
 	limit := similarNoisePolicy.maxDocumentFraction * float64(documentCount)
-	type scored struct {
-		id    string
-		score float64
-	}
-	ranked := make([]scored, 0, len(features))
 	pruned := make(map[string]map[string]similarFeature, len(features))
 	for id, assetFeatures := range features {
 		kept := map[string]similarFeature{}
-		score := 0.0
 		for key, feature := range assetFeatures {
 			if !strings.HasPrefix(key, "term:") && float64(keyCounts[key]) > limit {
 				continue
 			}
 			kept[key] = feature
-			score += feature.weight
 		}
 		if len(kept) == 0 {
 			continue
 		}
 		pruned[id] = kept
-		ranked = append(ranked, scored{id: id, score: score})
 	}
-	if shortlist <= 0 || len(ranked) <= shortlist {
-		return pruned
+	return shortlistSimilarFeatures(pruned, shortlist)
+}
+
+func shortlistSimilarFeatures(features map[string]map[string]similarFeature, shortlist int) map[string]map[string]similarFeature {
+	if shortlist <= 0 || len(features) <= shortlist {
+		return features
+	}
+	type scored struct {
+		id    string
+		score float64
+	}
+	ranked := make([]scored, 0, len(features))
+	for id, assetFeatures := range features {
+		score := 0.0
+		for _, feature := range assetFeatures {
+			score += feature.weight
+		}
+		ranked = append(ranked, scored{id: id, score: score})
 	}
 	sort.Slice(ranked, func(i, j int) bool {
 		if ranked[i].score != ranked[j].score {
@@ -419,7 +439,7 @@ func pruneSimilarFeatures(features map[string]map[string]similarFeature, documen
 	})
 	shortlisted := make(map[string]map[string]similarFeature, shortlist)
 	for _, entry := range ranked[:shortlist] {
-		shortlisted[entry.id] = pruned[entry.id]
+		shortlisted[entry.id] = features[entry.id]
 	}
 	return shortlisted
 }
@@ -561,8 +581,8 @@ func loadSimilarSignals(ctx context.Context, db *sql.DB, ids []string) (signals,
 	return s, nil
 }
 
-func includeSimilarCandidate(seed, candidate fullAsset, signalSet signals, excluded map[string]bool, includeSameEvent bool) bool {
-	if candidate.ID == seed.ID || candidate.MediaType != "image" || excludedMatch(candidate, excluded) {
+func includeSimilarAssetCandidate(seed, candidate fullAsset, excluded map[string]bool, includeSameEvent bool) bool {
+	if candidate.ID == seed.ID || candidate.MediaType != "image" || candidate.hidden != 0 || excludedMatch(candidate, excluded) {
 		return false
 	}
 	if !includeSameEvent {
@@ -589,6 +609,10 @@ func includeSimilarCandidate(seed, candidate fullAsset, signalSet signals, exclu
 	if isScreenshotSubtype(candidate.subtypes) {
 		return false
 	}
+	return true
+}
+
+func includeSimilarSignalCandidate(candidate fullAsset, signalSet signals) bool {
 	if blur, ok := signalSet.blurriness[candidate.ID]; ok && blur.Valid && blur.Float64 <= defaultBlurMax {
 		return false
 	}

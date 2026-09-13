@@ -52,6 +52,15 @@ var blockedPrivacyCategories = []privacyCategory{
 	{name: "signature", aliases: []string{"signature", "signatures"}},
 	{name: "boarding pass", aliases: []string{"boarding pass", "boarding passes"}},
 	{name: "ticket", aliases: []string{"ticket", "tickets"}},
+	{name: "driver's license", aliases: []string{"driver's license", "drivers license", "driver license", "driving licence", "driving license"}},
+	{name: "social security", aliases: []string{"social security card", "social security number", "ssn"}},
+	{name: "password", aliases: []string{"password", "passcode", "pin code", "pin number"}},
+	{name: "access credential", aliases: []string{"api key", "access token", "recovery code", "seed phrase"}},
+	{name: "bank account", aliases: []string{"account number", "iban", "routing number", "swift", "sort code"}},
+	{name: "payment card", aliases: []string{"card number", "debit card", "bank card", "cvv", "cvc"}},
+	{name: "identity document", aliases: []string{"tax id", "tax return", "national id", "residence permit", "visa", "work permit", "insurance card"}},
+	{name: "sensitive document", aliases: []string{"contract", "bank statement", "pay slip", "payslip"}},
+	{name: "qr code", aliases: []string{"qr code"}},
 }
 
 var privacyClauseSeparator = regexp.MustCompile(`(?i)\s*,\s*|\s+\band\b\s+`)

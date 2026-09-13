@@ -96,6 +96,10 @@ type signals struct {
 	faces            map[string][]faceSignal
 	aesthetic, focus map[string]sql.NullFloat64
 	blurriness       map[string]sql.NullFloat64
+	medians          qualityMedians
+}
+type qualityMedians struct {
+	aesthetic, face, focus float64
 }
 type fullAsset struct {
 	AssetRow
@@ -151,6 +155,7 @@ func Find(ctx context.Context, paths Paths, o FindOptions) (FindResult, error) {
 	if err != nil {
 		return FindResult{}, err
 	}
+	s = s.withQualityMedians(as)
 	sortAssets(as, s, o.People, o.Rank == "quality")
 	limit := bounded(o.Limit, 50, 500)
 	out := FindResult{Limit: limit, Assets: []AssetRow{}}
@@ -198,6 +203,7 @@ func Rank(ctx context.Context, paths Paths, o RankOptions) (RankResult, error) {
 		}
 	}
 	as = excludeAssets(as, ex)
+	s = s.withQualityMedians(as)
 	sortAssets(as, s, o.People, true)
 	return groupRank(as, s, o)
 }
@@ -447,22 +453,23 @@ func compareQuality(a, b fullAsset, s signals, people []string) int {
 			return y - x
 		}
 	}
-	if x, xok := closedCountKnown(s.faces[a.ID]); xok {
-		if y, yok := closedCountKnown(s.faces[b.ID]); yok && x != y {
-			return x - y
-		}
+	if x, y := closedCount(s.faces[a.ID]), closedCount(s.faces[b.ID]); x != y {
+		return x - y
 	}
-	if x, xok := lowestQuality(s.faces[a.ID]); xok {
-		if y, yok := lowestQuality(s.faces[b.ID]); yok && x != y {
-			return cmpFloatDesc(x, y)
-		}
+	if x, y := qualityScore(a, s), qualityScore(b, s); x != y {
+		return cmpFloatDesc(x, y)
 	}
-	for _, m := range []map[string]sql.NullFloat64{s.aesthetic, s.focus} {
-		x, xok := m[a.ID]
-		y, yok := m[b.ID]
-		if xok && yok && x.Float64 != y.Float64 {
-			return cmpFloatDesc(x.Float64, y.Float64)
+	if !a.created.Equal(b.created) {
+		if a.created.After(b.created) {
+			return -1
 		}
+		return 1
+	}
+	if a.ID < b.ID {
+		return -1
+	}
+	if a.ID > b.ID {
+		return 1
 	}
 	return 0
 }
@@ -541,19 +548,23 @@ func rankAsset(a fullAsset, s signals, p []string) RankAsset {
 		}
 		z.Reasons = append(z.Reasons, fmt.Sprintf("%d named %s have eyes closed", v, word))
 	}
-	if v, ok := lowestQuality(s.faces[a.ID]); ok {
-		z.ScoreBreakdown["lowest_named_face_quality"] = v
-		z.Reasons = append(z.Reasons, fmt.Sprintf("lowest named-face quality %.2f", v))
-	}
-	if v, ok := s.aesthetic[a.ID]; ok {
-		z.ScoreBreakdown["overall_aesthetic"] = v.Float64
-		z.Reasons = append(z.Reasons, fmt.Sprintf("overall aesthetic %.2f", v.Float64))
-	}
-	if v, ok := s.focus[a.ID]; ok {
-		z.ScoreBreakdown["sharply_focused_subject"] = v.Float64
-		z.Reasons = append(z.Reasons, fmt.Sprintf("sharply focused subject %.2f", v.Float64))
-	}
+	aesthetic, aestheticImputed := qualityMapValue(s.aesthetic, a.ID, s.medians.aesthetic)
+	face, faceImputed := qualityFaceValue(s.faces[a.ID], s.medians.face)
+	focus, focusImputed := qualityMapValue(s.focus, a.ID, s.medians.focus)
+	addQualityBreakdown(&z, "overall_aesthetic", "overall aesthetic", aesthetic, aestheticImputed)
+	addQualityBreakdown(&z, "lowest_named_face_quality", "lowest named-face quality", face, faceImputed)
+	addQualityBreakdown(&z, "sharply_focused_subject", "sharply focused subject", focus, focusImputed)
+	z.ScoreBreakdown["quality_score"] = aesthetic + 0.5*face + 0.25*focus
 	return z
+}
+
+func addQualityBreakdown(asset *RankAsset, key, reason string, value float64, imputed bool) {
+	if imputed {
+		key += " (imputed median)"
+		reason += " (imputed median)"
+	}
+	asset.ScoreBreakdown[key] = value
+	asset.Reasons = append(asset.Reasons, fmt.Sprintf("%s %.2f", reason, value))
 }
 
 func number(v any) (float64, bool) {
@@ -686,7 +697,7 @@ func openRequested(fs []faceSignal, ps []string) int {
 	n := 0
 	for _, p := range ps {
 		for _, f := range fs {
-			if strings.EqualFold(f.label, p) && (!f.closed.Valid || f.closed.Int64 == 0) {
+			if strings.EqualFold(f.label, p) && f.closed.Valid && f.closed.Int64 == 0 {
 				n++
 				break
 			}
@@ -702,19 +713,6 @@ func closedCount(fs []faceSignal) int {
 		}
 	}
 	return n
-}
-func closedCountKnown(fs []faceSignal) (int, bool) {
-	n := 0
-	known := false
-	for _, f := range fs {
-		if f.closed.Valid {
-			known = true
-			if f.closed.Int64 == 1 {
-				n++
-			}
-		}
-	}
-	return n, known
 }
 func lowestQuality(fs []faceSignal) (float64, bool) {
 	var x float64
@@ -735,6 +733,63 @@ func cmpFloatDesc(x, y float64) int {
 		return 1
 	}
 	return 0
+}
+
+func (s signals) withQualityMedians(assets []fullAsset) signals {
+	aesthetic := make([]float64, 0, len(assets))
+	face := make([]float64, 0, len(assets))
+	focus := make([]float64, 0, len(assets))
+	for _, asset := range assets {
+		if value, ok := s.aesthetic[asset.ID]; ok && value.Valid {
+			aesthetic = append(aesthetic, value.Float64)
+		}
+		if value, ok := lowestQuality(s.faces[asset.ID]); ok {
+			face = append(face, value)
+		}
+		if value, ok := s.focus[asset.ID]; ok && value.Valid {
+			focus = append(focus, value.Float64)
+		}
+	}
+	s.medians = qualityMedians{
+		aesthetic: median(aesthetic),
+		face:      median(face),
+		focus:     median(focus),
+	}
+	return s
+}
+
+func qualityScore(asset fullAsset, s signals) float64 {
+	aesthetic, _ := qualityMapValue(s.aesthetic, asset.ID, s.medians.aesthetic)
+	face, _ := qualityFaceValue(s.faces[asset.ID], s.medians.face)
+	focus, _ := qualityMapValue(s.focus, asset.ID, s.medians.focus)
+	return aesthetic + 0.5*face + 0.25*focus
+}
+
+func qualityMapValue(values map[string]sql.NullFloat64, id string, imputed float64) (float64, bool) {
+	if value, ok := values[id]; ok && value.Valid {
+		return value.Float64, false
+	}
+	return imputed, true
+}
+
+func qualityFaceValue(faces []faceSignal, imputed float64) (float64, bool) {
+	if value, ok := lowestQuality(faces); ok {
+		return value, false
+	}
+	return imputed, true
+}
+
+func median(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	ordered := append([]float64(nil), values...)
+	sort.Float64s(ordered)
+	middle := len(ordered) / 2
+	if len(ordered)%2 == 0 {
+		return (ordered[middle-1] + ordered[middle]) / 2
+	}
+	return ordered[middle]
 }
 func (a fullAsset) favoriteBool() bool { return a.favorite != 0 }
 func isScreenshotSubtype(x string) bool {
@@ -856,7 +911,16 @@ func duplicateGroups(ctx context.Context, db *sql.DB, as []fullAsset) ([][]fullA
 	for _, a := range as {
 		by[a.ID] = a
 	}
-	m := map[string][]fullAsset{}
+	groupMembers := map[string]map[string]bool{}
+	addMember := func(key, id string) {
+		if _, ok := by[id]; !ok {
+			return
+		}
+		if groupMembers[key] == nil {
+			groupMembers[key] = map[string]bool{}
+		}
+		groupMembers[key][id] = true
+	}
 	r, err := db.QueryContext(ctx, `select asset_id,value_json from model_observation where observation_type='apple_duplicate'`)
 	if err != nil {
 		return nil, err
@@ -874,9 +938,7 @@ func duplicateGroups(ctx context.Context, db *sql.DB, as []fullAsset) ([][]fullA
 		}
 		for _, k := range []string{"metadata_group", "perceptual_group"} {
 			if z := fmt.Sprint(x[k]); z != "<nil>" && z != "" {
-				if a, ok := by[id]; ok {
-					m[k+":"+z] = append(m[k+":"+z], a)
-				}
+				addMember(k+":"+z, id)
 			}
 		}
 	}
@@ -899,9 +961,7 @@ func duplicateGroups(ctx context.Context, db *sql.DB, as []fullAsset) ([][]fullA
 			return nil, err
 		}
 		if h.Valid && h.String != "" {
-			if a, ok := by[id]; ok {
-				m["hash:"+h.String] = append(m["hash:"+h.String], a)
-			}
+			addMember("hash:"+h.String, id)
 		}
 	}
 	if err = r.Err(); err != nil {
@@ -911,20 +971,62 @@ func duplicateGroups(ctx context.Context, db *sql.DB, as []fullAsset) ([][]fullA
 	if err = r.Close(); err != nil {
 		return nil, err
 	}
-	out := [][]fullAsset{}
-	seen := map[string]bool{}
-	for _, g := range m {
-		u := []fullAsset{}
-		for _, a := range g {
-			if !seen[a.ID] {
-				seen[a.ID] = true
-				u = append(u, a)
+	parent := map[string]string{}
+	var findRoot func(string) string
+	findRoot = func(id string) string {
+		root := id
+		for parent[root] != root {
+			root = parent[root]
+		}
+		for parent[id] != id {
+			next := parent[id]
+			parent[id] = root
+			id = next
+		}
+		return root
+	}
+	keys := make([]string, 0, len(groupMembers))
+	for key := range groupMembers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		members := make([]string, 0, len(groupMembers[key]))
+		for id := range groupMembers[key] {
+			members = append(members, id)
+		}
+		sort.Strings(members)
+		for _, id := range members {
+			if _, ok := parent[id]; !ok {
+				parent[id] = id
 			}
 		}
-		if len(u) > 1 {
-			out = append(out, u)
+		for _, id := range members[1:] {
+			left, right := findRoot(members[0]), findRoot(id)
+			if left == right {
+				continue
+			}
+			if left < right {
+				parent[right] = left
+			} else {
+				parent[left] = right
+			}
 		}
 	}
+	components := map[string][]fullAsset{}
+	for id := range parent {
+		root := findRoot(id)
+		components[root] = append(components[root], by[id])
+	}
+	out := make([][]fullAsset, 0, len(components))
+	for _, component := range components {
+		if len(component) < 2 {
+			continue
+		}
+		sort.Slice(component, func(i, j int) bool { return component[i].ID < component[j].ID })
+		out = append(out, component)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i][0].ID < out[j][0].ID })
 	return out, nil
 }
 func keeperBefore(a, b fullAsset, s signals) bool {
