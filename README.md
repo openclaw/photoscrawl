@@ -77,19 +77,30 @@ gh workflow run release-unified.yml --repo openclaw/photoscrawl -f version=X.Y.Z
 
 After `import-apple`, the archive holds the signals Photos already computed:
 named faces with eye state and quality, per-photo aesthetic and blurriness
-scores, screenshot subtypes, and duplicate flags. `people`, `find`, `rank`,
-and `junk` read those signals and never change Photos.
+scores, screenshot subtypes, and duplicate flags. The commands below read
+those signals and never change Photos.
 
 - `find` filters by required people, date range, place, text, and media.
 - `rank` orders a set best first and can keep the best few per burst, time
-  gap, or day. A signal counts only when both photos being compared have it,
-  so photos without faces rank on their aesthetic scores.
+  gap, or day. It ranks by one quality score (aesthetic, lowest named-face
+  quality, and subject focus); a missing signal takes the median of the
+  photos being ranked, so photos without faces are not penalized.
 - `junk` lists screenshot, blurry, eyes-closed, and duplicate candidates with
   the signal values and a suggested photo to keep instead. These are review
   candidates, not decisions.
+- `similar` finds photos sharing model terms and Apple labels with a seed,
+  outside the seed's own moment; `forgotten` finds strong photos in no user
+  or shared album; `sheet` renders numbered contact sheets.
+- `share-check` is an advisory privacy gate: a photo passes only when its
+  saved model reply includes a privacy assessment and no sensitive category.
+  Show photos to a person before sending them anywhere.
 
-Every listing command accepts `--exclude-ids-file` with archive IDs or Photos
-local identifiers, so callers can skip photos they already handled.
+`find`, `rank`, `junk`, `similar`, `forgotten`, and `share-check` accept
+`--exclude-ids-file` with archive IDs or Photos local identifiers, so callers
+can skip photos they already handled.
+
+Schema 5 archives cannot be opened by older binaries. Upgrade every process
+that uses an archive together, then run `photoscrawl init` once.
 
 ## First Commands
 

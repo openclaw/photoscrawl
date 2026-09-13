@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/openclaw/crawlkit/store"
@@ -210,7 +211,56 @@ func shareCheckFixture(t *testing.T) Paths {
 	execTestSQL(t, db.DB(), `update evidence_ref set value_json=? where id='classification-missing-assessment'`, `{"classified_at":"2025-01-02T00:00:00Z","parsed_response":{"scene_summary":"a passport"}}`)
 	execTestSQL(t, db.DB(), `insert into evidence_ref values('older-assessment','missing-assessment','content_classification',?,?,?)`, localModelClassifierSource, "fixture", `{"classified_at":"2025-01-01T00:00:00Z","parsed_response":{"privacy_sensitivity":[]}}`)
 	add("undated", "0", "", false, "content_classified", "")
+	// A long privacy entry whose sensitive part sits past the shortened
+	// observation text; only the saved reply has the whole phrase.
+	add("long-privacy", "0", "2025-01-01T00:00:00Z", false, "content_classified", strings.Repeat("benign context ", 40))
+	longReply, err := json.Marshal(map[string]any{"classified_at": "2025-01-03T00:00:00Z", "parsed_response": map[string]any{"privacy_sensitivity": []string{strings.Repeat("benign context ", 40) + "passport visible"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execTestSQL(t, db.DB(), `update evidence_ref set value_json=? where id='classification-long-privacy'`, string(longReply))
+	for id, reply := range map[string]string{
+		"null-entry":   `{"classified_at":"2025-01-03T00:00:00Z","parsed_response":{"privacy_sensitivity":[null]}}`,
+		"blank-entry":  `{"classified_at":"2025-01-03T00:00:00Z","parsed_response":{"privacy_sensitivity":[""]}}`,
+		"object-entry": `{"classified_at":"2025-01-03T00:00:00Z","parsed_response":{"privacy_sensitivity":[{"text":"x"}]}}`,
+	} {
+		add(id, "0", "2025-01-01T00:00:00Z", false, "content_classified", "")
+		execTestSQL(t, db.DB(), `update evidence_ref set value_json=? where id=?`, reply, "classification-"+id)
+	}
 	return paths
+}
+
+func TestShareCheckReadsCompleteSavedPrivacyReply(t *testing.T) {
+	paths := shareCheckFixture(t)
+	ids := writeCurationIDs(t, paths.DataDir, "long-privacy.txt", "long-privacy")
+	got, err := ShareCheck(context.Background(), paths, ShareCheckOptions{IDsFile: ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Assets) != 1 || got.Assets[0].Status != "blocked" || !containsText(got.Assets[0].Reasons, "privacy category: passport") {
+		t.Fatalf("sensitive phrase past the observation limit = %#v", got.Assets)
+	}
+}
+
+func TestShareCheckTreatsMalformedAssessmentEntriesAsUnreviewed(t *testing.T) {
+	paths := shareCheckFixture(t)
+	ids := writeCurationIDs(t, paths.DataDir, "malformed.txt", "null-entry", "blank-entry", "object-entry", "pass")
+	got, err := ShareCheck(context.Background(), paths, ShareCheckOptions{IDsFile: ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]ShareCheckAsset{}
+	for _, asset := range got.Assets {
+		byID[asset.ID] = asset
+	}
+	for _, id := range []string{"null-entry", "blank-entry", "object-entry"} {
+		if byID[id].Status != "unreviewed" {
+			t.Fatalf("%s = %#v, want unreviewed", id, byID[id])
+		}
+	}
+	if byID["pass"].Status != "pass" {
+		t.Fatalf("explicit empty assessment = %#v, want pass", byID["pass"])
+	}
 }
 
 func TestShareCheckBlocksSQLiteProviderScreenshots(t *testing.T) {

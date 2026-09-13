@@ -142,7 +142,7 @@ func ShareCheck(ctx context.Context, paths Paths, options ShareCheckOptions) (Sh
 	return result, nil
 }
 
-func shareCheckAsset(ctx context.Context, db *sql.DB, asset fullAsset, privacyAssessed bool) (ShareCheckAsset, error) {
+func shareCheckAsset(ctx context.Context, db *sql.DB, asset fullAsset, assessment privacyAssessmentEvidence) (ShareCheckAsset, error) {
 	row := ShareCheckAsset{
 		AssetRow: asset.AssetRow,
 		Status:   "pass",
@@ -159,6 +159,7 @@ func shareCheckAsset(ctx context.Context, db *sql.DB, asset fullAsset, privacyAs
 	if err != nil {
 		return ShareCheckAsset{}, err
 	}
+	phrases = append(phrases, assessment.phrases...)
 	if malformed {
 		row.Reasons = append(row.Reasons, "unreadable privacy sensitivity observation")
 	}
@@ -167,7 +168,7 @@ func shareCheckAsset(ctx context.Context, db *sql.DB, asset fullAsset, privacyAs
 		for _, category := range blockedCategoriesInPhrase(phrase) {
 			blocked[category] = true
 		}
-		if isPrivacyNote(phrase) {
+		if isPrivacyNote(phrase) && !containsString(row.Notes, phrase) {
 			row.Notes = append(row.Notes, phrase)
 		}
 	}
@@ -198,7 +199,7 @@ func shareCheckAsset(ctx context.Context, db *sql.DB, asset fullAsset, privacyAs
 		row.Reasons = append(row.Reasons, "content classification not completed")
 		return row, nil
 	}
-	if !privacyAssessed {
+	if !assessment.assessed {
 		row.Status = "unreviewed"
 		row.Reasons = append(row.Reasons, "privacy not assessed")
 	}
@@ -206,13 +207,16 @@ func shareCheckAsset(ctx context.Context, db *sql.DB, asset fullAsset, privacyAs
 }
 
 type privacyAssessmentEvidence struct {
-	assessed     bool
+	assessed bool
+	// phrases are the complete privacy entries from the saved model reply;
+	// derived observations are shortened and must not decide a pass alone.
+	phrases      []string
 	classifiedAt time.Time
 	dateText     string
 	id           string
 }
 
-func loadPrivacyAssessments(ctx context.Context, db *sql.DB, assets []fullAsset) (map[string]bool, error) {
+func loadPrivacyAssessments(ctx context.Context, db *sql.DB, assets []fullAsset) (map[string]privacyAssessmentEvidence, error) {
 	latest := map[string]privacyAssessmentEvidence{}
 	for start := 0; start < len(assets); start += privacyAssessmentChunk {
 		end := min(start+privacyAssessmentChunk, len(assets))
@@ -250,11 +254,7 @@ where evidence_kind = ? and source = ? and asset_id in (`+placeholders+`)
 			return nil, err
 		}
 	}
-	assessed := make(map[string]bool, len(latest))
-	for assetID, evidence := range latest {
-		assessed[assetID] = evidence.assessed
-	}
-	return assessed, nil
+	return latest, nil
 }
 
 func parsePrivacyAssessmentEvidence(id, raw string) privacyAssessmentEvidence {
@@ -274,7 +274,21 @@ func parsePrivacyAssessmentEvidence(id, raw string) privacyAssessmentEvidence {
 		return evidence
 	}
 	var entries []json.RawMessage
-	evidence.assessed = json.Unmarshal(privacy, &entries) == nil
+	if json.Unmarshal(privacy, &entries) != nil {
+		return evidence
+	}
+	// An explicit empty array means "assessed, nothing sensitive". Any
+	// non-string or blank entry makes the whole assessment unusable.
+	phrases := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		var text string
+		if json.Unmarshal(entry, &text) != nil || strings.TrimSpace(text) == "" {
+			return evidence
+		}
+		phrases = append(phrases, strings.TrimSpace(text))
+	}
+	evidence.assessed = true
+	evidence.phrases = phrases
 	return evidence
 }
 
@@ -465,4 +479,13 @@ func wordBoundary(value string, index int) bool {
 	}
 	character := value[index]
 	return character < 'a' || character > 'z'
+}
+
+func containsString(values []string, value string) bool {
+	for _, existing := range values {
+		if existing == value {
+			return true
+		}
+	}
+	return false
 }
