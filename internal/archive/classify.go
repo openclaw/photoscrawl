@@ -218,7 +218,8 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 			return nil
 		})
 		if temporaryPreview != "" {
-			removeErr := os.Remove(temporaryPreview)
+			// The invocation owns the whole directory it created.
+			removeErr := os.RemoveAll(filepath.Dir(temporaryPreview))
 			if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) && err == nil {
 				err = fmt.Errorf("remove classification preview: %w", removeErr)
 			}
@@ -317,19 +318,26 @@ func prepareClassificationPreview(ctx context.Context, paths Paths, input *class
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return "", fmt.Errorf("create classification preview cache: %w", err)
 	}
-	previewName := strings.TrimPrefix(stableID("classification_preview", input.AssetID), "classification_preview:") + ".jpg"
-	previewPath := filepath.Join(cacheDir, previewName)
-	if info, err := os.Stat(previewPath); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
-		input.Resources = append(input.Resources, classificationPreviewResource(previewPath))
-		return previewPath, nil
+	// Each invocation owns its preview file. Two concurrent classify runs can
+	// select the same queue row, and a shared asset-derived name would let one
+	// run delete or read the other's half-written preview.
+	previewDir, err := os.MkdirTemp(cacheDir, "run-")
+	if err != nil {
+		return "", fmt.Errorf("create classification preview directory: %w", err)
 	}
+	if err := os.Chmod(previewDir, 0o700); err != nil {
+		_ = os.RemoveAll(previewDir)
+		return "", fmt.Errorf("protect classification preview directory: %w", err)
+	}
+	previewName := strings.TrimPrefix(stableID("classification_preview", input.AssetID), "classification_preview:") + ".jpg"
+	previewPath := filepath.Join(previewDir, previewName)
 	if err := exporter(ctx, input.LocalIdentifier, previewPath, maxDimension, true); err != nil {
-		_ = os.Remove(previewPath)
+		_ = os.RemoveAll(previewDir)
 		return "", fmt.Errorf("download PhotoKit preview: %w", err)
 	}
-	info, err := os.Stat(previewPath)
-	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
-		_ = os.Remove(previewPath)
+	info, statErr := os.Stat(previewPath)
+	if statErr != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		_ = os.RemoveAll(previewDir)
 		return "", errors.New("download PhotoKit preview: exporter returned no image")
 	}
 	input.Resources = append(input.Resources, classificationPreviewResource(previewPath))

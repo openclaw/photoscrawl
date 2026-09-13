@@ -528,6 +528,13 @@ func TestClassifyLocalModelDownloadsTemporaryICloudPreview(t *testing.T) {
 	if _, err := os.Stat(exportedPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("temporary preview was not removed: %v", err)
 	}
+	previewDir := filepath.Dir(exportedPath)
+	if previewDir == paths.ClassificationPreviewCacheDir() {
+		t.Fatalf("preview was written directly into the shared cache: %q", exportedPath)
+	}
+	if _, err := os.Stat(previewDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invocation preview directory was not removed: %v", err)
+	}
 
 	db, err := store.OpenReadOnly(ctx, paths.Database)
 	if err != nil {
@@ -641,5 +648,37 @@ func TestClassifyLocalModelPrioritizesPendingRowsBeforeWaitingRows(t *testing.T)
 	}
 	if second.Processed != 1 || second.ContentClassified != 1 || second.WaitingForLocalContent != 0 {
 		t.Fatalf("second classify result = %#v", second)
+	}
+}
+
+func TestPrepareClassificationPreviewGivesEachInvocationItsOwnFile(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	input := classifyInput{AssetID: "asset:one", LocalIdentifier: "ONE/L0/001"}
+	exporter := func(_ context.Context, _, destination string, _ int, _ bool) error {
+		return os.WriteFile(destination, []byte("preview"), 0o600)
+	}
+	first, err := prepareClassificationPreview(ctx, paths, &input, ClassifyOptions{previewExporter: exporter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := prepareClassificationPreview(ctx, paths, &input, ClassifyOptions{previewExporter: exporter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || filepath.Dir(first) == filepath.Dir(second) {
+		t.Fatalf("two invocations shared a preview path: %q and %q", first, second)
+	}
+	// Removing one invocation's directory must leave the other's file intact.
+	if err := os.RemoveAll(filepath.Dir(first)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(second); err != nil {
+		t.Fatalf("second invocation preview was disturbed: %v", err)
+	}
+	info, err := os.Stat(filepath.Dir(second))
+	if err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("preview directory mode = %v, %v", info.Mode(), err)
 	}
 }
