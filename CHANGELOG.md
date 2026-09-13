@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Import Photos' face eye state, blur, smile, quality, and person kind, its duplicate flags, and its media-analysis blurriness through `import-apple`; missing columns import as null, and Photos' `-1` "not computed" face quality is stored as unknown.
+- Add `people`, `find`, `rank`, and `junk` over the imported signals: required-people, date, place, and text filters; best-first ranking with reasons that compares a signal only when both photos have it, grouped by burst, time gap, or day; and screenshot, blurry, eyes-closed, and duplicate candidates with a suggested keeper.
+- Add `sheet` for numbered contact sheets rendered from local files without PhotoKit, `similar` for label-overlap matches outside the seed's own moment, `forgotten` for strong photos in no user or shared album, and `share-check`, a privacy gate that blocks sensitive categories with per-category negation and fails closed on unclassified photos. Schema 5 adds a visual-label index.
+- Classify iCloud-only photos from bounded temporary PhotoKit previews with `classify --allow-icloud-downloads`, retain preview callback values, and wait for bounded archive writers.
 - Update CrawlKit to v0.16.2, refresh the Nix development inputs, and align the Nix Go toolchain and formatter with the supported Go 1.27 line.
 - Preserve place-backfill retry identities when location ordering changes, keep distinct coordinate/accuracy values separate, and exclude retired artifacts from current summaries.
 - Embed the default photo-card prompt for installed binaries, and stop eval runs on model-evidence write failures or cancellation instead of reporting successful completion.
