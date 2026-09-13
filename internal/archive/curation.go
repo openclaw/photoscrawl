@@ -114,7 +114,19 @@ func People(ctx context.Context, paths Paths) (PeopleResult, error) {
 		return PeopleResult{}, err
 	}
 	defer db.Close()
-	rs, err := db.DB().QueryContext(ctx, `select person_label, coalesce(person_uuid,''), coalesce(person_kind,''), count(*), count(distinct asset_id) from face_observation where source = ? and trim(person_label) <> '' group by person_label, person_uuid, person_kind order by count(distinct asset_id) desc, person_label`, photosLibraryDBFaceSource)
+	// Face rows survive a tombstoned asset, so join and skip deleted assets.
+	rs, err := db.DB().QueryContext(ctx, `
+select face_observation.person_label,
+       coalesce(face_observation.person_uuid, ''),
+       coalesce(face_observation.person_kind, ''),
+       count(*),
+       count(distinct face_observation.asset_id)
+from face_observation
+join asset on asset.id = face_observation.asset_id and asset.deleted_at is null
+where face_observation.source = ? and trim(face_observation.person_label) <> ''
+group by face_observation.person_label, face_observation.person_uuid, face_observation.person_kind
+order by count(distinct face_observation.asset_id) desc, face_observation.person_label
+`, photosLibraryDBFaceSource)
 	if err != nil {
 		return PeopleResult{}, err
 	}

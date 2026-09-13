@@ -186,6 +186,17 @@ func TestCurationQueriesEndToEnd(t *testing.T) {
 			t.Fatalf("people ordering and kinds = %#v", got.People)
 		}
 	})
+	t.Run("people excludes tombstoned assets", func(t *testing.T) {
+		got, err := People(ctx, paths)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, person := range got.People {
+			if person.Label == "Deleted Only" {
+				t.Fatalf("a person known only from tombstoned assets was listed: %#v", person)
+			}
+		}
+	})
 	t.Run("find", func(t *testing.T) {
 		got, err := Find(ctx, paths, FindOptions{People: []string{"Alex", "Sam"}, From: "2025-01-10", To: "2025-01-10", Place: "central park", Rank: "quality", Limit: 20})
 		if err != nil || !sameIDs(got.Assets, "find-both", "find-end") {
@@ -358,6 +369,10 @@ func curationFixture(t *testing.T) Paths {
 		face(id, "Avery", "unknown", .7, 0)
 	}
 	add("shot-old", "shot-old-local", "image", "2020-01-01T00:00:00Z", "UTC", "", "4", 0, 0, 100, 100, nil, nil)
+	// A tombstoned asset keeps its face rows; people must not count them.
+	add("deleted-face", "deleted-face-local", "image", "2020-01-02T00:00:00Z", "UTC", "", "0", 0, 0, 100, 100, nil, nil)
+	execTestSQL(t, db.DB(), `update asset set deleted_at = '2025-01-01T00:00:00Z', deletion_source = 'test', deletion_reason = 'test' where id = 'deleted-face'`)
+	face("deleted-face", "Deleted Only", "person", .9, 0)
 	add("shot-portrait", "shot-portrait-local", "image", "2020-01-01T00:00:00Z", "UTC", "", "16", 0, 0, 100, 100, nil, nil)
 	add("shot-favorite", "shot-favorite-local", "image", "2020-01-01T00:00:00Z", "UTC", "", "4", 0, 1, 100, 100, nil, nil)
 	add("shot-recent", "shot-recent-local", "image", "2099-01-01T00:00:00Z", "UTC", "", "4", 0, 0, 100, 100, nil, nil)
