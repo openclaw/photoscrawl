@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Embed the default photo-card prompt for installed binaries, and stop eval runs on model-evidence write failures or cancellation instead of reporting successful completion.
 - Enforce archive schema checks and retained tombstones in timeline queries, and preserve UTF-8 character boundaries when truncating model observations and failure reasons.
 - Preserve the requesting asset's identity on cached place lookups and render partial place cards without crashing.
 - Reuse Apple search-category tables and the photo-card local media index, avoiding per-observation allocations and a second Photos package scan.

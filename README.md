@@ -211,7 +211,8 @@ Ctrl-C cancels backfill retry waits promptly. If a command is blocked in a nativ
 call or input read, a second Ctrl-C terminates it.
 
 `eval-card` is an opt-in research harness for prompt/model evaluation. It uses
-the tracked prompt files in `prompts/`, prepares canonical full-resolution JPEGs
+the built-in version of `prompts/photo-card-v1.md` (or an explicit `--prompt`
+file), prepares canonical full-resolution JPEGs
 from originals, passes full metadata as a sidecar prompt input, and writes all
 private images, metadata, and model responses under the crawlkit data dir's
 `evals` subtree. If `--allow-icloud-downloads` is set, PhotoKit may download
@@ -225,8 +226,10 @@ Existing local originals and older cache files are never deleted by this cleanup
 The summary includes `assets_attempted`; retained JPEGs and metadata remain in
 the output directory, while temporary original paths are provenance only.
 
-The eval-card summary is written only after its manifest flush and close succeed;
-manifest persistence errors fail the run before the summary is written.
+The eval-card summary is written only after model evidence is saved and its
+manifest flush and close succeed. Evidence write failures or cancellation stop
+the run before a new summary is written; provider failures remain recorded eval
+results and contribute to `model_calls_failed`.
 
 ## Current Useful Output
 

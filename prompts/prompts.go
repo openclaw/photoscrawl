@@ -10,3 +10,6 @@ const (
 
 //go:embed local-multimodal-observations-v1.md
 var LocalMultimodalObservationsV1 string
+
+//go:embed photo-card-v1.md
+var PhotoCardV1 string
