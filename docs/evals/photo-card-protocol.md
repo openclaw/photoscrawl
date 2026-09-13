@@ -87,3 +87,10 @@ Review outputs manually against these questions:
 
 The current baseline prompt is `prompts/photo-card-v1.md`. New prompt iterations
 should be added as separate prompt files and compared with the same image set.
+The binary embeds this baseline, so installed builds work outside the checkout.
+`--prompt` selects an explicit file; the default `prompt_path` names the tracked
+artifact and does not require that relative path to exist on disk.
+
+Every attempted model response or provider failure must be saved before the run
+can complete. A write failure stops dispatch and fails the run without publishing
+a new summary. Cancellation during preparation or model calls also fails the run.

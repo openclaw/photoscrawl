@@ -149,12 +149,14 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	promptPath := strings.TrimSpace(opts.PromptPath)
+	promptBytes := []byte(repoPrompts.PhotoCardV1)
 	if promptPath == "" {
 		promptPath = repoPrompts.DefaultPhotoCardV1Path
-	}
-	promptBytes, err := os.ReadFile(promptPath)
-	if err != nil {
-		return Result{}, fmt.Errorf("read prompt: %w", err)
+	} else {
+		promptBytes, err = os.ReadFile(promptPath)
+		if err != nil {
+			return Result{}, fmt.Errorf("read prompt: %w", err)
+		}
 	}
 	promptSum := sha256.Sum256(promptBytes)
 
@@ -228,10 +230,16 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		}
 		inputs = append(inputs, input)
 	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	result.AssetsPrepared = len(inputs)
 
 	if len(opts.Models) > 0 && len(inputs) > 0 {
-		succeeded, failed := runModelCalls(ctx, outputDir, string(promptBytes), inputs, opts.Models, result.OllamaGenerateURLUsed, opts.OllamaAPIKey, concurrency)
+		succeeded, failed, err := runModelCalls(ctx, outputDir, string(promptBytes), inputs, opts.Models, result.OllamaGenerateURLUsed, opts.OllamaAPIKey, concurrency)
+		if err != nil {
+			return Result{}, err
+		}
 		result.ModelCallsAttempted = len(inputs) * len(opts.Models)
 		result.ModelCallsSucceeded = succeeded
 		result.ModelCallsFailed = failed

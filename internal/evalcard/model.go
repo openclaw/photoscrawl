@@ -54,7 +54,9 @@ type storedModelOutput struct {
 	OllamaTelemetry map[string]any `json:"ollama_telemetry,omitempty"`
 }
 
-func runModelCalls(ctx context.Context, outputDir, promptText string, inputs []preparedInput, models []string, generateURL, apiKey string, concurrency int) (int, int) {
+func runModelCalls(ctx context.Context, outputDir, promptText string, inputs []preparedInput, models []string, generateURL, apiKey string, concurrency int) (int, int, error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	type job struct {
 		input preparedInput
 		model string
@@ -62,80 +64,94 @@ func runModelCalls(ctx context.Context, outputDir, promptText string, inputs []p
 	jobs := make(chan job)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	succeeded := 0
-	failed := 0
+	succeeded, failed := 0, 0
 	client := &http.Client{Timeout: 20 * time.Minute}
-
-	worker := func() {
-		for job := range jobs {
-			if err := runOneModelCall(ctx, client, outputDir, promptText, job.input, job.model, generateURL, apiKey); err != nil {
-				mu.Lock()
-				failed++
-				mu.Unlock()
-				continue
-			}
-			mu.Lock()
-			succeeded++
-			mu.Unlock()
-		}
-	}
 	for range concurrency {
-		wg.Go(worker)
+		wg.Go(func() {
+			for job := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				ok, err := runOneModelCall(ctx, client, outputDir, promptText, job.input, job.model, generateURL, apiKey)
+				if err != nil {
+					cancel(err)
+					return
+				}
+				mu.Lock()
+				if ok {
+					succeeded++
+				} else {
+					failed++
+				}
+				mu.Unlock()
+			}
+		})
 	}
+dispatch:
 	for _, input := range inputs {
 		for _, model := range models {
-			jobs <- job{input: input, model: model}
+			select {
+			case <-ctx.Done():
+				break dispatch
+			case jobs <- job{input: input, model: model}:
+			}
 		}
 	}
 	close(jobs)
 	wg.Wait()
-	return succeeded, failed
+	return succeeded, failed, context.Cause(ctx)
 }
 
-func runOneModelCall(ctx context.Context, client *http.Client, outputDir, promptText string, input preparedInput, model, generateURL, apiKey string) error {
+// Provider failures are saved as evidence; persistence failures abort the run.
+func runOneModelCall(ctx context.Context, client *http.Client, outputDir, promptText string, input preparedInput, model, generateURL, apiKey string) (bool, error) {
 	started := time.Now().UTC()
 	out := storedModelOutput{
-		EvalID:        input.ID,
-		Provider:      "ollama",
-		Model:         model,
-		PromptVersion: PromptVersion,
-		ImagePath:     input.ImagePath,
-		MetadataPath:  input.MetadataPath,
-		StartedAt:     started.Format(time.RFC3339Nano),
+		EvalID: input.ID, Provider: "ollama", Model: model, PromptVersion: PromptVersion,
+		ImagePath: input.ImagePath, MetadataPath: input.MetadataPath,
+		StartedAt: started.Format(time.RFC3339Nano),
 	}
-	defer func() {
-		out.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
-		out.DurationMillis = time.Since(started).Milliseconds()
-		_ = writeModelOutput(outputDir, out)
-	}()
+	generated, callErr := generateCard(ctx, client, promptText, input, model, generateURL, apiKey)
+	if callErr != nil {
+		out.Error = callErr.Error()
+	} else {
+		out.Response = strings.TrimSpace(generated.Response)
+		out.OllamaTelemetry = map[string]any{
+			"total_duration":       generated.TotalDuration,
+			"load_duration":        generated.LoadDuration,
+			"prompt_eval_count":    generated.PromptEvalCount,
+			"prompt_eval_duration": generated.PromptEvalDuration,
+			"eval_count":           generated.EvalCount,
+			"eval_duration":        generated.EvalDuration,
+		}
+	}
+	out.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	out.DurationMillis = time.Since(started).Milliseconds()
+	if err := writeModelOutput(outputDir, out); err != nil {
+		return false, fmt.Errorf("write model output: %w", err)
+	}
+	return callErr == nil, nil
+}
 
+func generateCard(ctx context.Context, client *http.Client, promptText string, input preparedInput, model, generateURL, apiKey string) (ollamaGenerateResponse, error) {
 	imageBytes, err := os.ReadFile(input.ImagePath)
 	if err != nil {
-		out.Error = err.Error()
-		return err
+		return ollamaGenerateResponse{}, err
 	}
 	renderedPrompt, err := promptWithMetadata(promptText, input.MetadataJSON)
 	if err != nil {
-		out.Error = err.Error()
-		return err
+		return ollamaGenerateResponse{}, err
 	}
 	requestBody, err := json.Marshal(ollamaGenerateRequest{
-		Model:  model,
-		Prompt: renderedPrompt,
-		Images: []string{base64.StdEncoding.EncodeToString(imageBytes)},
-		Stream: false,
-		Options: map[string]any{
-			"temperature": 0.1,
-		},
+		Model: model, Prompt: renderedPrompt,
+		Images: []string{base64.StdEncoding.EncodeToString(imageBytes)}, Stream: false,
+		Options: map[string]any{"temperature": 0.1},
 	})
 	if err != nil {
-		out.Error = err.Error()
-		return err
+		return ollamaGenerateResponse{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, generateURL, bytes.NewReader(requestBody))
 	if err != nil {
-		out.Error = err.Error()
-		return err
+		return ollamaGenerateResponse{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if strings.TrimSpace(apiKey) != "" {
@@ -143,38 +159,24 @@ func runOneModelCall(ctx context.Context, client *http.Client, outputDir, prompt
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		out.Error = err.Error()
-		return err
+		return ollamaGenerateResponse{}, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		out.Error = err.Error()
-		return err
+		return ollamaGenerateResponse{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		out.Error = fmt.Sprintf("ollama returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
-		return errors.New(out.Error)
+		return ollamaGenerateResponse{}, fmt.Errorf("ollama returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	var generated ollamaGenerateResponse
 	if err := json.Unmarshal(body, &generated); err != nil {
-		out.Error = err.Error()
-		return err
+		return ollamaGenerateResponse{}, err
 	}
 	if strings.TrimSpace(generated.Error) != "" {
-		out.Error = generated.Error
-		return errors.New(generated.Error)
+		return ollamaGenerateResponse{}, errors.New(generated.Error)
 	}
-	out.Response = strings.TrimSpace(generated.Response)
-	out.OllamaTelemetry = map[string]any{
-		"total_duration":       generated.TotalDuration,
-		"load_duration":        generated.LoadDuration,
-		"prompt_eval_count":    generated.PromptEvalCount,
-		"prompt_eval_duration": generated.PromptEvalDuration,
-		"eval_count":           generated.EvalCount,
-		"eval_duration":        generated.EvalDuration,
-	}
-	return nil
+	return generated, nil
 }
 
 func writeModelOutput(outputDir string, out storedModelOutput) error {
