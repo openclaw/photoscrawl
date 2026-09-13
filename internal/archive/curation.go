@@ -768,12 +768,6 @@ func allOpen(fs []faceSignal) bool {
 	}
 	return known
 }
-func absDuration(a, b time.Time) time.Duration {
-	if a.After(b) {
-		return a.Sub(b)
-	}
-	return b.Sub(a)
-}
 
 type eyeSibling struct {
 	closed fullAsset
