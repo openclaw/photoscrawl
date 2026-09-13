@@ -333,3 +333,64 @@ func TestSchemaV5MigrationAddsVisualLabelIndex(t *testing.T) {
 		t.Fatalf("schema version = %d, want %d", version, SchemaVersion)
 	}
 }
+
+func TestPopulatedSchemaV3ArchiveUpgradesToCurrentWithoutLosingRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "photos.sqlite")
+	v3Schema := strings.Replace(Schema, `
+  person_uuid text,
+  person_kind text,
+  confidence real not null,
+  quality real,
+  blur_score real,
+  eyes_closed integer,
+  smile integer,`, `
+  confidence real not null,`, 1)
+	v3Schema = strings.Replace(v3Schema, "create index if not exists visual_type_label_idx on visual_observation(observation_type, label collate nocase);\n", "", 1)
+	legacy, err := store.Open(ctx, store.Options{Path: dbPath, Schema: v3Schema, SchemaVersion: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`insert into source_library values ('lib', '/fixture', 'snapshot', '2025-01-01T00:00:00Z', 'test', '{}')`,
+		`insert into asset(id,local_identifier,media_type,media_subtypes,creation_date,modification_date,added_date,timezone_name,width,height,duration_seconds,favorite,hidden,burst_identifier,represents_burst,source_library_id,metadata_json) values('asset:one','ONE/L0/001','image','0','2025-01-01T00:00:00Z','','','UTC',10,10,0,1,0,'',0,'lib','{}')`,
+		`insert into evidence_ref(id,asset_id,evidence_kind,source,pointer,value_json) values('evidence:face','asset:one','face_observation','photos_library_db','ZDETECTEDFACE:1','{}')`,
+		`insert into face_observation(id,asset_id,face_local_id,person_label,confidence,bounding_box_json,source,evidence_id) values('face:one','asset:one','face-1','Alex',1,'{}','photos_library_db','evidence:face')`,
+		`insert into model_observation values('model:one','asset:one','apple_quality_scores','','{"overall_aesthetic":0.8}',1,'photos_library_db','apple','v1','evidence:face')`,
+		`insert into visual_observation values('visual:one','asset:one','apple_label','Beach',1,'{}','photos_search_index','apple','evidence:face')`,
+	} {
+		if _, err := legacy.DB().ExecContext(ctx, statement); err != nil {
+			legacy.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	upgraded, err := openArchiveStore(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	version, err := upgraded.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, SchemaVersion)
+	}
+	for table, want := range map[string]int{"asset": 1, "evidence_ref": 1, "face_observation": 1, "model_observation": 1, "visual_observation": 1} {
+		assertCount(t, upgraded.DB(), "select count(*) from "+table, want)
+	}
+	var label string
+	var quality, eyesClosed sql.NullFloat64
+	if err := upgraded.DB().QueryRowContext(ctx, `select person_label, quality, eyes_closed from face_observation where id = 'face:one'`).Scan(&label, &quality, &eyesClosed); err != nil {
+		t.Fatal(err)
+	}
+	if label != "Alex" || quality.Valid || eyesClosed.Valid {
+		t.Fatalf("upgraded face = %q quality=%v eyes=%v, want the original label and null new signals", label, quality, eyesClosed)
+	}
+	assertCount(t, upgraded.DB(), `select count(*) from sqlite_master where type = 'index' and name = 'visual_type_label_idx'`, 1)
+}
