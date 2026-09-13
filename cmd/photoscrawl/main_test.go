@@ -165,5 +165,9 @@ insert into location_observation values ('asset:1', 52.379189, 4.899431, 8.5);
 			return err
 		}
 	}
+	manifest := []byte(`[{"index":0,"latitude":52.379189,"longitude":4.899431,"accuracy_meters":8.5}]`)
+	if err := os.WriteFile(filepath.Join(outDir, "manifest.json"), manifest, 0o600); err != nil {
+		return err
+	}
 	return os.WriteFile(filepath.Join(outDir, "attempts", "000000.jsonl"), []byte("{}\n"), 0o600)
 }

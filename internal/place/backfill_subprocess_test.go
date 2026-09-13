@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,3 +149,5 @@ from location_observation where asset_id = 'asset:1';
 		t.Fatalf("persisted summary = %+v, want %+v", persisted, summary)
 	}
 }
+
+func sameCoordinate(a, b float64) bool { return math.Abs(a-b) < 0.00000001 }

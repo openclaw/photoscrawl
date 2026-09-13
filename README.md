@@ -204,6 +204,15 @@ provider failures, and writes the manifest, attempts, raw successful provider
 outputs, and final errors under the crawlkit data dir's
 `backfills/place-context-full/apple-ingest` subtree.
 
+Backfill keeps coordinate/index assignments in `identities.json`, including
+retired keys, so inserting, removing, or restoring locations cannot transfer or
+reset retry histories. Existing runs bootstrap this ledger from `manifest.json`;
+that manifest continues to list only the current keys. New keys receive unused
+indexes, and retired artifacts stay on disk without contributing to current
+summary counts. Coordinates and accuracy retain their stored precision.
+Keep the identity ledger with the artifacts: missing or ambiguous identity data
+fails before provider calls instead of guessing which location owns attempts.
+
 An evidence write failure stops the current backfill round, cancels pending
 attempts, and returns the original write error.
 
