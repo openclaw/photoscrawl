@@ -40,18 +40,18 @@ type ollamaGenerateResponse struct {
 }
 
 type storedModelOutput struct {
-	EvalID          string                 `json:"eval_id"`
-	Provider        string                 `json:"provider"`
-	Model           string                 `json:"model"`
-	PromptVersion   string                 `json:"prompt_version"`
-	ImagePath       string                 `json:"image_path"`
-	MetadataPath    string                 `json:"metadata_path"`
-	StartedAt       string                 `json:"started_at"`
-	CompletedAt     string                 `json:"completed_at"`
-	DurationMillis  int64                  `json:"duration_millis"`
-	Response        string                 `json:"response,omitempty"`
-	Error           string                 `json:"error,omitempty"`
-	OllamaTelemetry map[string]interface{} `json:"ollama_telemetry,omitempty"`
+	EvalID          string         `json:"eval_id"`
+	Provider        string         `json:"provider"`
+	Model           string         `json:"model"`
+	PromptVersion   string         `json:"prompt_version"`
+	ImagePath       string         `json:"image_path"`
+	MetadataPath    string         `json:"metadata_path"`
+	StartedAt       string         `json:"started_at"`
+	CompletedAt     string         `json:"completed_at"`
+	DurationMillis  int64          `json:"duration_millis"`
+	Response        string         `json:"response,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	OllamaTelemetry map[string]any `json:"ollama_telemetry,omitempty"`
 }
 
 func runModelCalls(ctx context.Context, outputDir, promptText string, inputs []preparedInput, models []string, generateURL, apiKey string, concurrency int) (int, int) {
@@ -67,7 +67,6 @@ func runModelCalls(ctx context.Context, outputDir, promptText string, inputs []p
 	client := &http.Client{Timeout: 20 * time.Minute}
 
 	worker := func() {
-		defer wg.Done()
 		for job := range jobs {
 			if err := runOneModelCall(ctx, client, outputDir, promptText, job.input, job.model, generateURL, apiKey); err != nil {
 				mu.Lock()
@@ -80,9 +79,8 @@ func runModelCalls(ctx context.Context, outputDir, promptText string, inputs []p
 			mu.Unlock()
 		}
 	}
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go worker()
+	for range concurrency {
+		wg.Go(worker)
 	}
 	for _, input := range inputs {
 		for _, model := range models {
@@ -168,7 +166,7 @@ func runOneModelCall(ctx context.Context, client *http.Client, outputDir, prompt
 		return errors.New(generated.Error)
 	}
 	out.Response = strings.TrimSpace(generated.Response)
-	out.OllamaTelemetry = map[string]interface{}{
+	out.OllamaTelemetry = map[string]any{
 		"total_duration":       generated.TotalDuration,
 		"load_duration":        generated.LoadDuration,
 		"prompt_eval_count":    generated.PromptEvalCount,

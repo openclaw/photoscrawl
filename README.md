@@ -105,8 +105,8 @@ a separate Photos library.
 
 `crawl` tries PhotoKit first for metadata. PhotoKit enumerates the active system
 Photos library; the `--library` path is validated and recorded as the requested
-source. If PhotoKit is unavailable or denied, the POC falls back to a read-only
-`database/Photos.sqlite` transaction and labels that evidence as
+source. If PhotoKit is unavailable or denied, the crawler falls back to a verified
+private copy of `database/Photos.sqlite` and labels that evidence as
 `photos_sqlite_snapshot`.
 
 `crawl` does not export originals or force iCloud downloads. It records already

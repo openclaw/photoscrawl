@@ -2,6 +2,7 @@ package evalcard
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,7 +12,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -165,13 +166,11 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if err := photos.AttachLocalMediaPaths(&snapshot, libraryPath); err != nil {
-		return Result{}, fmt.Errorf("resolve local media: %w", err)
-	}
 	localMedia, err := photos.BuildLocalMediaIndex(libraryPath)
 	if err != nil {
-		return Result{}, fmt.Errorf("index local media: %w", err)
+		return Result{}, fmt.Errorf("resolve local media: %w", err)
 	}
+	localMedia.Attach(&snapshot)
 
 	result := Result{
 		OutputDir:             outputDir,
@@ -333,11 +332,11 @@ func imageAssets(assets []photos.Asset, sample string, seed uint64) []photos.Ass
 		})
 		return out
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].CreationDate != out[j].CreationDate {
-			return out[i].CreationDate > out[j].CreationDate
+	slices.SortStableFunc(out, func(a, b photos.Asset) int {
+		if order := cmp.Compare(b.CreationDate, a.CreationDate); order != 0 {
+			return order
 		}
-		return out[i].LocalIdentifier < out[j].LocalIdentifier
+		return cmp.Compare(a.LocalIdentifier, b.LocalIdentifier)
 	})
 	return out
 }

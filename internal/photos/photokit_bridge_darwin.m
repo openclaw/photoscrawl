@@ -162,31 +162,13 @@ static BOOL pcWaitForAuthorization(dispatch_semaphore_t semaphore, void *exportC
 
 static PHAuthorizationStatus pcEnsureAuthorized(void *exportControl) {
   if (photoscrawl_export_cancelled(exportControl)) return PHAuthorizationStatusNotDetermined;
-  __block PHAuthorizationStatus status;
-  if (@available(macOS 11.0, *)) {
-    // macOS Photos exposes asset fetch access through ReadWrite; AddOnly cannot
-    // enumerate the library. This bridge still only calls fetch/read APIs.
-    status = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
-    if (status == PHAuthorizationStatusNotDetermined) {
-      dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-      dispatch_retain(semaphore);
-      [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelReadWrite handler:^(PHAuthorizationStatus requestedStatus) {
-        status = requestedStatus;
-        dispatch_semaphore_signal(semaphore);
-        dispatch_release(semaphore);
-      }];
-      if (!pcWaitForAuthorization(semaphore, exportControl)) {
-        return PHAuthorizationStatusNotDetermined;
-      }
-    }
-    return status;
-  }
-
-  status = [PHPhotoLibrary authorizationStatus];
+  // macOS Photos exposes asset fetch access through ReadWrite; AddOnly cannot
+  // enumerate the library. This bridge still only calls fetch/read APIs.
+  __block PHAuthorizationStatus status = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
   if (status == PHAuthorizationStatusNotDetermined) {
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
     dispatch_retain(semaphore);
-    [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus requestedStatus) {
+    [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelReadWrite handler:^(PHAuthorizationStatus requestedStatus) {
       status = requestedStatus;
       dispatch_semaphore_signal(semaphore);
       dispatch_release(semaphore);
@@ -195,6 +177,7 @@ static PHAuthorizationStatus pcEnsureAuthorized(void *exportControl) {
       return PHAuthorizationStatusNotDetermined;
     }
   }
+
   return status;
 }
 

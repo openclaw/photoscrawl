@@ -1,10 +1,11 @@
 package photos
 
 import (
+	"cmp"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -16,12 +17,8 @@ type LocalMediaCandidate struct {
 
 type LocalMediaIndex map[string][]LocalMediaCandidate
 
-func BuildLocalMediaIndex(libraryPath string) (LocalMediaIndex, error) {
-	return localMediaIndex(libraryPath)
-}
-
 func (index LocalMediaIndex) Candidates(localIdentifier string) []LocalMediaCandidate {
-	return append([]LocalMediaCandidate(nil), index[mediaUUID(localIdentifier)]...)
+	return slices.Clone(index[mediaUUID(localIdentifier)])
 }
 
 // AttachLocalMediaPaths finds already-local Photos package media without asking
@@ -30,12 +27,18 @@ func AttachLocalMediaPaths(snapshot *LibrarySnapshot, libraryPath string) error 
 	if snapshot == nil || strings.TrimSpace(libraryPath) == "" {
 		return nil
 	}
-	index, err := localMediaIndex(libraryPath)
+	index, err := BuildLocalMediaIndex(libraryPath)
 	if err != nil {
 		return err
 	}
-	if len(index) == 0 {
-		return nil
+	index.Attach(snapshot)
+	return nil
+}
+
+// Attach records the preferred already-local candidate for each snapshot asset.
+func (index LocalMediaIndex) Attach(snapshot *LibrarySnapshot) {
+	if snapshot == nil || len(index) == 0 {
+		return
 	}
 	for assetIndex := range snapshot.Assets {
 		asset := &snapshot.Assets[assetIndex]
@@ -86,10 +89,9 @@ func AttachLocalMediaPaths(snapshot *LibrarySnapshot, libraryPath string) error 
 			})
 		}
 	}
-	return nil
 }
 
-func localMediaIndex(libraryPath string) (LocalMediaIndex, error) {
+func BuildLocalMediaIndex(libraryPath string) (LocalMediaIndex, error) {
 	roots := []struct {
 		path  string
 		class string
@@ -132,15 +134,15 @@ func localMediaIndex(libraryPath string) (LocalMediaIndex, error) {
 			return nil, err
 		}
 	}
-	for uuid := range out {
-		sort.Slice(out[uuid], func(i, j int) bool {
-			if localMediaPriority(out[uuid][i]) != localMediaPriority(out[uuid][j]) {
-				return localMediaPriority(out[uuid][i]) < localMediaPriority(out[uuid][j])
+	for _, candidates := range out {
+		slices.SortFunc(candidates, func(a, b LocalMediaCandidate) int {
+			if order := cmp.Compare(localMediaPriority(a), localMediaPriority(b)); order != 0 {
+				return order
 			}
-			if out[uuid][i].Size != out[uuid][j].Size {
-				return out[uuid][i].Size < out[uuid][j].Size
+			if order := cmp.Compare(a.Size, b.Size); order != 0 {
+				return order
 			}
-			return out[uuid][i].Path < out[uuid][j].Path
+			return cmp.Compare(a.Path, b.Path)
 		})
 	}
 	return out, nil
