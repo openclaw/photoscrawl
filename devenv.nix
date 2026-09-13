@@ -4,7 +4,7 @@
   cachix.enable = false;
 
   packages = [
-    pkgs.go
+    pkgs.go_1_27
     pkgs.gnumake
     pkgs.sqlite
   ];

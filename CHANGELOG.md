@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Update CrawlKit to v0.16.2, refresh the Nix development inputs, and align the Nix Go toolchain and formatter with the supported Go 1.27 line.
 - Preserve place-backfill retry identities when location ordering changes, keep distinct coordinate/accuracy values separate, and exclude retired artifacts from current summaries.
 - Embed the default photo-card prompt for installed binaries, and stop eval runs on model-evidence write failures or cancellation instead of reporting successful completion.
 - Enforce archive schema checks and retained tombstones in timeline queries, and preserve UTF-8 character boundaries when truncating model observations and failure reasons.
