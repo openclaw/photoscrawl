@@ -5,11 +5,11 @@
 
   packages = [
     pkgs.go
+    pkgs.gnumake
     pkgs.sqlite
   ];
 
   scripts.verify.exec = ''
-    GOWORK=off go mod tidy
-    GOWORK=off go test ./...
+    make check
   '';
 }
