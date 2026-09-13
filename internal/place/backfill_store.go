@@ -7,11 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -73,27 +73,18 @@ func countMatchingOutputs(outDir string, keys []backfillKey) int {
 	return count
 }
 
-func countSuccessOutputs(outDir string) int {
-	matches, err := filepath.Glob(filepath.Join(outDir, "outputs", "*.json"))
-	if err != nil {
-		return 0
-	}
-	return len(matches)
-}
-
-func countFinalErrors(outDir string) int {
-	matches, err := filepath.Glob(filepath.Join(outDir, "errors", "*.json"))
-	if err != nil {
-		return 0
-	}
+func countFinalErrors(outDir string, keys []backfillKey) int {
 	count := 0
-	for _, path := range matches {
-		data, err := os.ReadFile(path)
+	for _, key := range keys {
+		if outputMatches(filepath.Join(outDir, "outputs", key.filename()+".json"), key) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(outDir, "errors", key.filename()+".json"))
 		if err != nil {
 			continue
 		}
 		var failure backfillError
-		if json.Unmarshal(data, &failure) == nil && failure.Final {
+		if json.Unmarshal(data, &failure) == nil && failure.Final && failure.Index == key.Index {
 			count++
 		}
 	}
@@ -206,7 +197,7 @@ func readOnlySQLiteDSN(path string) string {
 }
 
 func coordinateKey(lat, lon, accuracy float64) string {
-	return fmt.Sprintf("%.8f|%.8f|%.1f", lat, lon, accuracy)
+	return strconv.FormatFloat(lat, 'g', -1, 64) + "|" + strconv.FormatFloat(lon, 'g', -1, 64) + "|" + strconv.FormatFloat(accuracy, 'g', -1, 64)
 }
 
 func (key backfillKey) filename() string {
@@ -214,24 +205,28 @@ func (key backfillKey) filename() string {
 }
 
 func outputMatches(path string, key backfillKey) bool {
-	data, err := os.ReadFile(path)
+	result, err := readBackfillOutput(path)
 	if err != nil {
 		return false
 	}
-	var result Result
-	if err := json.Unmarshal(data, &result); err != nil {
-		return false
-	}
-	if err := validateComplete(result); err != nil {
-		return false
-	}
-	return sameCoordinate(result.Input.Location.Latitude, key.Latitude) &&
-		sameCoordinate(result.Input.Location.Longitude, key.Longitude) &&
-		math.Abs(result.Input.AccuracyMeters-key.AccuracyMeters) < 0.1
+	return result.Input.Location.Latitude == key.Latitude &&
+		result.Input.Location.Longitude == key.Longitude &&
+		result.Input.AccuracyMeters == key.AccuracyMeters
 }
 
-func sameCoordinate(a, b float64) bool {
-	return math.Abs(a-b) < 0.00000001
+func readBackfillOutput(path string) (Result, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Result{}, err
+	}
+	var result Result
+	if err := json.Unmarshal(data, &result); err != nil {
+		return Result{}, err
+	}
+	if err := validateComplete(result); err != nil {
+		return Result{}, err
+	}
+	return result, nil
 }
 
 func backfillRetryDelay(attempt int) time.Duration {
@@ -254,9 +249,8 @@ func appendAttempt(path string, attempt backfillAttempt) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 	_, err = file.Write(append(data, '\n'))
-	return err
+	return errors.Join(err, file.Close())
 }
 
 func appendProgress(path string, startedAt time.Time, result BackfillResult) error {
@@ -287,5 +281,21 @@ func writeJSONFile(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o600)
+	file, err := os.CreateTemp(filepath.Dir(path), ".photoscrawl-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), path)
 }

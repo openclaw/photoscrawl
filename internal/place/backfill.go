@@ -93,6 +93,14 @@ func Backfill(ctx context.Context, opts BackfillOptions) (BackfillResult, error)
 	if err := ensureBackfillDirs(opts.OutputDir); err != nil {
 		return BackfillResult{}, err
 	}
+	identities, err := assignBackfillIndexes(opts.OutputDir, keys)
+	if err != nil {
+		return BackfillResult{}, err
+	}
+	// Commit identity reservations before publishing this run's selected keys.
+	if err := writeJSONFile(filepath.Join(opts.OutputDir, "identities.json"), identities); err != nil {
+		return BackfillResult{}, err
+	}
 	manifestPath := filepath.Join(opts.OutputDir, "manifest.json")
 	if err := writeJSONFile(manifestPath, keys); err != nil {
 		return BackfillResult{}, err
@@ -136,8 +144,8 @@ func Backfill(ctx context.Context, opts BackfillOptions) (BackfillResult, error)
 		}
 	}
 
-	state.result.Successes = countSuccessOutputs(opts.OutputDir)
-	state.result.FinalFailures = countFinalErrors(opts.OutputDir)
+	state.result.Successes = countMatchingOutputs(opts.OutputDir, keys)
+	state.result.FinalFailures = countFinalErrors(opts.OutputDir, keys)
 	state.result.FinishedAt = time.Now().UTC()
 	if err := writeJSONFile(filepath.Join(opts.OutputDir, "summary.json"), state.result); err != nil {
 		return state.result, err

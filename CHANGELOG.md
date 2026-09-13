@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preserve place-backfill retry identities when location ordering changes, keep distinct coordinate/accuracy values separate, and exclude retired artifacts from current summaries.
 - Embed the default photo-card prompt for installed binaries, and stop eval runs on model-evidence write failures or cancellation instead of reporting successful completion.
 - Enforce archive schema checks and retained tombstones in timeline queries, and preserve UTF-8 character boundaries when truncating model observations and failure reasons.
 - Preserve the requesting asset's identity on cached place lookups and render partial place cards without crashing.

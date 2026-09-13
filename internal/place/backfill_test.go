@@ -107,6 +107,13 @@ func TestBackfillHonorsCancelDuringRetrySleep(t *testing.T) {
 	if err := ensureBackfillDirs(outDir); err != nil {
 		t.Fatal(err)
 	}
+	keys, _, err := loadBackfillKeys(context.Background(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONFile(filepath.Join(outDir, "manifest.json"), keys); err != nil {
+		t.Fatal(err)
+	}
 	// One recorded attempt makes round 2 eligible, so Backfill hits the retry sleep.
 	attemptPath := filepath.Join(outDir, "attempts", "000000.jsonl")
 	if err := os.WriteFile(attemptPath, []byte("{}\n"), 0o600); err != nil {
