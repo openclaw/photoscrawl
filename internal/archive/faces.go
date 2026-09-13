@@ -27,22 +27,36 @@ type ImportFacesResult struct {
 	FaceObservationsInserted int               `json:"face_observations_inserted"`
 	AssetsTouched            int               `json:"assets_touched"`
 	UnnamedFacesSkipped      int               `json:"unnamed_faces_skipped"`
+	FacesWithEyeState        int               `json:"faces_with_eye_state"`
+	FacesWithSmile           int               `json:"faces_with_smile"`
+	FacesWithQuality         int               `json:"faces_with_quality"`
+	FacesWithBlurScore       int               `json:"faces_with_blur_score"`
+	FacesWithPersonKind      int               `json:"faces_with_person_kind"`
 }
 
 type photosFaceRow struct {
-	facePK       int64
-	faceUUID     string
-	assetUUID    string
-	personLabel  string
-	personUUID   string
-	nameSource   int64
-	cloudSource  int64
-	quality      sql.NullFloat64
-	centerX      sql.NullFloat64
-	centerY      sql.NullFloat64
-	size         sql.NullFloat64
-	sourceWidth  sql.NullInt64
-	sourceHeight sql.NullInt64
+	facePK            int64
+	faceUUID          string
+	assetUUID         string
+	personLabel       string
+	personUUID        string
+	nameSource        int64
+	cloudSource       int64
+	quality           sql.NullFloat64
+	blurScore         sql.NullFloat64
+	leftEyeClosed     sql.NullInt64
+	rightEyeClosed    sql.NullInt64
+	smile             sql.NullInt64
+	detectionType     sql.NullInt64
+	hasLeftEyeClosed  bool
+	hasRightEyeClosed bool
+	hasSmile          bool
+	hasDetectionType  bool
+	centerX           sql.NullFloat64
+	centerY           sql.NullFloat64
+	size              sql.NullFloat64
+	sourceWidth       sql.NullInt64
+	sourceHeight      sql.NullInt64
 }
 
 type photosPerson struct {
@@ -141,6 +155,11 @@ func writeFacesImport(ctx context.Context, tx *sql.Tx, paths Paths, input facesI
 	}
 	inserted := 0
 	unresolved := 0
+	facesWithEyeState := 0
+	facesWithSmile := 0
+	facesWithQuality := 0
+	facesWithBlurScore := 0
+	facesWithPersonKind := 0
 	touched := map[string]bool{}
 	for _, face := range input.rows {
 		assetID, ok := assetByUUID.byUUID[face.assetUUID]
@@ -152,6 +171,21 @@ func writeFacesImport(ctx context.Context, tx *sql.Tx, paths Paths, input facesI
 			return ImportFacesResult{}, nil, err
 		}
 		inserted++
+		if faceEyesClosed(face) != nil {
+			facesWithEyeState++
+		}
+		if faceSmile(face) != nil {
+			facesWithSmile++
+		}
+		if face.quality.Valid {
+			facesWithQuality++
+		}
+		if face.blurScore.Valid {
+			facesWithBlurScore++
+		}
+		if face.hasDetectionType {
+			facesWithPersonKind++
+		}
 		touched[assetID] = true
 	}
 	return ImportFacesResult{
@@ -167,6 +201,11 @@ func writeFacesImport(ctx context.Context, tx *sql.Tx, paths Paths, input facesI
 		FaceObservationsInserted: inserted,
 		AssetsTouched:            len(touched),
 		UnnamedFacesSkipped:      input.unnamedFaces,
+		FacesWithEyeState:        facesWithEyeState,
+		FacesWithSmile:           facesWithSmile,
+		FacesWithQuality:         facesWithQuality,
+		FacesWithBlurScore:       facesWithBlurScore,
+		FacesWithPersonKind:      facesWithPersonKind,
 	}, touched, nil
 }
 
@@ -179,6 +218,14 @@ func normalizeAssetLocalIdentifier(localIdentifier string) string {
 }
 
 func loadPhotosFaceRows(ctx context.Context, db *sql.DB) ([]photosFaceRow, int, int, error) {
+	faceColumns, err := tableColumns(ctx, db, "ZDETECTEDFACE")
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	personColumns, err := tableColumns(ctx, db, "ZPERSON")
+	if err != nil {
+		return nil, 0, 0, err
+	}
 	var namedPersons int
 	if err := db.QueryRowContext(ctx, `
 select count(*)
@@ -197,7 +244,13 @@ where trim(coalesce(p.ZDISPLAYNAME, p.ZFULLNAME, '')) = ''
 		return nil, 0, 0, fmt.Errorf("count unnamed Photos faces: %w", err)
 	}
 
-	rows, err := db.QueryContext(ctx, `
+	optionalColumn := func(table, column string, available bool) string {
+		if !available {
+			return "null"
+		}
+		return table + "." + store.QuoteIdent(column)
+	}
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
 select f.Z_PK,
        coalesce(f.ZUUID, ''),
        coalesce(a.ZUUID, ''),
@@ -206,6 +259,11 @@ select f.Z_PK,
        coalesce(f.ZNAMESOURCE, 0),
        coalesce(f.ZCLOUDNAMESOURCE, 0),
        cast(f.ZQUALITY as real),
+	       cast(%s as real),
+	       %s,
+	       %s,
+	       %s,
+	       %s,
        cast(f.ZCENTERX as real),
        cast(f.ZCENTERY as real),
        cast(f.ZSIZE as real),
@@ -217,7 +275,13 @@ join ZASSET a on a.Z_PK = f.ZASSETFORFACE
 where trim(coalesce(p.ZDISPLAYNAME, p.ZFULLNAME, '')) <> ''
   and coalesce(a.ZUUID, '') <> ''
 order by f.Z_PK
-`)
+`,
+		optionalColumn("f", "ZBLURSCORE", faceColumns["ZBLURSCORE"]),
+		optionalColumn("f", "ZISLEFTEYECLOSED", faceColumns["ZISLEFTEYECLOSED"]),
+		optionalColumn("f", "ZISRIGHTEYECLOSED", faceColumns["ZISRIGHTEYECLOSED"]),
+		optionalColumn("f", "ZHASSMILE", faceColumns["ZHASSMILE"]),
+		optionalColumn("p", "ZDETECTIONTYPE", personColumns["ZDETECTIONTYPE"]),
+	))
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("load Photos named faces: %w", err)
 	}
@@ -234,6 +298,11 @@ order by f.Z_PK
 			&row.nameSource,
 			&row.cloudSource,
 			&row.quality,
+			&row.blurScore,
+			&row.leftEyeClosed,
+			&row.rightEyeClosed,
+			&row.smile,
+			&row.detectionType,
 			&row.centerX,
 			&row.centerY,
 			&row.size,
@@ -242,6 +311,10 @@ order by f.Z_PK
 		); err != nil {
 			return nil, 0, 0, err
 		}
+		row.hasLeftEyeClosed = faceColumns["ZISLEFTEYECLOSED"]
+		row.hasRightEyeClosed = faceColumns["ZISRIGHTEYECLOSED"]
+		row.hasSmile = faceColumns["ZHASSMILE"]
+		row.hasDetectionType = personColumns["ZDETECTIONTYPE"]
 		out = append(out, row)
 	}
 	return out, namedPersons, unnamedFaces, rows.Err()
@@ -331,6 +404,12 @@ func insertImportedFace(ctx context.Context, tx *sql.Tx, assetID string, face ph
 		"name_source":       face.nameSource,
 		"cloud_name_source": face.cloudSource,
 		"quality":           nullableSQLFloat(face.quality),
+		"blur_score":        nullableSQLFloat(face.blurScore),
+		"left_eye_closed":   nullableSQLInt(face.leftEyeClosed),
+		"right_eye_closed":  nullableSQLInt(face.rightEyeClosed),
+		"has_smile":         nullableSQLInt(face.smile),
+		"detection_type":    nullableSQLInt(face.detectionType),
+		"person_kind":       facePersonKind(face),
 		"imported_at":       importedAt.Format(time.RFC3339Nano),
 		"read_only":         true,
 	})
@@ -344,9 +423,9 @@ values (?, ?, ?, ?, ?, ?)
 		return fmt.Errorf("write imported face evidence: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-insert into face_observation(id, asset_id, face_local_id, person_label, confidence, bounding_box_json, source, evidence_id)
-values (?, ?, ?, ?, ?, ?, ?, ?)
-`, observationID, assetID, faceLocalID, face.personLabel, 1.0, boundingJSON, photosLibraryDBFaceSource, evidenceID); err != nil {
+insert into face_observation(id, asset_id, face_local_id, person_label, person_uuid, person_kind, confidence, quality, blur_score, eyes_closed, smile, bounding_box_json, source, evidence_id)
+values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, observationID, assetID, faceLocalID, face.personLabel, face.personUUID, facePersonKind(face), 1.0, nullableSQLFloat(face.quality), nullableSQLFloat(face.blurScore), faceEyesClosed(face), faceSmile(face), boundingJSON, photosLibraryDBFaceSource, evidenceID); err != nil {
 		return fmt.Errorf("write imported face observation: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -356,6 +435,45 @@ values (?, ?, ?, ?)
 		return fmt.Errorf("write imported face fts: %w", err)
 	}
 	return nil
+}
+
+func faceEyesClosed(face photosFaceRow) any {
+	if (!face.hasLeftEyeClosed && !face.hasRightEyeClosed) ||
+		(!face.leftEyeClosed.Valid && !face.rightEyeClosed.Valid) {
+		return nil
+	}
+	if (face.leftEyeClosed.Valid && face.leftEyeClosed.Int64 != 0) ||
+		(face.rightEyeClosed.Valid && face.rightEyeClosed.Int64 != 0) {
+		return 1
+	}
+	if face.hasLeftEyeClosed && face.hasRightEyeClosed {
+		return 0
+	}
+	return nil
+}
+
+func faceSmile(face photosFaceRow) any {
+	if !face.hasSmile || !face.smile.Valid {
+		return nil
+	}
+	if face.smile.Int64 != 0 {
+		return 1
+	}
+	return 0
+}
+
+func facePersonKind(face photosFaceRow) string {
+	if !face.hasDetectionType {
+		return "unknown"
+	}
+	switch face.detectionType.Int64 {
+	case 1:
+		return "human"
+	case 3:
+		return "pet"
+	default:
+		return "unknown"
+	}
 }
 
 func faceBoundingBox(face photosFaceRow) map[string]any {

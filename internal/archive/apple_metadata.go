@@ -16,17 +16,18 @@ const photosLibraryDBMetadataModelID = "apple.photos.metadata"
 const photosLibraryDBMetadataVersion = "photos.sqlite.v1"
 
 type ImportPhotoMetadataResult struct {
-	Source                      string            `json:"source"`
-	ModelID                     string            `json:"model_id"`
-	PhotosDatabase              string            `json:"photos_database"`
-	Schema                      map[string]string `json:"schema"`
-	AssetsRead                  int               `json:"assets_read"`
-	AssetsResolved              int               `json:"assets_resolved"`
-	AssetsUnresolved            int               `json:"assets_unresolved"`
-	ExifObservationsInserted    int               `json:"exif_observations_inserted"`
-	QualityObservationsInserted int               `json:"quality_observations_inserted"`
-	EditObservationsInserted    int               `json:"edit_observations_inserted"`
-	AssetsTouched               int               `json:"assets_touched"`
+	Source                        string            `json:"source"`
+	ModelID                       string            `json:"model_id"`
+	PhotosDatabase                string            `json:"photos_database"`
+	Schema                        map[string]string `json:"schema"`
+	AssetsRead                    int               `json:"assets_read"`
+	AssetsResolved                int               `json:"assets_resolved"`
+	AssetsUnresolved              int               `json:"assets_unresolved"`
+	ExifObservationsInserted      int               `json:"exif_observations_inserted"`
+	QualityObservationsInserted   int               `json:"quality_observations_inserted"`
+	EditObservationsInserted      int               `json:"edit_observations_inserted"`
+	DuplicateObservationsInserted int               `json:"duplicate_observations_inserted"`
+	AssetsTouched                 int               `json:"assets_touched"`
 }
 
 type applePhotoMetadataRow struct {
@@ -35,6 +36,8 @@ type applePhotoMetadataRow struct {
 	quality         map[string]any
 	adjustmentState any
 	hasAdjustments  bool
+	duplicate       map[string]any
+	hasDuplicate    bool
 }
 
 type photoMetadataImportInput struct {
@@ -164,6 +167,37 @@ func loadPhotoMetadataInput(ctx context.Context, db *sql.DB) (photoMetadataImpor
 		row.hasAdjustments = sqliteTruthy(values["ZEDITSTATE"])
 	}
 
+	duplicateColumn := func(column string) string {
+		if !assetColumns[column] {
+			return "null"
+		}
+		return "a." + store.QuoteIdent(column)
+	}
+	duplicateRows, err := rows(ctx, db, fmt.Sprintf(`select a.ZUUID,
+       %s as ZDUPLICATEASSETVISIBILITYSTATE,
+       %s as ZDUPLICATEMETADATAMATCHINGALBUM,
+       %s as ZDUPLICATEPERCEPTUALMATCHINGALBUM
+from %s a`,
+		duplicateColumn("ZDUPLICATEASSETVISIBILITYSTATE"),
+		duplicateColumn("ZDUPLICATEMETADATAMATCHINGALBUM"),
+		duplicateColumn("ZDUPLICATEPERCEPTUALMATCHINGALBUM"),
+		store.QuoteIdent(assetTable)))
+	if err != nil {
+		return photoMetadataImportInput{}, fmt.Errorf("read Apple duplicate metadata: %w", err)
+	}
+	for _, values := range duplicateRows {
+		row := ensure(stringValue(values["ZUUID"]))
+		state := int64Value(values["ZDUPLICATEASSETVISIBILITYSTATE"])
+		metadataGroup := nullableInt64Value(values["ZDUPLICATEMETADATAMATCHINGALBUM"])
+		perceptualGroup := nullableInt64Value(values["ZDUPLICATEPERCEPTUALMATCHINGALBUM"])
+		row.duplicate = map[string]any{
+			"state":            state,
+			"metadata_group":   metadataGroup,
+			"perceptual_group": perceptualGroup,
+		}
+		row.hasDuplicate = state != 0 || metadataGroup != nil || perceptualGroup != nil
+	}
+
 	exifRows, err := rows(ctx, db, fmt.Sprintf("select a.ZUUID, e.* from %s a join ZEXTENDEDATTRIBUTES e on e.ZASSET = a.Z_PK", store.QuoteIdent(assetTable)))
 	if err != nil {
 		return photoMetadataImportInput{}, fmt.Errorf("read Apple EXIF metadata: %w", err)
@@ -243,6 +277,12 @@ func writePhotoMetadataImport(ctx context.Context, tx *sql.Tx, input photoMetada
 				return ImportPhotoMetadataResult{}, nil, err
 			}
 			result.QualityObservationsInserted++
+		}
+		if row.hasDuplicate {
+			if err := insertPhotoMetadataObservation(ctx, tx, assetID, row.assetUUID, "apple_duplicate", row.duplicate, fmt.Sprintf("duplicate state %d", row.duplicate["state"]), input.schema["asset_table"], importedAt); err != nil {
+				return ImportPhotoMetadataResult{}, nil, err
+			}
+			result.DuplicateObservationsInserted++
 		}
 		edit := map[string]any{"has_adjustments": row.hasAdjustments, "adjustment_state": row.adjustmentState}
 		editText := "not edited"
@@ -336,6 +376,27 @@ func stringValue(value any) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(normalizeSQLValue(value)))
+}
+
+func int64Value(value any) int64 {
+	value = normalizeSQLValue(value)
+	switch typed := value.(type) {
+	case int64:
+		return typed
+	case int:
+		return int64(typed)
+	case float64:
+		return int64(typed)
+	default:
+		return 0
+	}
+}
+
+func nullableInt64Value(value any) any {
+	if value == nil {
+		return nil
+	}
+	return int64Value(value)
 }
 
 func sqliteTruthy(value any) bool {

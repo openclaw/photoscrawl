@@ -1,6 +1,6 @@
 package archive
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 const Schema = `
 create table if not exists source_library (
@@ -142,7 +142,13 @@ create table if not exists face_observation (
   asset_id text not null references asset(id),
   face_local_id text not null,
   person_label text not null,
+  person_uuid text,
+  person_kind text,
   confidence real not null,
+  quality real,
+  blur_score real,
+  eyes_closed integer,
+  smile integer,
   bounding_box_json text not null,
   source text not null,
   evidence_id text not null

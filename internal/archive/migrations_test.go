@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -150,6 +151,64 @@ insert into album_membership(id, asset_id, album_id, album_title, album_kind) va
 	if folderPath != "" {
 		t.Fatalf("migrated folder_path = %q", folderPath)
 	}
+}
+
+func TestFaceSignalMigrationIsIdempotent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "photos.sqlite")
+	legacySchema := strings.Replace(Schema, `
+  person_uuid text,
+  person_kind text,
+  confidence real not null,
+  quality real,
+  blur_score real,
+  eyes_closed integer,
+  smile integer,`, `
+  confidence real not null,`, 1)
+	legacy, err := store.Open(ctx, store.Options{Path: dbPath, Schema: legacySchema, SchemaVersion: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := openArchiveStore(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	if err := migrateArchiveSchema(ctx, migrated); err != nil {
+		t.Fatal(err)
+	}
+	columns, err := archiveTableColumns(ctx, migrated.DB(), "face_observation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"person_uuid", "person_kind", "quality", "blur_score", "eyes_closed", "smile"} {
+		if !columns[column] {
+			t.Fatalf("face_observation missing migrated column %q", column)
+		}
+	}
+}
+
+func archiveTableColumns(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, "pragma table_info("+table+")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return nil, err
+		}
+		columns[name] = true
+	}
+	return columns, rows.Err()
 }
 
 func TestSchemaV2CrawlAdoptsExactLegacyResourceRows(t *testing.T) {
