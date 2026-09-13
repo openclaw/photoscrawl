@@ -138,10 +138,7 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 	err = db.WithTx(ctx, func(tx *sql.Tx) error {
 		var err error
 		inputs, err = loadClassifyInputs(ctx, tx, limit, classifier != nil)
-		if err != nil {
-			return err
-		}
-		return nil
+		return err
 	})
 	if err != nil {
 		return ClassifyResult{}, err
@@ -494,12 +491,7 @@ func (input classifyInput) hasUnavailableLocalModelContent(hasImage bool) bool {
 	if input.MediaType != "image" {
 		return true
 	}
-	if !input.hasLocalContent() {
-		// PhotoKit may know that an iCloud/shared asset is not local without
-		// marking it as downloadable in the metadata snapshot. Keeping such an
-		// item in metadata_classified makes the bounded runner select it forever.
-		return !input.NeedsDownload
-	}
+	// An iCloud/shared asset without downloadable content must leave the queue.
 	return !input.NeedsDownload
 }
 
