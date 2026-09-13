@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/openclaw/crawlkit/store"
 )
 
 const preciseLocationAccuracyMeters = 100
@@ -63,7 +61,7 @@ func Timeline(ctx context.Context, paths Paths, opts TimelineOptions) (TimelineR
 
 	fromText := from.UTC().Format(time.RFC3339Nano)
 	toText := to.UTC().Format(time.RFC3339Nano)
-	db, err := store.OpenReadOnly(ctx, paths.Database)
+	db, err := openArchiveReadOnly(ctx, paths.Database)
 	if err != nil {
 		return TimelineResult{}, err
 	}
@@ -85,7 +83,8 @@ select asset.id, location_observation.id, asset.creation_date, asset.media_type,
        location_observation.horizontal_accuracy
 from asset
 `+locationJoin+`
-where julianday(asset.creation_date) >= julianday(?)
+where asset.deleted_at is null
+  and julianday(asset.creation_date) >= julianday(?)
   and julianday(asset.creation_date) < julianday(?)
   and not exists (
     select 1

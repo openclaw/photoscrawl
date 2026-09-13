@@ -177,6 +177,9 @@ time range. It preserves the asset and location-observation identifiers and
 reports upstream horizontal accuracy when available. It does not infer stops,
 routes, trips, or events.
 
+Timeline uses the same archive schema checks as other queries and excludes
+retained asset tombstones even when their classification queue rows are absent.
+
 `place-context` enriches one asset's own latitude/longitude/accuracy/time into
 address hierarchy and candidate nearby POIs. Apple's network-backed
 CoreLocation reverse geocoder is the required step. MapKit POI search is
