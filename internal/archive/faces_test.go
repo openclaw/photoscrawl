@@ -626,3 +626,20 @@ func assertCount(t *testing.T, db *sql.DB, query string, want int, args ...any) 
 		t.Fatalf("count %q = %d, want %d", query, got, want)
 	}
 }
+
+func TestFaceQualityTreatsPhotosSentinelAsUnknown(t *testing.T) {
+	cases := map[string]struct {
+		in   sql.NullFloat64
+		want sql.NullFloat64
+	}{
+		"not computed": {sql.NullFloat64{Float64: -1, Valid: true}, sql.NullFloat64{}},
+		"missing":      {sql.NullFloat64{}, sql.NullFloat64{}},
+		"zero":         {sql.NullFloat64{Float64: 0, Valid: true}, sql.NullFloat64{Float64: 0, Valid: true}},
+		"scored":       {sql.NullFloat64{Float64: 0.42, Valid: true}, sql.NullFloat64{Float64: 0.42, Valid: true}},
+	}
+	for name, c := range cases {
+		if got := faceQuality(photosFaceRow{quality: c.in}); got != c.want {
+			t.Fatalf("%s: faceQuality(%v) = %v, want %v", name, c.in, got, c.want)
+		}
+	}
+}

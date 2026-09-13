@@ -177,7 +177,7 @@ func writeFacesImport(ctx context.Context, tx *sql.Tx, paths Paths, input facesI
 		if faceSmile(face) != nil {
 			facesWithSmile++
 		}
-		if face.quality.Valid {
+		if faceQuality(face).Valid {
 			facesWithQuality++
 		}
 		if face.blurScore.Valid {
@@ -425,7 +425,7 @@ values (?, ?, ?, ?, ?, ?)
 	if _, err := tx.ExecContext(ctx, `
 insert into face_observation(id, asset_id, face_local_id, person_label, person_uuid, person_kind, confidence, quality, blur_score, eyes_closed, smile, bounding_box_json, source, evidence_id)
 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, observationID, assetID, faceLocalID, face.personLabel, face.personUUID, facePersonKind(face), 1.0, nullableSQLFloat(face.quality), nullableSQLFloat(face.blurScore), faceEyesClosed(face), faceSmile(face), boundingJSON, photosLibraryDBFaceSource, evidenceID); err != nil {
+`, observationID, assetID, faceLocalID, face.personLabel, face.personUUID, facePersonKind(face), 1.0, nullableSQLFloat(faceQuality(face)), nullableSQLFloat(face.blurScore), faceEyesClosed(face), faceSmile(face), boundingJSON, photosLibraryDBFaceSource, evidenceID); err != nil {
 		return fmt.Errorf("write imported face observation: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -435,6 +435,16 @@ values (?, ?, ?, ?)
 		return fmt.Errorf("write imported face fts: %w", err)
 	}
 	return nil
+}
+
+// faceQuality treats Photos' negative quality sentinel (-1, "not computed")
+// as unknown so rankings never read it as the worst possible face. The raw
+// value stays in the evidence record.
+func faceQuality(face photosFaceRow) sql.NullFloat64 {
+	if !face.quality.Valid || face.quality.Float64 < 0 {
+		return sql.NullFloat64{}
+	}
+	return face.quality
 }
 
 func faceEyesClosed(face photosFaceRow) any {

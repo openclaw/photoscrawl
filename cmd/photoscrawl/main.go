@@ -55,6 +55,63 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	switch args[0] {
+	case "people":
+		fs := newCommandFlags("people", &paths)
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.People(ctx, paths)
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "people", result)
+	case "find":
+		fs := newCommandFlags("find", &paths)
+		opts := findFlags(fs)
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.Find(ctx, paths, *opts)
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "find", result)
+	case "rank":
+		fs := newCommandFlags("rank", &paths)
+		find := findFlags(fs)
+		ids := fs.String("ids-file", "", "JSON array or line-separated asset ids")
+		group := fs.String("group", "none", "group: none, burst, time, or day")
+		gap := fs.Int("gap-seconds", 90, "split time groups after this gap")
+		per := fs.Int("per-group", 0, "top assets per group; 0 keeps all")
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		if *ids != "" && hasFindFilters(*find) {
+			return output.UsageError{Err: errors.New("--ids-file cannot be combined with find filters")}
+		}
+		result, err := archive.Rank(ctx, paths, archive.RankOptions{FindOptions: *find, IDsFile: *ids, Group: *group, GapSeconds: *gap, PerGroup: *per})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "rank", result)
+	case "junk":
+		fs := newCommandFlags("junk", &paths)
+		kind := fs.String("kind", "all", "screenshots, blurry, eyes-closed, duplicates, or all")
+		older := fs.String("older-than", "30d", "age for screenshots, such as 30d or 12h")
+		limit := fs.Int("limit", 200, "max candidates")
+		exclude := fs.String("exclude-ids-file", "", "JSON array or line-separated ids to exclude")
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.Junk(ctx, paths, archive.JunkOptions{Kind: *kind, OlderThan: *older, Limit: *limit, ExcludeIDsFile: *exclude})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "junk", result)
 	case "version":
 		if len(args) != 1 {
 			return output.UsageError{Err: errors.New("version takes no arguments")}
@@ -338,7 +395,26 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage() error {
-	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|import-apple|classify|search|timeline|open|export|neighbors|evidence|place-context|place-context-raw|place-card|place-backfill|eval-card>")}
+	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|import-apple|classify|search|people|find|rank|junk|timeline|open|export|neighbors|evidence|place-context|place-context-raw|place-card|place-backfill|eval-card>")}
+}
+
+func findFlags(fs *commandFlags) *archive.FindOptions {
+	o := &archive.FindOptions{}
+	fs.Func("person", "required named person (repeatable)", func(v string) error { o.People = append(o.People, v); return nil })
+	fs.StringVar(&o.From, "from", "", "inclusive RFC 3339 timestamp or YYYY-MM-DD")
+	fs.StringVar(&o.To, "to", "", "inclusive RFC 3339 timestamp or YYYY-MM-DD")
+	fs.StringVar(&o.Place, "place", "", "place or venue text")
+	fs.StringVar(&o.Query, "query", "", "existing full-text search query")
+	fs.StringVar(&o.Media, "media", "image", "image, video, or any")
+	fs.BoolVar(&o.IncludeHidden, "include-hidden", false, "include hidden assets")
+	fs.StringVar(&o.Rank, "rank", "date", "quality or date")
+	fs.IntVar(&o.Limit, "limit", 50, "max assets")
+	fs.StringVar(&o.ExcludeIDsFile, "exclude-ids-file", "", "JSON array or line-separated ids to exclude")
+	return o
+}
+
+func hasFindFilters(o archive.FindOptions) bool {
+	return len(o.People) > 0 || o.From != "" || o.To != "" || o.Place != "" || o.Query != "" || o.Media != "image" || o.IncludeHidden || o.Rank != "date"
 }
 
 func writeVersion(w io.Writer) error {
