@@ -327,6 +327,57 @@ func TestSimilarFiltersIneligibleCandidatesBeforeShortlist(t *testing.T) {
 	}
 }
 
+func TestSimilarRefillsShortlistWhenTopCandidatesAreBlurry(t *testing.T) {
+	previous := similarShortlist
+	similarShortlist = 4
+	t.Cleanup(func() { similarShortlist = previous })
+	ctx := context.Background()
+	paths := testPaths(t)
+	db, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execTestSQL(t, db.DB(), `insert into source_library values ('refill-library', '/fixture', 'snapshot', '2025-01-01T00:00:00Z', 'test', '{}')`)
+	addAsset := func(id, created string) {
+		execTestSQL(t, db.DB(), `insert into asset(id,local_identifier,media_type,media_subtypes,creation_date,modification_date,added_date,timezone_name,width,height,duration_seconds,favorite,hidden,burst_identifier,represents_burst,source_library_id,metadata_json) values(?,?,'image','0',?,'','','UTC',100,100,0,0,0,'',0,'refill-library','{}')`, id, id+"-local", created)
+	}
+	addVisual := func(id, label string) {
+		execTestSQL(t, db.DB(), `insert into visual_observation values(?,?,'apple_label',?,1,'{}','fixture','fixture',?)`, "visual-"+id+"-"+label, id, label, "evidence-"+id+"-"+label)
+	}
+	addBlur := func(id string, value float64) {
+		execTestSQL(t, db.DB(), `insert into model_observation values(?,?,'apple_quality_scores','',?,1,'fixture','fixture','fixture',?)`, "quality-"+id, id, fmt.Sprintf(`{"media_blurriness": %g}`, value), "evidence-quality-"+id)
+	}
+	addAsset("refill-seed", "2025-01-10T12:00:00Z")
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("blurry-%d", i)
+		addAsset(id, "2020-01-01T12:00:00Z")
+		addBlur(id, 0.1)
+		for feature := 0; feature < 3; feature++ {
+			label := fmt.Sprintf("refill-%d-%d", i, feature)
+			addVisual("refill-seed", label)
+			addVisual(id, label)
+		}
+	}
+	addAsset("sharp-lower-score", "2019-01-01T12:00:00Z")
+	addBlur("sharp-lower-score", 0.95)
+	// Unrelated photos keep each shared label under the 5% frequency cap.
+	for i := 0; i < 200; i++ {
+		addAsset(fmt.Sprintf("filler-%03d", i), "2018-01-01T12:00:00Z")
+	}
+	addVisual("refill-seed", "sharp-label")
+	addVisual("sharp-lower-score", "sharp-label")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Similar(ctx, paths, SimilarOptions{ID: "refill-seed", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameSimilarIDs(result.Assets, "sharp-lower-score") {
+		t.Fatalf("sharp candidate behind %d blurry ones = %#v", 8, result.Assets)
+	}
+}
+
 func similarFixture(t *testing.T) Paths {
 	t.Helper()
 	paths := testPaths(t)

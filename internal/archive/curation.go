@@ -248,7 +248,7 @@ func Junk(ctx context.Context, paths Paths, o JunkOptions) (JunkResult, error) {
 	}
 	if kind == "screenshots" || kind == "all" {
 		for _, a := range as {
-			if a.MediaType == "image" && !a.favoriteBool() && (strings.Contains(a.subtypes, "kind_subtype:10") || isScreenshotSubtype(a.subtypes)) && a.created.Before(cutoff) {
+			if a.MediaType == "image" && !a.favoriteBool() && isScreenshotSubtype(a.subtypes) && a.created.Before(cutoff) {
 				add(JunkCandidate{AssetRow: a.AssetRow, Kind: "screenshots", Reason: "old non-favorite screenshot", Signals: map[string]any{"media_subtypes": a.subtypes}})
 			}
 		}
@@ -792,9 +792,32 @@ func median(values []float64) float64 {
 	return ordered[middle]
 }
 func (a fullAsset) favoriteBool() bool { return a.favorite != 0 }
+
+// isScreenshotSubtype recognizes both archive encodings: a PhotoKit media
+// subtype bitmask (screenshot is 1<<2) and the SQLite provider's
+// "kind_subtype:10".
 func isScreenshotSubtype(x string) bool {
-	n, e := strconv.ParseUint(strings.TrimSpace(x), 0, 64)
+	value := strings.TrimSpace(x)
+	if strings.Contains(value, "kind_subtype:10") {
+		return true
+	}
+	n, e := strconv.ParseUint(value, 0, 64)
 	return e == nil && n&(1<<2) != 0
+}
+
+func (s *signals) merge(other signals) {
+	for id, faces := range other.faces {
+		s.faces[id] = faces
+	}
+	for id, value := range other.aesthetic {
+		s.aesthetic[id] = value
+	}
+	for id, value := range other.focus {
+		s.focus[id] = value
+	}
+	for id, value := range other.blurriness {
+		s.blurriness[id] = value
+	}
 }
 func allClosed(fs []faceSignal) bool {
 	if len(fs) == 0 {

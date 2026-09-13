@@ -166,5 +166,18 @@ func shareCheckFixture(t *testing.T) Paths {
 	add("privacy", "0", false, "content_classified", "passport visible, no faces")
 	add("unreviewed", "0", false, "pending", "")
 	add("child", "0", false, "content_classified", "child and face visible")
+	add("sqlite-screenshot", "kind_subtype:10", false, "content_classified", "")
 	return paths
+}
+
+func TestShareCheckBlocksSQLiteProviderScreenshots(t *testing.T) {
+	paths := shareCheckFixture(t)
+	ids := writeCurationIDs(t, paths.DataDir, "sqlite-screenshot.txt", "sqlite-screenshot")
+	got, err := ShareCheck(context.Background(), paths, ShareCheckOptions{IDsFile: ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Assets) != 1 || got.Assets[0].Status != "blocked" || !containsText(got.Assets[0].Reasons, "screenshot") {
+		t.Fatalf("SQLite-provider screenshot = %#v", got.Assets)
+	}
 }

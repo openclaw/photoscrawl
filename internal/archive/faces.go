@@ -456,7 +456,9 @@ func faceEyesClosed(face photosFaceRow) any {
 		(face.rightEyeClosed.Valid && face.rightEyeClosed.Int64 != 0) {
 		return 1
 	}
-	if face.hasLeftEyeClosed && face.hasRightEyeClosed {
+	// Open only when both eyes were computed and neither is closed; one
+	// uncomputed eye keeps the combined state unknown.
+	if face.leftEyeClosed.Valid && face.rightEyeClosed.Valid {
 		return 0
 	}
 	return nil

@@ -18,10 +18,12 @@ const (
 	similarPlaceWeight      = 0.25
 	similarEventWindow      = 12 * time.Hour
 	similarCandidateChunk   = 500
-	// similarShortlist caps how many candidates load full asset and quality
-	// data; broad matches otherwise pull in tens of thousands of photos.
-	similarShortlist = 400
 )
+
+// similarShortlist caps how many candidates load quality signals; broad
+// matches otherwise pull in tens of thousands of photos. A variable so tests
+// can exercise the refill path with small fixtures.
+var similarShortlist = 400
 
 var similarNoisePolicy = struct {
 	maxDocumentFraction float64
@@ -142,11 +144,30 @@ func Similar(ctx context.Context, paths Paths, opts SimilarOptions) (SimilarResu
 		assetByID[asset.ID] = asset
 		eligibleFeatures[asset.ID] = features[asset.ID]
 	}
-	features = shortlistSimilarFeatures(eligibleFeatures, similarShortlist)
-	shortlistIDs := similarCandidateIDs(features)
-	signalSet, err := loadSimilarSignals(ctx, db.DB(), shortlistIDs)
-	if err != nil {
-		return SimilarResult{}, err
+	// Walk candidates best-first in shortlist-sized batches so photos removed
+	// by the blur check are replaced by the next eligible ones.
+	ranked := rankedSimilarIDs(eligibleFeatures)
+	signalSet := signals{faces: map[string][]faceSignal{}, aesthetic: map[string]sql.NullFloat64{}, focus: map[string]sql.NullFloat64{}, blurriness: map[string]sql.NullFloat64{}}
+	shortlistIDs := make([]string, 0, similarShortlist)
+	for start := 0; start < len(ranked) && len(shortlistIDs) < similarShortlist; start += similarShortlist {
+		batch := ranked[start:min(start+similarShortlist, len(ranked))]
+		batchSignals, err := loadSimilarSignals(ctx, db.DB(), batch)
+		if err != nil {
+			return SimilarResult{}, err
+		}
+		signalSet.merge(batchSignals)
+		for _, candidateID := range batch {
+			if len(shortlistIDs) == similarShortlist {
+				break
+			}
+			if includeSimilarSignalCandidate(assetByID[candidateID], signalSet) {
+				shortlistIDs = append(shortlistIDs, candidateID)
+			}
+		}
+	}
+	features = make(map[string]map[string]similarFeature, len(shortlistIDs))
+	for _, candidateID := range shortlistIDs {
+		features[candidateID] = eligibleFeatures[candidateID]
 	}
 
 	candidates := make([]SimilarAsset, 0, len(shortlistIDs))
@@ -415,10 +436,8 @@ func pruneSimilarFeatures(features map[string]map[string]similarFeature, documen
 	return shortlistSimilarFeatures(pruned, shortlist)
 }
 
-func shortlistSimilarFeatures(features map[string]map[string]similarFeature, shortlist int) map[string]map[string]similarFeature {
-	if shortlist <= 0 || len(features) <= shortlist {
-		return features
-	}
+// rankedSimilarIDs orders candidates by summed feature weight, then id.
+func rankedSimilarIDs(features map[string]map[string]similarFeature) []string {
 	type scored struct {
 		id    string
 		score float64
@@ -437,9 +456,20 @@ func shortlistSimilarFeatures(features map[string]map[string]similarFeature, sho
 		}
 		return ranked[i].id < ranked[j].id
 	})
+	ids := make([]string, len(ranked))
+	for i, entry := range ranked {
+		ids[i] = entry.id
+	}
+	return ids
+}
+
+func shortlistSimilarFeatures(features map[string]map[string]similarFeature, shortlist int) map[string]map[string]similarFeature {
+	if shortlist <= 0 || len(features) <= shortlist {
+		return features
+	}
 	shortlisted := make(map[string]map[string]similarFeature, shortlist)
-	for _, entry := range ranked[:shortlist] {
-		shortlisted[entry.id] = features[entry.id]
+	for _, id := range rankedSimilarIDs(features)[:shortlist] {
+		shortlisted[id] = features[id]
 	}
 	return shortlisted
 }

@@ -63,6 +63,7 @@ func TestFaceSignalDerivations(t *testing.T) {
 		{"both eyes closed", photosFaceRow{hasLeftEyeClosed: true, hasRightEyeClosed: true, leftEyeClosed: sql.NullInt64{Int64: 1, Valid: true}, rightEyeClosed: sql.NullInt64{Int64: 1, Valid: true}}, 1},
 		{"one eye closed", photosFaceRow{hasLeftEyeClosed: true, hasRightEyeClosed: true, leftEyeClosed: sql.NullInt64{Int64: 1, Valid: true}, rightEyeClosed: sql.NullInt64{Valid: true}}, 1},
 		{"neither eye closed", photosFaceRow{hasLeftEyeClosed: true, hasRightEyeClosed: true, leftEyeClosed: sql.NullInt64{Valid: true}, rightEyeClosed: sql.NullInt64{Valid: true}}, 0},
+		{"one eye open and one uncomputed", photosFaceRow{hasLeftEyeClosed: true, hasRightEyeClosed: true, leftEyeClosed: sql.NullInt64{Valid: true}}, nil},
 		{"source columns absent", photosFaceRow{}, nil},
 	}
 	for _, tt := range tests {
