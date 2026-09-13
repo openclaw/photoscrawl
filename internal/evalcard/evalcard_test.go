@@ -46,14 +46,7 @@ func TestRejectRepoPath(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	old, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(old)
+	t.Chdir(root)
 
 	if err := rejectRepoPath(filepath.Join(root, "evals")); err == nil {
 		t.Fatal("rejectRepoPath accepted a repo-local output dir")

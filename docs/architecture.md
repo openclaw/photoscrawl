@@ -1,7 +1,5 @@
 # photoscrawl Architecture
 
-Date: 2026-05-28
-
 ## Decision
 
 Build `photoscrawl` as a standalone OpenClaw/crawlkit Go crawler. It owns the
@@ -29,13 +27,20 @@ with schema-version checks and evidence labels.
 The crawler has two stages:
 
 - `crawl`: enumerate assets and cheap metadata for all assets.
-- `classify`: process image/video content through a resumable queue.
+- `classify`: add metadata observations and optionally classify already-local
+  images through a resumable queue. Video content classification is future work.
 
 `crawl` may record paths to files that already exist inside the Photos library
 package, such as derivatives, renders, or originals. It must not export media,
 write to Photos, or trigger iCloud downloads.
 
-Originals may be downloaded for classification, but downloads must be bounded:
+Only the opt-in `eval-card --allow-icloud-downloads` flow currently downloads
+originals. It prepares at most three times the requested sample size and limits
+new originals to 256 MiB each and 512 MiB per run, removing owned temporary
+originals after preparation. It builds one local media index per run and reuses
+it for snapshot metadata and original selection.
+
+Future classifier downloads must also be bounded:
 
 - keep a local cache budget;
 - process batches;
@@ -45,7 +50,11 @@ Originals may be downloaded for classification, but downloads must be bounded:
 
 CPU is allowed. Disk blowups are not.
 
-## Classification Policy
+## Classification Roadmap
+
+Current classification combines metadata rules with optional local multimodal
+observations. Vision/Core ML OCR, barcode detection and face embeddings below
+are future capabilities, not claims about the current implementation.
 
 Classify for signal, not uniform checklist compliance.
 
@@ -81,8 +90,7 @@ derived claim and must carry method, confidence, and evidence.
 ## Identity Policy
 
 Use Apple's People/faces data if available, but label it as source evidence.
-Also run local face detection/embedding where useful because user annotations are
-sparse and biased toward important people.
+Future local face detection/embedding can fill gaps in user annotations.
 
 Do not create canonical people in v1. Store anonymous face observations, Apple
 person labels, and candidate links. Promotion to people belongs in a later

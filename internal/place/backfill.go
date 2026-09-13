@@ -168,10 +168,8 @@ func runBackfillJobs(ctx context.Context, jobs []backfillKey, attempt int, state
 		state.limiter = &backfillLimiter{interval: backfillStartEvery}
 	}
 
-	for i := 0; i < backfillWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range backfillWorkers {
+		wg.Go(func() {
 			for key := range work {
 				if err := ctx.Err(); err != nil {
 					return
@@ -186,7 +184,7 @@ func runBackfillJobs(ctx context.Context, jobs []backfillKey, attempt int, state
 					return
 				}
 			}
-		}()
+		})
 	}
 dispatch:
 	for _, key := range jobs {

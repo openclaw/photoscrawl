@@ -1,6 +1,7 @@
 package place
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,7 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -51,7 +52,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if result.POITotal == 0 {
 		result.POITotal = len(result.POICandidates)
 	}
-	result.POICandidates = calibrateCandidates(input, radius, result.POICandidates)
+	result.POICandidates = rankedCandidates(result.POICandidates)
 
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
@@ -177,17 +178,19 @@ func areaFromAddress(address *Address) []AreaLevel {
 	return out
 }
 
-func calibrateCandidates(input Input, radius float64, candidates []POICandidate) []POICandidate {
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].DistanceM != candidates[j].DistanceM {
-			return candidates[i].DistanceM < candidates[j].DistanceM
-		}
-		return candidates[i].Name < candidates[j].Name
-	})
+func rankedCandidates(candidates []POICandidate) []POICandidate {
+	slices.SortStableFunc(candidates, comparePOICandidates)
 	if len(candidates) > maxCandidates {
 		candidates = candidates[:maxCandidates]
 	}
 	return candidates
+}
+
+func comparePOICandidates(a, b POICandidate) int {
+	if order := cmp.Compare(a.DistanceM, b.DistanceM); order != 0 {
+		return order
+	}
+	return cmp.Compare(a.Name, b.Name)
 }
 
 func cachePath(dir string, input Input, radius float64) (string, error) {

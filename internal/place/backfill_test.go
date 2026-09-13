@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -16,35 +17,32 @@ import (
 
 func TestSleepContextReturnsCanceledDuringWait(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	started := time.Now()
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- sleepContext(ctx, 2*time.Minute)
-	}()
-	time.Sleep(20 * time.Millisecond)
-	cancel()
-
-	select {
-	case err := <-errCh:
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		errCh := make(chan error, 1)
+		started := time.Now()
+		go func() { errCh <- sleepContext(ctx, 2*time.Minute) }()
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
+		err := <-errCh
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("sleepContext error = %v, want context.Canceled", err)
 		}
-		if elapsed := time.Since(started); elapsed >= 2*time.Second {
-			t.Fatalf("sleepContext ignored cancel for %s", elapsed)
+		if elapsed := time.Since(started); elapsed != 0 {
+			t.Fatalf("cancellation waited for the timer: %s", elapsed)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("sleepContext did not return after cancel during backoff")
-	}
+	})
 }
 
 func TestSleepContextCompletesWhenContextStaysOpen(t *testing.T) {
 	t.Parallel()
-	if err := sleepContext(context.Background(), 15*time.Millisecond); err != nil {
-		t.Fatalf("sleepContext = %v, want nil", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		if err := sleepContext(context.Background(), 15*time.Millisecond); err != nil {
+			t.Fatalf("sleepContext = %v, want nil", err)
+		}
+	})
 }
 
 func TestBackfillRetryDelayKeepsBackoffSchedule(t *testing.T) {

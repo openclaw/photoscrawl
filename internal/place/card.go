@@ -1,8 +1,9 @@
 package place
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -124,12 +125,11 @@ func mapFeaturesForCard(result Result) []MapFeature {
 }
 
 func usefulMapFeatures(features []MapFeature, noPOIs bool, addressArea string) []cardMapFeature {
-	sort.SliceStable(features, func(i, j int) bool {
-		left, right := mapFeatureRank(features[i]), mapFeatureRank(features[j])
-		if left != right {
-			return left < right
+	slices.SortStableFunc(features, func(a, b MapFeature) int {
+		if order := cmp.Compare(mapFeatureRank(a), mapFeatureRank(b)); order != 0 {
+			return order
 		}
-		return features[i].DistanceM < features[j].DistanceM
+		return cmp.Compare(a.DistanceM, b.DistanceM)
 	})
 
 	out := []cardMapFeature{}
@@ -204,12 +204,7 @@ func normalizeMapFeature(feature MapFeature, noPOIs bool) (cardMapFeature, bool)
 }
 
 func usefulPOIs(candidates []POICandidate) []POICandidate {
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].DistanceM != candidates[j].DistanceM {
-			return candidates[i].DistanceM < candidates[j].DistanceM
-		}
-		return candidates[i].Name < candidates[j].Name
-	})
+	slices.SortStableFunc(candidates, comparePOICandidates)
 
 	out := []POICandidate{}
 	seen := map[string]bool{}
