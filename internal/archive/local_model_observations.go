@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 type contentObservation struct {
@@ -217,19 +218,22 @@ func normalizeTerm(value string) string {
 }
 
 func truncateObservationText(value string) string {
-	value = strings.Join(strings.Fields(value), " ")
-	if len(value) <= 500 {
-		return value
-	}
-	return strings.TrimSpace(value[:500])
+	return truncateText(value, 500)
 }
 
 func truncateReason(value string) string {
+	return truncateText(value, 200)
+}
+
+func truncateText(value string, limit int) string {
 	value = strings.Join(strings.Fields(value), " ")
-	if len(value) <= 200 {
+	if len(value) <= limit {
 		return value
 	}
-	return strings.TrimSpace(value[:200])
+	for limit > 0 && !utf8.RuneStart(value[limit]) {
+		limit--
+	}
+	return strings.TrimSpace(value[:limit])
 }
 
 func classifiableImagePath(path string) bool {
