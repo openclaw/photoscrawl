@@ -73,6 +73,24 @@ gh workflow run release-unified.yml --repo openclaw/photoscrawl -f version=X.Y.Z
 
 `make release` refuses local publishing and prints that exact command.
 
+## Finding and ranking photos
+
+After `import-apple`, the archive holds the signals Photos already computed:
+named faces with eye state and quality, per-photo aesthetic and blurriness
+scores, screenshot subtypes, and duplicate flags. `people`, `find`, `rank`,
+and `junk` read those signals and never change Photos.
+
+- `find` filters by required people, date range, place, text, and media.
+- `rank` orders a set best first and can keep the best few per burst, time
+  gap, or day. A signal counts only when both photos being compared have it,
+  so photos without faces rank on their aesthetic scores.
+- `junk` lists screenshot, blurry, eyes-closed, and duplicate candidates with
+  the signal values and a suggested photo to keep instead. These are review
+  candidates, not decisions.
+
+Every listing command accepts `--exclude-ids-file` with archive IDs or Photos
+local identifiers, so callers can skip photos they already handled.
+
 ## First Commands
 
 ```sh
@@ -91,6 +109,10 @@ go run ./cmd/photoscrawl open --id asset:<id> --json
 go run ./cmd/photoscrawl export --id asset:<id> --output /path/to/export --json
 go run ./cmd/photoscrawl export --id asset:<id> --output /path/to/export --timeout 2m --json
 go run ./cmd/photoscrawl neighbors --id asset:<id> --json
+go run ./cmd/photoscrawl people --json
+go run ./cmd/photoscrawl find --person "Alex" --person "Sam" --from 2026-07-01 --to 2026-07-14 --place italy --rank quality --json
+go run ./cmd/photoscrawl rank --from 2026-07-12 --to 2026-07-14 --group day --per-group 5 --json
+go run ./cmd/photoscrawl junk --kind screenshots --older-than 90d --exclude-ids-file hidden.json --json
 go run ./cmd/photoscrawl evidence --row-id asset:<id> --json
 go run ./cmd/photoscrawl place-context --input <private-eval-run>/metadata/E001.json --json
 go run ./cmd/photoscrawl place-card --input <crawlkit-cache-dir>/place-context/<key>.json
