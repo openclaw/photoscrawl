@@ -154,17 +154,17 @@ func loadPhotoMetadataInput(ctx context.Context, db *sql.DB) (photoMetadataImpor
 		return row
 	}
 
-	editRows, err := metadataQueryRows(ctx, db, fmt.Sprintf("select a.ZUUID, a.%s as ZEDITSTATE from %s a", store.QuoteIdent(adjustmentColumn), store.QuoteIdent(assetTable)))
+	editRows, err := rows(ctx, db, fmt.Sprintf("select a.ZUUID, a.%s as ZEDITSTATE from %s a", store.QuoteIdent(adjustmentColumn), store.QuoteIdent(assetTable)))
 	if err != nil {
 		return photoMetadataImportInput{}, fmt.Errorf("read Apple edit states: %w", err)
 	}
 	for _, values := range editRows {
 		row := ensure(stringValue(values["ZUUID"]))
-		row.adjustmentState = normalizedSQLiteValue(values["ZEDITSTATE"])
+		row.adjustmentState = normalizeSQLValue(values["ZEDITSTATE"])
 		row.hasAdjustments = sqliteTruthy(values["ZEDITSTATE"])
 	}
 
-	exifRows, err := metadataQueryRows(ctx, db, fmt.Sprintf("select a.ZUUID, e.* from %s a join ZEXTENDEDATTRIBUTES e on e.ZASSET = a.Z_PK", store.QuoteIdent(assetTable)))
+	exifRows, err := rows(ctx, db, fmt.Sprintf("select a.ZUUID, e.* from %s a join ZEXTENDEDATTRIBUTES e on e.ZASSET = a.Z_PK", store.QuoteIdent(assetTable)))
 	if err != nil {
 		return photoMetadataImportInput{}, fmt.Errorf("read Apple EXIF metadata: %w", err)
 	}
@@ -179,7 +179,7 @@ func loadPhotoMetadataInput(ctx context.Context, db *sql.DB) (photoMetadataImpor
 			assetScoreSelect = append(assetScoreSelect, "a."+store.QuoteIdent(column))
 		}
 	}
-	qualityRows, err := metadataQueryRows(ctx, db, fmt.Sprintf("select %s, c.* from %s a join ZCOMPUTEDASSETATTRIBUTES c on c.ZASSET = a.Z_PK", strings.Join(assetScoreSelect, ", "), store.QuoteIdent(assetTable)))
+	qualityRows, err := rows(ctx, db, fmt.Sprintf("select %s, c.* from %s a join ZCOMPUTEDASSETATTRIBUTES c on c.ZASSET = a.Z_PK", strings.Join(assetScoreSelect, ", "), store.QuoteIdent(assetTable)))
 	if err != nil {
 		return photoMetadataImportInput{}, fmt.Errorf("read Apple quality scores: %w", err)
 	}
@@ -319,35 +319,6 @@ func firstExistingTable(ctx context.Context, db *sql.DB, names ...string) (strin
 	return "", fmt.Errorf("unsupported Apple Photos metadata schema: none of %s exist", strings.Join(names, ", "))
 }
 
-func metadataQueryRows(ctx context.Context, db *sql.DB, query string) ([]map[string]any, error) {
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	columns, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-	out := []map[string]any{}
-	for rows.Next() {
-		values := make([]any, len(columns))
-		pointers := make([]any, len(columns))
-		for index := range values {
-			pointers[index] = &values[index]
-		}
-		if err := rows.Scan(pointers...); err != nil {
-			return nil, err
-		}
-		row := map[string]any{}
-		for index, column := range columns {
-			row[column] = normalizedSQLiteValue(values[index])
-		}
-		out = append(out, row)
-	}
-	return out, rows.Err()
-}
-
 func selectMetadataValues(values map[string]any, mapping map[string]string) map[string]any {
 	out := map[string]any{}
 	for column, key := range mapping {
@@ -355,27 +326,20 @@ func selectMetadataValues(values map[string]any, mapping map[string]string) map[
 		if !ok || value == nil {
 			continue
 		}
-		out[key] = normalizedSQLiteValue(value)
+		out[key] = normalizeSQLValue(value)
 	}
 	return out
-}
-
-func normalizedSQLiteValue(value any) any {
-	if bytes, ok := value.([]byte); ok {
-		return string(bytes)
-	}
-	return value
 }
 
 func stringValue(value any) string {
 	if value == nil {
 		return ""
 	}
-	return strings.TrimSpace(fmt.Sprint(normalizedSQLiteValue(value)))
+	return strings.TrimSpace(fmt.Sprint(normalizeSQLValue(value)))
 }
 
 func sqliteTruthy(value any) bool {
-	switch typed := normalizedSQLiteValue(value).(type) {
+	switch typed := normalizeSQLValue(value).(type) {
 	case int64:
 		return typed != 0
 	case float64:

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/openclaw/crawlkit/store"
+	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
 func TestNormalizeAssetLocalIdentifier(t *testing.T) {
@@ -162,7 +163,7 @@ select value, side, zeroblob(2048) from batches cross join (select 1 as side uni
 		t.Fatal("writer did not spill uncommitted data to the WAL")
 	}
 
-	snapshotPath, cleanup, err := copySQLite(writeCtx, sourcePath, "photoscrawl-snapshot-test-")
+	snapshotPath, cleanup, err := photos.CopySQLite(writeCtx, sourcePath, "photoscrawl-snapshot-test-")
 	defer cleanup()
 	if err != nil {
 		t.Fatal(err)
