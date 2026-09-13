@@ -61,34 +61,15 @@ func run(ctx context.Context, args []string) error {
 		}
 		return writeVersion(os.Stdout)
 	case "metadata":
-		fs := flag.NewFlagSet("metadata", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if fs.NArg() != 0 {
-			return output.UsageError{Err: errors.New("metadata takes flags only")}
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		fs := newCommandFlags("metadata", nil)
+		format, err := fs.parse(args[1:], true)
 		if err != nil {
 			return err
 		}
 		return output.Write(os.Stdout, format, "metadata", archive.ControlManifest(paths))
 	case "init":
-		fs := flag.NewFlagSet("init", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		dbPath := fs.String("db", "", "photos.sqlite path")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if *dbPath != "" {
-			paths.Database = *dbPath
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		fs := newCommandFlags("init", &paths)
+		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
@@ -98,18 +79,8 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output.Write(os.Stdout, format, "init", result)
 	case "status":
-		fs := flag.NewFlagSet("status", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		dbPath := fs.String("db", "", "photos.sqlite path")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if *dbPath != "" {
-			paths.Database = *dbPath
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		fs := newCommandFlags("status", &paths)
+		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
@@ -119,20 +90,10 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output.Write(os.Stdout, format, "status", status)
 	case "crawl":
-		fs := flag.NewFlagSet("crawl", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		dbPath := fs.String("db", "", "photos.sqlite path")
+		fs := newCommandFlags("crawl", &paths)
 		libraryPath := fs.String("library", "", "Photos Library.photoslibrary path")
 		providerName := fs.String("provider", "auto", "photos provider: auto or sqlite")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if *dbPath != "" {
-			paths.Database = *dbPath
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
@@ -149,19 +110,9 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output.Write(os.Stdout, format, "crawl", result)
 	case "import-apple":
-		fs := flag.NewFlagSet("import-apple", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		dbPath := fs.String("db", "", "photos.sqlite path")
+		fs := newCommandFlags("import-apple", &paths)
 		libraryPath := fs.String("library", "", "Photos Library.photoslibrary path")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if *dbPath != "" {
-			paths.Database = *dbPath
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
@@ -171,23 +122,13 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output.Write(os.Stdout, format, "import_apple", result)
 	case "classify":
-		fs := flag.NewFlagSet("classify", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		dbPath := fs.String("db", "", "photos.sqlite path")
+		fs := newCommandFlags("classify", &paths)
 		all := fs.Bool("all", false, "classify all pending assets")
 		limit := fs.Int("limit", 100, "max pending assets to classify")
 		localModel := fs.String("local-model", "", "local vision model to use for content observations")
 		localModelAPI := fs.String("local-model-api", "", "local model API: ollama or openai")
 		localModelURL := fs.String("local-model-url", "", "local model endpoint URL")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if *dbPath != "" {
-			paths.Database = *dbPath
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
@@ -203,20 +144,10 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output.Write(os.Stdout, format, "classify", result)
 	case "search":
-		fs := flag.NewFlagSet("search", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		dbPath := fs.String("db", "", "photos.sqlite path")
+		fs := newCommandFlags("search", &paths)
 		query := fs.String("query", "", "search query")
 		limit := fs.Int("limit", 20, "max results")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if *dbPath != "" {
-			paths.Database = *dbPath
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
@@ -226,24 +157,11 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output.Write(os.Stdout, format, "search", result)
 	case "timeline":
-		fs := flag.NewFlagSet("timeline", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		dbPath := fs.String("db", "", "photos.sqlite path")
+		fs := newCommandFlags("timeline", &paths)
 		from := fs.String("from", "", "inclusive ISO 8601 timestamp with offset")
 		to := fs.String("to", "", "exclusive ISO 8601 timestamp with offset")
 		includeUnlocated := fs.Bool("include-unlocated", false, "include assets without embedded coordinates")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if fs.NArg() != 0 {
-			return output.UsageError{Err: errors.New("timeline takes flags only")}
-		}
-		if *dbPath != "" {
-			paths.Database = *dbPath
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		format, err := fs.parse(args[1:], true)
 		if err != nil {
 			return err
 		}
@@ -253,19 +171,9 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output.Write(os.Stdout, format, "timeline", result)
 	case "open":
-		fs := flag.NewFlagSet("open", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		dbPath := fs.String("db", "", "photos.sqlite path")
+		fs := newCommandFlags("open", &paths)
 		id := fs.String("id", "", "asset id")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if *dbPath != "" {
-			paths.Database = *dbPath
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
@@ -275,21 +183,11 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output.Write(os.Stdout, format, "open", result)
 	case "export":
-		fs := flag.NewFlagSet("export", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		dbPath := fs.String("db", "", "photos.sqlite path")
+		fs := newCommandFlags("export", &paths)
 		id := fs.String("id", "", "asset id")
 		outputDir := fs.String("output", "", "destination directory")
 		timeout := fs.Duration("timeout", 0, "export timeout (for example 2m); 0 waits until completion or cancellation")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if *dbPath != "" {
-			paths.Database = *dbPath
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
@@ -307,19 +205,9 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output.Write(os.Stdout, format, "export", result)
 	case "evidence":
-		fs := flag.NewFlagSet("evidence", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		dbPath := fs.String("db", "", "photos.sqlite path")
+		fs := newCommandFlags("evidence", &paths)
 		rowID := fs.String("row-id", "", "row id")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if *dbPath != "" {
-			paths.Database = *dbPath
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
@@ -329,20 +217,10 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output.Write(os.Stdout, format, "evidence", result)
 	case "neighbors":
-		fs := flag.NewFlagSet("neighbors", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		dbPath := fs.String("db", "", "photos.sqlite path")
+		fs := newCommandFlags("neighbors", &paths)
 		id := fs.String("id", "", "asset id")
 		limit := fs.Int("limit", 20, "max results")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if *dbPath != "" {
-			paths.Database = *dbPath
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
@@ -352,16 +230,10 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output.Write(os.Stdout, format, "neighbors", result)
 	case "place-context":
-		fs := flag.NewFlagSet("place-context", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
+		fs := newCommandFlags("place-context", nil)
 		inputPath := fs.String("input", "-", "JSON place input path, or stdin")
 		radius := fs.Float64("radius", 150, "nearby POI search radius in meters")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
@@ -405,24 +277,14 @@ func run(ctx context.Context, args []string) error {
 		fmt.Fprintln(os.Stdout, place.RenderCard(result))
 		return nil
 	case "place-backfill":
-		fs := flag.NewFlagSet("place-backfill", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
-		dbPath := fs.String("db", "", "photos.sqlite path")
+		fs := newCommandFlags("place-backfill", &paths)
 		outDir := fs.String("out", "", "private place backfill output directory")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		if *dbPath != "" {
-			paths.Database = *dbPath
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
 		}
 		if *outDir == "" {
 			*outDir = paths.PlaceBackfillDir()
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
-		if err != nil {
-			return err
 		}
 		result, err := place.Backfill(ctx, place.BackfillOptions{
 			DatabasePath: paths.Database,
@@ -433,8 +295,7 @@ func run(ctx context.Context, args []string) error {
 		}
 		return output.Write(os.Stdout, format, "place_backfill", result)
 	case "eval-card":
-		fs := flag.NewFlagSet("eval-card", flag.ContinueOnError)
-		fs.SetOutput(os.Stderr)
+		fs := newCommandFlags("eval-card", nil)
 		libraryPath := fs.String("library", "", "Photos Library.photoslibrary path")
 		outDir := fs.String("out", "", "private eval output directory")
 		cacheDir := fs.String("cache-dir", "", "private original cache directory")
@@ -446,12 +307,7 @@ func run(ctx context.Context, args []string) error {
 		concurrency := fs.Int("concurrency", 4, "max concurrent model calls")
 		sample := fs.String("sample", "latest", "sample mode: latest or random")
 		seed := fs.Uint64("seed", 1, "random sample seed")
-		jsonFlag := fs.Bool("json", false, "write JSON")
-		formatFlag := fs.String("format", "", "output format")
-		if err := fs.Parse(args[1:]); err != nil {
-			return output.UsageError{Err: err}
-		}
-		format, err := output.Resolve(*formatFlag, *jsonFlag)
+		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
