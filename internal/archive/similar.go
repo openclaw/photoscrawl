@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -15,8 +16,22 @@ const (
 	similarAppleLabelWeight = 1.25
 	similarPersonWeight     = 0.5
 	similarPlaceWeight      = 0.25
-	similarEventWindow      = 2 * time.Hour
+	similarEventWindow      = 12 * time.Hour
+	similarCandidateChunk   = 500
+	// similarShortlist caps how many candidates load full asset and quality
+	// data; broad matches otherwise pull in tens of thousands of photos.
+	similarShortlist = 400
 )
+
+var similarNoisePolicy = struct {
+	maxDocumentFraction float64
+	zeroWeightTerms     []string
+}{
+	maxDocumentFraction: 0.05,
+	zeroWeightTerms: []string{
+		"arm", "face", "finger", "hand", "man", "people", "person", "tattoo", "tattooed", "woman",
+	},
+}
 
 var similarTermTypes = []string{
 	"scene",
@@ -57,6 +72,11 @@ type similarFeature struct {
 	weight  float64
 }
 
+type similarSeedTerm struct {
+	termType string
+	term     string
+}
+
 // Similar ranks images by shared local-model terms and Apple metadata labels.
 // It is label similarity, not pixel similarity.
 func Similar(ctx context.Context, paths Paths, opts SimilarOptions) (SimilarResult, error) {
@@ -78,12 +98,20 @@ func Similar(ctx context.Context, paths Paths, opts SimilarOptions) (SimilarResu
 	if err != nil {
 		return SimilarResult{}, err
 	}
-	idf, err := loadSimilarIDF(ctx, db.DB())
+	documentCount, err := loadSimilarDocumentCount(ctx, db.DB())
+	if err != nil {
+		return SimilarResult{}, err
+	}
+	seedTerms, err := loadSimilarSeedTerms(ctx, db.DB(), id)
+	if err != nil {
+		return SimilarResult{}, err
+	}
+	weightedTerms, err := loadSimilarTermWeights(ctx, db.DB(), seedTerms, documentCount)
 	if err != nil {
 		return SimilarResult{}, err
 	}
 	features := map[string]map[string]similarFeature{}
-	if err := addSharedTermFeatures(ctx, db.DB(), id, idf, features); err != nil {
+	if err := addSharedTermFeatures(ctx, db.DB(), id, weightedTerms, features); err != nil {
 		return SimilarResult{}, err
 	}
 	if err := addSharedVisualFeatures(ctx, db.DB(), id, similarAppleLabelTypes, similarAppleLabelWeight, "apple", features); err != nil {
@@ -96,11 +124,12 @@ func Similar(ctx context.Context, paths Paths, opts SimilarOptions) (SimilarResu
 		return SimilarResult{}, err
 	}
 
-	assets, err := loadAssets(ctx, db.DB())
+	features = pruneSimilarFeatures(features, documentCount, similarShortlist)
+	assets, err := loadSimilarAssets(ctx, db.DB(), similarCandidateIDs(features))
 	if err != nil {
 		return SimilarResult{}, err
 	}
-	signalSet, err := loadSignals(ctx, db.DB())
+	signalSet, err := loadSimilarSignals(ctx, db.DB(), similarCandidateIDs(features))
 	if err != nil {
 		return SimilarResult{}, err
 	}
@@ -109,12 +138,9 @@ func Similar(ctx context.Context, paths Paths, opts SimilarOptions) (SimilarResu
 		return SimilarResult{}, err
 	}
 
-	candidates := make([]SimilarAsset, 0, len(features))
+	candidates := make([]SimilarAsset, 0, len(assets))
 	qualityAssets := make(map[string]fullAsset, len(features))
 	for _, asset := range assets {
-		if _, ok := features[asset.ID]; !ok {
-			continue
-		}
 		if !includeSimilarCandidate(seed, asset, signalSet, excluded, opts.IncludeSameEvent) {
 			continue
 		}
@@ -161,76 +187,135 @@ where id = ? and deleted_at is null
 	return asset, nil
 }
 
-func loadSimilarIDF(ctx context.Context, db *sql.DB) (map[string]float64, error) {
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(similarTermTypes)), ",")
-	args := make([]any, 0, len(similarTermTypes))
-	for _, termType := range similarTermTypes {
-		args = append(args, termType)
-	}
-	query := `
-with eligible as (
-  select distinct observation_term.asset_id, observation_term.term_type, observation_term.term
-  from observation_term
-  join asset on asset.id = observation_term.asset_id
-  where observation_term.term_type in (` + placeholders + `)
-    and trim(observation_term.term) <> ''
-    and asset.deleted_at is null
-)
-select term_type, term, count(*) as document_frequency,
-       (select count(distinct asset_id) from eligible) as document_count
-from eligible
-group by term_type, term
-`
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("load similar term frequencies: %w", err)
-	}
-	defer rows.Close()
-	idf := map[string]float64{}
-	for rows.Next() {
-		var termType, term string
-		var frequency, count int
-		if err := rows.Scan(&termType, &term, &frequency, &count); err != nil {
-			return nil, err
-		}
-		idf[similarTermKey(termType, term)] = math.Log(float64(count+1)/float64(frequency+1)) + 1
-	}
-	return idf, rows.Err()
+func loadSimilarDocumentCount(ctx context.Context, db *sql.DB) (int, error) {
+	var count int
+	err := db.QueryRowContext(ctx, `select count(*) from asset where deleted_at is null and media_type = 'image'`).Scan(&count)
+	return count, err
 }
 
-func addSharedTermFeatures(ctx context.Context, db *sql.DB, id string, idf map[string]float64, features map[string]map[string]similarFeature) error {
+func loadSimilarSeedTerms(ctx context.Context, db *sql.DB, id string) ([]similarSeedTerm, error) {
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(similarTermTypes)), ",")
 	args := []any{id}
 	for _, termType := range similarTermTypes {
 		args = append(args, termType)
 	}
 	rows, err := db.QueryContext(ctx, `
-select distinct target.asset_id, source.term_type, source.term
-from observation_term source
-join observation_term target
-  on target.term_type = source.term_type and target.term = source.term
-where source.asset_id = ?
-  and source.term_type in (`+placeholders+`)
-  and trim(source.term) <> ''
-  and target.asset_id <> source.asset_id
+select observation_id, term_type, trim(term)
+from observation_term
+where asset_id = ? and term_type in (`+placeholders+`) and trim(term) <> ''
 `, args...)
 	if err != nil {
-		return fmt.Errorf("load shared similar terms: %w", err)
+		return nil, fmt.Errorf("load similar seed terms: %w", err)
 	}
 	defer rows.Close()
+	type occurrence struct {
+		observationID string
+		similarSeedTerm
+	}
+	var occurrences []occurrence
+	compounds := map[string]map[string]bool{}
 	for rows.Next() {
-		var assetID, termType, term string
-		if err := rows.Scan(&assetID, &termType, &term); err != nil {
-			return err
+		var item occurrence
+		if err := rows.Scan(&item.observationID, &item.termType, &item.term); err != nil {
+			return nil, err
 		}
-		key := similarTermKey(termType, term)
-		weight, ok := idf[key]
+		occurrences = append(occurrences, item)
+		if strings.Contains(item.term, "_") {
+			if compounds[item.observationID] == nil {
+				compounds[item.observationID] = map[string]bool{}
+			}
+			for _, component := range strings.Split(strings.ToLower(item.term), "_") {
+				compounds[item.observationID][component] = true
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	terms := make([]similarSeedTerm, 0, len(occurrences))
+	for _, item := range occurrences {
+		normalized := strings.ToLower(item.term)
+		if similarZeroWeightTerm(normalized) || (!strings.Contains(normalized, "_") && compounds[item.observationID][normalized]) {
+			continue
+		}
+		key := similarTermKey(item.termType, item.term)
+		if !seen[key] {
+			seen[key] = true
+			terms = append(terms, item.similarSeedTerm)
+		}
+	}
+	return terms, nil
+}
+
+func loadSimilarTermWeights(ctx context.Context, db *sql.DB, terms []similarSeedTerm, documentCount int) (map[string]float64, error) {
+	weights := map[string]float64{}
+	for _, term := range terms {
+		var frequency int
+		err := db.QueryRowContext(ctx, `
+select count(distinct observation_term.asset_id)
+from observation_term
+join asset on asset.id = observation_term.asset_id
+where observation_term.term = ? and observation_term.term_type = ?
+  and asset.deleted_at is null and asset.media_type = 'image'
+`, term.term, term.termType).Scan(&frequency)
+		if err != nil {
+			return nil, fmt.Errorf("load frequency for similar term %q: %w", term.term, err)
+		}
+		if documentCount == 0 || float64(frequency)/float64(documentCount) > similarNoisePolicy.maxDocumentFraction {
+			continue
+		}
+		weights[similarTermKey(term.termType, term.term)] = math.Log(float64(documentCount+1)/float64(frequency+1)) + 1
+	}
+	return weights, nil
+}
+
+func addSharedTermFeatures(ctx context.Context, db *sql.DB, id string, weights map[string]float64, features map[string]map[string]similarFeature) error {
+	for key, weight := range weights {
+		termType, term, ok := strings.Cut(key, "\x00")
 		if !ok {
 			continue
 		}
-		addSimilarFeature(features, assetID, similarFeature{key: "term:" + key, display: term, weight: weight})
+		query := `
+select distinct asset_id
+from observation_term
+where term = ? and term_type = ? and asset_id <> ?
+`
+		if !strings.Contains(term, "_") {
+			query = `
+select distinct target.asset_id
+from observation_term target
+where target.term = ? and target.term_type = ? and target.asset_id <> ?
+  and not exists (
+    select 1
+    from observation_term compound
+    where compound.asset_id = target.asset_id
+      and compound.observation_id = target.observation_id
+      and instr(compound.term, '_') > 0
+      and instr('_' || lower(trim(compound.term)) || '_', '_' || lower(trim(target.term)) || '_') > 0
+  )
+`
+		}
+		rows, err := db.QueryContext(ctx, query, term, termType, id)
+		if err != nil {
+			return fmt.Errorf("load candidates for similar term %q: %w", term, err)
+		}
+		for rows.Next() {
+			var assetID string
+			if err := rows.Scan(&assetID); err != nil {
+				rows.Close()
+				return err
+			}
+			addSimilarFeature(features, assetID, similarFeature{key: "term:" + key, display: term, weight: weight})
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func addSharedVisualFeatures(ctx context.Context, db *sql.DB, id string, observationTypes []string, weight float64, keyPrefix string, features map[string]map[string]similarFeature) error {
@@ -289,6 +374,56 @@ where source.asset_id = ?
 	return rows.Err()
 }
 
+// pruneSimilarFeatures drops shared labels and people that appear on more than
+// the noise fraction of the library (Apple labels such as "Food" or the
+// library owner's own face), then keeps the highest-scoring shortlist. Terms
+// are already frequency-capped when their weights are computed.
+func pruneSimilarFeatures(features map[string]map[string]similarFeature, documentCount, shortlist int) map[string]map[string]similarFeature {
+	keyCounts := map[string]int{}
+	for _, assetFeatures := range features {
+		for key := range assetFeatures {
+			keyCounts[key]++
+		}
+	}
+	limit := similarNoisePolicy.maxDocumentFraction * float64(documentCount)
+	type scored struct {
+		id    string
+		score float64
+	}
+	ranked := make([]scored, 0, len(features))
+	pruned := make(map[string]map[string]similarFeature, len(features))
+	for id, assetFeatures := range features {
+		kept := map[string]similarFeature{}
+		score := 0.0
+		for key, feature := range assetFeatures {
+			if !strings.HasPrefix(key, "term:") && float64(keyCounts[key]) > limit {
+				continue
+			}
+			kept[key] = feature
+			score += feature.weight
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		pruned[id] = kept
+		ranked = append(ranked, scored{id: id, score: score})
+	}
+	if shortlist <= 0 || len(ranked) <= shortlist {
+		return pruned
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
+		}
+		return ranked[i].id < ranked[j].id
+	})
+	shortlisted := make(map[string]map[string]similarFeature, shortlist)
+	for _, entry := range ranked[:shortlist] {
+		shortlisted[entry.id] = pruned[entry.id]
+	}
+	return shortlisted
+}
+
 func addSimilarFeature(features map[string]map[string]similarFeature, assetID string, feature similarFeature) {
 	if features[assetID] == nil {
 		features[assetID] = map[string]similarFeature{}
@@ -296,19 +431,158 @@ func addSimilarFeature(features map[string]map[string]similarFeature, assetID st
 	features[assetID][feature.key] = feature
 }
 
+func similarZeroWeightTerm(term string) bool {
+	for _, stopped := range similarNoisePolicy.zeroWeightTerms {
+		if term == stopped {
+			return true
+		}
+	}
+	return false
+}
+
+func similarCandidateIDs(features map[string]map[string]similarFeature) []string {
+	ids := make([]string, 0, len(features))
+	for id := range features {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func loadSimilarAssets(ctx context.Context, db *sql.DB, ids []string) ([]fullAsset, error) {
+	assets := make([]fullAsset, 0, len(ids))
+	for start := 0; start < len(ids); start += similarCandidateChunk {
+		end := min(start+similarCandidateChunk, len(ids))
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", end-start), ",")
+		args := make([]any, 0, end-start)
+		for _, id := range ids[start:end] {
+			args = append(args, id)
+		}
+		rows, err := db.QueryContext(ctx, `
+select id, local_identifier, creation_date, media_type, hidden, favorite, width, height,
+       burst_identifier, media_subtypes, timezone_name
+from asset
+where deleted_at is null and id in (`+placeholders+`)
+`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("load similar candidate assets: %w", err)
+		}
+		for rows.Next() {
+			var asset fullAsset
+			var created string
+			if err := rows.Scan(&asset.ID, &asset.LocalIdentifier, &created, &asset.MediaType, &asset.hidden, &asset.favorite, &asset.width, &asset.height, &asset.burst, &asset.subtypes, &asset.tz); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			asset.CreationDate = created
+			asset.created, err = time.Parse(time.RFC3339Nano, created)
+			if err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("parse creation date for asset %q: %w", asset.ID, err)
+			}
+			assets = append(assets, asset)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return assets, nil
+}
+
+func loadSimilarSignals(ctx context.Context, db *sql.DB, ids []string) (signals, error) {
+	s := signals{faces: map[string][]faceSignal{}, aesthetic: map[string]sql.NullFloat64{}, focus: map[string]sql.NullFloat64{}, blurriness: map[string]sql.NullFloat64{}}
+	for start := 0; start < len(ids); start += similarCandidateChunk {
+		end := min(start+similarCandidateChunk, len(ids))
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", end-start), ",")
+		args := make([]any, 0, end-start)
+		for _, id := range ids[start:end] {
+			args = append(args, id)
+		}
+		rows, err := db.QueryContext(ctx, `select asset_id, person_label, quality, eyes_closed from face_observation where trim(person_label) <> '' and asset_id in (`+placeholders+`)`, args...)
+		if err != nil {
+			return s, fmt.Errorf("load similar candidate face signals: %w", err)
+		}
+		for rows.Next() {
+			var id string
+			var face faceSignal
+			if err := rows.Scan(&id, &face.label, &face.quality, &face.closed); err != nil {
+				rows.Close()
+				return s, err
+			}
+			s.faces[id] = append(s.faces[id], face)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return s, err
+		}
+		if err := rows.Close(); err != nil {
+			return s, err
+		}
+		rows, err = db.QueryContext(ctx, `select asset_id, value_json from model_observation where observation_type = 'apple_quality_scores' and asset_id in (`+placeholders+`)`, args...)
+		if err != nil {
+			return s, fmt.Errorf("load similar candidate quality signals: %w", err)
+		}
+		for rows.Next() {
+			var id, value string
+			if err := rows.Scan(&id, &value); err != nil {
+				rows.Close()
+				return s, err
+			}
+			var scores map[string]any
+			if err := json.Unmarshal([]byte(value), &scores); err != nil {
+				rows.Close()
+				return s, fmt.Errorf("parse quality scores for asset %q: %w", id, err)
+			}
+			for _, pair := range []struct {
+				name   string
+				values *map[string]sql.NullFloat64
+			}{
+				{"overall_aesthetic", &s.aesthetic},
+				{"sharply_focused_subject", &s.focus},
+				{"media_blurriness", &s.blurriness},
+			} {
+				if value, ok := number(scores[pair.name]); ok {
+					(*pair.values)[id] = sql.NullFloat64{Float64: value, Valid: true}
+				}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return s, err
+		}
+		if err := rows.Close(); err != nil {
+			return s, err
+		}
+	}
+	return s, nil
+}
+
 func includeSimilarCandidate(seed, candidate fullAsset, signalSet signals, excluded map[string]bool, includeSameEvent bool) bool {
 	if candidate.ID == seed.ID || candidate.MediaType != "image" || excludedMatch(candidate, excluded) {
 		return false
 	}
-	if seed.burst != "" && candidate.burst == seed.burst {
-		return false
-	}
 	if !includeSameEvent {
+		if seed.burst != "" && candidate.burst == seed.burst {
+			return false
+		}
 		delta := candidate.created.Sub(seed.created)
 		if delta < 0 {
 			delta = -delta
 		}
 		if delta <= similarEventWindow {
+			return false
+		}
+		location := time.UTC
+		if seed.tz != "" {
+			if candidateLocation, err := time.LoadLocation(seed.tz); err == nil {
+				location = candidateLocation
+			}
+		}
+		if candidate.created.In(location).Format("2006-01-02") == seed.created.In(location).Format("2006-01-02") {
 			return false
 		}
 	}

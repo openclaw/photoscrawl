@@ -235,9 +235,12 @@ func migrateArchiveSchema(ctx context.Context, db *store.Store) error {
 			`create index if not exists asset_deleted_idx on asset(deleted_at)`,
 			`create index if not exists resource_deleted_idx on asset_resource(deleted_at)`,
 			`create index if not exists resource_source_identifier_idx on asset_resource(asset_id, source_identifier)`,
+			// Label lookups for similar; without it each shared label scans
+			// every visual observation.
+			`create index if not exists visual_type_label_idx on visual_observation(observation_type, label collate nocase)`,
 		} {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
-				return fmt.Errorf("create tombstone index: %w", err)
+				return fmt.Errorf("create archive index: %w", err)
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `

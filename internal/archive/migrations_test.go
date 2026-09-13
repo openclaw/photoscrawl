@@ -297,3 +297,39 @@ func TestSchemaV2CrawlAdoptsExactLegacyResourceRows(t *testing.T) {
 		t.Fatalf("resource rows = %d, want 2", resourceRows)
 	}
 }
+
+func TestSchemaV5MigrationAddsVisualLabelIndex(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "photos.sqlite")
+	legacySchema := strings.Replace(Schema, "create index if not exists visual_type_label_idx on visual_observation(observation_type, label collate nocase);\n", "", 1)
+	if legacySchema == Schema {
+		t.Fatal("fixture did not remove the visual label index from the schema")
+	}
+	legacy, err := store.Open(ctx, store.Options{Path: dbPath, Schema: legacySchema, SchemaVersion: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := openArchiveStore(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	var count int
+	if err := migrated.DB().QueryRowContext(ctx, `select count(*) from sqlite_master where type = 'index' and name = 'visual_type_label_idx'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("visual_type_label_idx count = %d, want 1", count)
+	}
+	version, err := migrated.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, SchemaVersion)
+	}
+}

@@ -133,7 +133,7 @@ func run(ctx context.Context, args []string) error {
 		fs := newCommandFlags("similar", &paths)
 		id := fs.String("id", "", "seed asset id; finds label similarity, not pixel similarity")
 		limit := fs.Int("limit", 30, "max results")
-		includeSameEvent := fs.Bool("include-same-event", false, "include photos within two hours of the seed")
+		includeSameEvent := fs.Bool("include-same-event", false, "include photos from the seed's day, 12-hour window, and burst")
 		exclude := fs.String("exclude-ids-file", "", "JSON array or line-separated ids to exclude")
 		format, err := fs.parse(args[1:], false)
 		if err != nil {
