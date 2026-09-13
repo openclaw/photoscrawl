@@ -101,6 +101,15 @@ func TestWriteVersion(t *testing.T) {
 	}
 }
 
+func TestUsageListsPhotoAssistCommands(t *testing.T) {
+	err := usage()
+	for _, command := range []string{"sheet", "similar", "forgotten", "share-check"} {
+		if !strings.Contains(err.Error(), command) {
+			t.Fatalf("usage does not list %q: %v", command, err)
+		}
+	}
+}
+
 func TestJoinedQueryPreservesLauncherArguments(t *testing.T) {
 	if got := joinedQuery("hello", []string{"world", "photos"}); got != "hello world photos" {
 		t.Fatalf("joined query = %q", got)

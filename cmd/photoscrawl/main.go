@@ -113,6 +113,66 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return output.Write(os.Stdout, format, "junk", result)
+	case "sheet":
+		fs := newCommandFlags("sheet", &paths)
+		ids := fs.String("ids-file", "", "JSON array or line-separated asset ids")
+		files := fs.String("files-file", "", "JSON array or line-separated image paths")
+		title := fs.String("title", "", "title included in JSON output")
+		perSheet := fs.Int("per-sheet", 16, "tiles per contact sheet")
+		tile := fs.Int("tile", 480, "tile size in pixels")
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.Sheet(ctx, paths, archive.SheetOptions{IDsFile: *ids, FilesFile: *files, Title: *title, PerSheet: *perSheet, Tile: *tile})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "sheet", result)
+	case "similar":
+		fs := newCommandFlags("similar", &paths)
+		id := fs.String("id", "", "seed asset id; finds label similarity, not pixel similarity")
+		limit := fs.Int("limit", 30, "max results")
+		includeSameEvent := fs.Bool("include-same-event", false, "include photos within two hours of the seed")
+		exclude := fs.String("exclude-ids-file", "", "JSON array or line-separated ids to exclude")
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.Similar(ctx, paths, archive.SimilarOptions{ID: *id, Limit: *limit, IncludeSameEvent: *includeSameEvent, ExcludeIDsFile: *exclude})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "similar", result)
+	case "forgotten":
+		fs := newCommandFlags("forgotten", &paths)
+		from := fs.String("from", "", "inclusive RFC 3339 timestamp or YYYY-MM-DD")
+		to := fs.String("to", "", "inclusive RFC 3339 timestamp or YYYY-MM-DD")
+		limit := fs.Int("limit", 12, "max results")
+		gapHours := fs.Float64("gap-hours", 3, "split moments after this many hours")
+		exclude := fs.String("exclude-ids-file", "", "JSON array or line-separated ids to exclude")
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.Forgotten(ctx, paths, archive.ForgottenOptions{From: *from, To: *to, Limit: *limit, GapHours: *gapHours, ExcludeIDsFile: *exclude})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "forgotten", result)
+	case "share-check":
+		fs := newCommandFlags("share-check", &paths)
+		ids := fs.String("ids-file", "", "JSON array or line-separated asset ids")
+		exclude := fs.String("exclude-ids-file", "", "JSON array or line-separated ids to exclude")
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.ShareCheck(ctx, paths, archive.ShareCheckOptions{IDsFile: *ids, ExcludeIDsFile: *exclude})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "share_check", result)
 	case "version":
 		if len(args) != 1 {
 			return output.UsageError{Err: errors.New("version takes no arguments")}
@@ -398,7 +458,7 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage() error {
-	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|import-apple|classify|search|people|find|rank|junk|timeline|open|export|neighbors|evidence|place-context|place-context-raw|place-card|place-backfill|eval-card>")}
+	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|import-apple|classify|search|people|find|rank|junk|sheet|similar|forgotten|share-check|timeline|open|export|neighbors|evidence|place-context|place-context-raw|place-card|place-backfill|eval-card>")}
 }
 
 func findFlags(fs *commandFlags) *archive.FindOptions {
