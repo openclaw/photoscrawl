@@ -1,14 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.3.4 - 2026-09-13
 
-- Update CrawlKit to v0.16.2, refresh the Nix development inputs, and align the Nix Go toolchain and formatter with the supported Go 1.27 line.
+**Highlights:** Place backfills keep their retry identities, timeline queries enforce schema and tombstones, and installed binaries carry the default photo-card prompt.
+
 - Preserve place-backfill retry identities when location ordering changes, keep distinct coordinate/accuracy values separate, and exclude retired artifacts from current summaries.
 - Embed the default photo-card prompt for installed binaries, and stop eval runs on model-evidence write failures or cancellation instead of reporting successful completion.
 - Enforce archive schema checks and retained tombstones in timeline queries, and preserve UTF-8 character boundaries when truncating model observations and failure reasons.
 - Preserve the requesting asset's identity on cached place lookups and render partial place cards without crashing.
 - Resolve status paths consistently with archive initialization and report filesystem errors instead of treating them as missing databases.
 - Reuse Apple search-category tables and the photo-card local media index, avoiding per-observation allocations and a second Photos package scan.
+- Update CrawlKit to v0.16.2, refresh the Nix development inputs, and align the Nix Go toolchain and formatter with the supported Go 1.27 line.
 
 ## 0.3.3 - 2026-09-11
 
