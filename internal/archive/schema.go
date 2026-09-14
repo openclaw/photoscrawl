@@ -1,6 +1,6 @@
 package archive
 
-const SchemaVersion = 3
+const SchemaVersion = 5
 
 const Schema = `
 create table if not exists source_library (
@@ -142,7 +142,13 @@ create table if not exists face_observation (
   asset_id text not null references asset(id),
   face_local_id text not null,
   person_label text not null,
+  person_uuid text,
+  person_kind text,
   confidence real not null,
+  quality real,
+  blur_score real,
+  eyes_closed integer,
+  smile integer,
   bounding_box_json text not null,
   source text not null,
   evidence_id text not null
@@ -216,6 +222,7 @@ create index if not exists resource_sha_idx on asset_resource(sha256);
 create index if not exists album_asset_idx on album_membership(asset_id);
 create index if not exists location_asset_idx on location_observation(asset_id);
 create index if not exists visual_asset_idx on visual_observation(asset_id);
+create index if not exists visual_type_label_idx on visual_observation(observation_type, label collate nocase);
 create index if not exists text_asset_idx on text_observation(asset_id);
 create index if not exists face_asset_idx on face_observation(asset_id);
 create index if not exists model_observation_asset_idx on model_observation(asset_id);

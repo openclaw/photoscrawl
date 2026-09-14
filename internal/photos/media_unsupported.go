@@ -15,6 +15,10 @@ func ExportOriginalResourceLimited(ctx context.Context, localIdentifier, destina
 	return errors.New("PhotoKit original export requires macOS")
 }
 
+func ExportImagePreview(ctx context.Context, localIdentifier, destinationPath string, maxDimension int, allowNetwork bool) error {
+	return errors.New("PhotoKit preview export requires macOS")
+}
+
 func RenderCanonicalJPEG(ctx context.Context, sourcePath, destinationPath string, quality float64) error {
 	return errors.New("canonical JPEG rendering requires macOS ImageIO/CoreImage")
 }

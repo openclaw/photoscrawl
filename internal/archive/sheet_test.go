@@ -1,0 +1,387 @@
+package archive
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+
+	"github.com/openclaw/crawlkit/store"
+)
+
+func TestSheetNumbersAcrossPagesAndSelectsSources(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	paths := Paths{
+		DataDir:  filepath.Join(root, "data"),
+		Database: filepath.Join(root, "data", "photos.sqlite"),
+		CacheDir: filepath.Join(root, "cache", "photoscrawl"),
+	}
+	derivative := filepath.Join(root, "Synthetic.photoslibrary", "resources", "derivatives", "asset-one.png")
+	original := filepath.Join(root, "Synthetic.photoslibrary", "originals", "asset-two.heic")
+	writeSyntheticPNG(t, derivative, color.RGBA{R: 220, A: 255})
+	if err := os.MkdirAll(filepath.Dir(original), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(original, []byte("synthetic non-JPEG original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	createSheetFixture(t, paths, []sheetFixtureAsset{
+		{id: "one", localIdentifier: "local-one", resourceType: "photo", localPath: derivative, fallbackOriginalPath: original},
+		{id: "two", localIdentifier: "local-two", resourceType: "photo", localPath: original},
+		{id: "three", localIdentifier: "local-three"},
+		{id: "four", localIdentifier: "local-four"},
+		{id: "five", localIdentifier: "local-five"},
+	})
+	idsFile := writeSheetList(t, root, "ids.txt", "one", "two", "three", "four", "five")
+	renderedSources := []string{}
+	renderer := func(_ context.Context, sourcePath, destinationPath string, _ float64) error {
+		renderedSources = append(renderedSources, sourcePath)
+		return writeSyntheticJPEG(destinationPath, color.RGBA{B: 220, A: 255})
+	}
+
+	got, err := Sheet(ctx, paths, SheetOptions{
+		IDsFile:  idsFile,
+		Title:    "Synthetic title is metadata only",
+		PerSheet: 3,
+		Tile:     80,
+		Renderer: renderer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Synthetic title is metadata only" {
+		t.Fatalf("title = %q", got.Title)
+	}
+	if len(got.Sheets) != 2 {
+		t.Fatalf("sheets = %v", got.Sheets)
+	}
+	if len(got.Tiles) != 5 {
+		t.Fatalf("tiles = %#v", got.Tiles)
+	}
+	for index, tile := range got.Tiles {
+		if tile.N != index+1 {
+			t.Fatalf("tile %d number = %d", index, tile.N)
+		}
+	}
+	if got.Tiles[0].Source != "derivative" || got.Tiles[0].LocalIdentifier != "local-one" {
+		t.Fatalf("derivative tile = %#v", got.Tiles[0])
+	}
+	if got.Tiles[1].Source != "original" || got.Tiles[1].LocalIdentifier != "local-two" {
+		t.Fatalf("original tile = %#v", got.Tiles[1])
+	}
+	if got.Tiles[2].Source != "placeholder" || got.Tiles[2].LocalIdentifier != "local-three" {
+		t.Fatalf("placeholder tile = %#v", got.Tiles[2])
+	}
+	if !slices.Equal(renderedSources, []string{original}) {
+		t.Fatalf("rendered sources = %v, want only original", renderedSources)
+	}
+	assertSheetMode(t, filepath.Dir(got.Sheets[0]), 0o700)
+	for index, path := range got.Sheets {
+		assertSheetMode(t, path, 0o600)
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := jpeg.Decode(file)
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantWidth := 3 * 80
+		if index == 1 {
+			wantWidth = 2 * 80
+		}
+		if decoded.Bounds().Dx() != wantWidth || decoded.Bounds().Dy() != 80 {
+			t.Fatalf("sheet %d bounds = %v", index, decoded.Bounds())
+		}
+	}
+}
+
+func TestSheetFilesUseOriginalOrPlaceholderAndDoNotDrawTitle(t *testing.T) {
+	root := t.TempDir()
+	paths := Paths{CacheDir: filepath.Join(root, "cache")}
+	file := filepath.Join(root, "input.png")
+	missing := filepath.Join(root, "missing.png")
+	writeSyntheticPNG(t, file, color.RGBA{G: 220, A: 255})
+	filesFile := writeSheetList(t, root, "files.txt", file, missing)
+	renderer := func(context.Context, string, string, float64) error {
+		return os.ErrInvalid
+	}
+
+	first, err := Sheet(context.Background(), paths, SheetOptions{
+		FilesFile: filesFile,
+		Title:     "First title",
+		Tile:      80,
+		Renderer:  renderer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Sheet(context.Background(), paths, SheetOptions{
+		FilesFile: filesFile,
+		Title:     "A completely different title",
+		Tile:      80,
+		Renderer:  renderer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Tiles) != 2 || first.Tiles[0].File != file || first.Tiles[0].Source != "original" || first.Tiles[1].File != missing || first.Tiles[1].Source != "placeholder" {
+		t.Fatalf("file tiles = %#v", first.Tiles)
+	}
+	firstJPEG, err := os.ReadFile(first.Sheets[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJPEG, err := os.ReadFile(second.Sheets[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(firstJPEG, secondJPEG) {
+		t.Fatal("title changed rendered sheet pixels")
+	}
+}
+
+func TestSheetAppliesJPEGEXIFOrientation(t *testing.T) {
+	tests := []struct {
+		orientation int
+		width       int
+		height      int
+		rawColors   [4]color.RGBA
+	}{
+		{
+			orientation: 6,
+			width:       30,
+			height:      20,
+			rawColors: [4]color.RGBA{
+				{G: 240, A: 255}, {R: 240, G: 240, A: 255},
+				{R: 240, A: 255}, {B: 240, A: 255},
+			},
+		},
+		{
+			orientation: 3,
+			width:       20,
+			height:      30,
+			rawColors: [4]color.RGBA{
+				{R: 240, G: 240, A: 255}, {B: 240, A: 255},
+				{G: 240, A: 255}, {R: 240, A: 255},
+			},
+		},
+	}
+	want := [4]color.RGBA{{R: 240, A: 255}, {G: 240, A: 255}, {B: 240, A: 255}, {R: 240, G: 240, A: 255}}
+	for _, test := range tests {
+		t.Run(string(rune('0'+test.orientation)), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "oriented.jpg")
+			writeOrientedJPEG(t, path, test.width, test.height, test.rawColors, test.orientation)
+			decoded, err := decodeSheetImage(context.Background(), t.TempDir(), path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decoded.Bounds().Dx() != 20 || decoded.Bounds().Dy() != 30 {
+				t.Fatalf("oriented bounds = %v, want 20x30", decoded.Bounds())
+			}
+			points := []image.Point{{3, 3}, {16, 3}, {3, 26}, {16, 26}}
+			for index, point := range points {
+				if !colorNear(decoded.At(point.X, point.Y), want[index]) {
+					t.Fatalf("pixel %v = %v, want near %v", point, decoded.At(point.X, point.Y), want[index])
+				}
+			}
+		})
+	}
+}
+
+func writeOrientedJPEG(t *testing.T, path string, width, height int, quadrants [4]color.RGBA, orientation int) {
+	t.Helper()
+	imageData := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			index := 0
+			if x >= width/2 {
+				index++
+			}
+			if y >= height/2 {
+				index += 2
+			}
+			imageData.SetRGBA(x, y, quadrants[index])
+		}
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, imageData, &jpeg.Options{Quality: 100}); err != nil {
+		t.Fatal(err)
+	}
+	tiff := make([]byte, 26)
+	copy(tiff[:2], "II")
+	binary.LittleEndian.PutUint16(tiff[2:4], 42)
+	binary.LittleEndian.PutUint32(tiff[4:8], 8)
+	binary.LittleEndian.PutUint16(tiff[8:10], 1)
+	binary.LittleEndian.PutUint16(tiff[10:12], 0x0112)
+	binary.LittleEndian.PutUint16(tiff[12:14], 3)
+	binary.LittleEndian.PutUint32(tiff[14:18], 1)
+	binary.LittleEndian.PutUint16(tiff[18:20], uint16(orientation))
+	payload := append([]byte("Exif\x00\x00"), tiff...)
+	segment := []byte{0xff, 0xe1, 0, byte(len(payload) + 2)}
+	segment = append(segment, payload...)
+	jpegBytes := encoded.Bytes()
+	withEXIF := append([]byte{}, jpegBytes[:2]...)
+	withEXIF = append(withEXIF, segment...)
+	withEXIF = append(withEXIF, jpegBytes[2:]...)
+	if err := os.WriteFile(path, withEXIF, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func colorNear(got color.Color, want color.RGBA) bool {
+	r, g, b, _ := got.RGBA()
+	const tolerance = 30
+	return absInt(int(r/257)-int(want.R)) <= tolerance && absInt(int(g/257)-int(want.G)) <= tolerance && absInt(int(b/257)-int(want.B)) <= tolerance
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+type sheetFixtureAsset struct {
+	id                   string
+	localIdentifier      string
+	resourceType         string
+	localPath            string
+	fallbackOriginalPath string
+}
+
+func createSheetFixture(t *testing.T, paths Paths, assets []sheetFixtureAsset) {
+	t.Helper()
+	db, err := store.Open(context.Background(), store.Options{
+		Path:          paths.Database,
+		Schema:        Schema,
+		SchemaVersion: SchemaVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB().Exec(`insert into source_library values ('sheet-library', '/synthetic', 'snapshot', '2026-01-01T00:00:00Z', 'test', '{}')`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	for _, asset := range assets {
+		_, err := db.DB().Exec(`
+insert into asset(
+  id, local_identifier, media_type, media_subtypes, creation_date,
+  modification_date, added_date, timezone_name, width, height,
+  duration_seconds, favorite, hidden, burst_identifier, represents_burst,
+  source_library_id, metadata_json
+) values (?, ?, 'image', '0', '2026-01-01T00:00:00Z', '', '', 'UTC', 100, 100, 0, 0, 0, '', 0, 'sheet-library', '{}')
+`, asset.id, asset.localIdentifier)
+		if err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		if asset.localPath == "" {
+			continue
+		}
+		_, err = db.DB().Exec(`
+insert into asset_resource(
+  id, asset_id, source_identifier, resource_type, uti, original_filename,
+  local_path, file_size, sha256, available_locally, needs_download
+) values (?, ?, ?, ?, 'public.image', 'synthetic', ?, 1, '', 1, 0)
+`, "resource-"+asset.id, asset.id, "source-"+asset.id, asset.resourceType, asset.localPath)
+		if err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		if asset.fallbackOriginalPath == "" {
+			continue
+		}
+		_, err = db.DB().Exec(`
+insert into asset_resource(
+  id, asset_id, source_identifier, resource_type, uti, original_filename,
+  local_path, file_size, sha256, available_locally, needs_download
+) values (?, ?, ?, 'original', 'public.heic', 'synthetic.heic', ?, 1, '', 1, 0)
+`, "resource-original-"+asset.id, asset.id, "source-original-"+asset.id, asset.fallbackOriginalPath)
+		if err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeSheetList(t *testing.T, root, name string, entries ...string) string {
+	t.Helper()
+	path := filepath.Join(root, name)
+	contents := []byte(stringsJoinLines(entries))
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func stringsJoinLines(entries []string) string {
+	result := ""
+	for _, entry := range entries {
+		result += entry + "\n"
+	}
+	return result
+}
+
+func writeSyntheticPNG(t *testing.T, path string, fill color.Color) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image := image.NewRGBA(image.Rect(0, 0, 12, 8))
+	fillRect(image, image.Bounds(), fill)
+	if err := png.Encode(file, image); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeSyntheticJPEG(path string, fill color.Color) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	image := image.NewRGBA(image.Rect(0, 0, 8, 12))
+	fillRect(image, image.Bounds(), fill)
+	if err := jpeg.Encode(file, image, &jpeg.Options{Quality: 90}); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func assertSheetMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %#o, want %#o", path, got, want)
+	}
+}

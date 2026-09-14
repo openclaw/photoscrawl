@@ -42,6 +42,10 @@ func (p Paths) OriginalsCacheDir() string {
 	return filepath.Join(p.CacheDir, "originals")
 }
 
+func (p Paths) ClassificationPreviewCacheDir() string {
+	return filepath.Join(p.CacheDir, "classification-previews")
+}
+
 func (p Paths) PlaceContextCacheDir() string {
 	return filepath.Join(p.CacheDir, "place-context")
 }

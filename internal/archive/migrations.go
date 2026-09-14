@@ -11,6 +11,8 @@ import (
 	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
+const archiveBusyTimeoutMillis = 120000
+
 func openArchiveStore(ctx context.Context, path string) (*store.Store, error) {
 	return openArchiveStoreWithValidation(ctx, path, nil)
 }
@@ -26,6 +28,13 @@ func openArchiveStoreWithValidation(ctx context.Context, path string, validate f
 	db, err := store.Open(ctx, store.Options{Path: sqlitePath})
 	if err != nil {
 		return nil, err
+	}
+	// Crawls and classifiers are separate processes that share this archive.
+	// Their write transactions are bounded, so wait for the current writer
+	// instead of failing a multi-hour crawl after CrawlKit's five-second default.
+	if _, err := db.DB().ExecContext(ctx, fmt.Sprintf("pragma busy_timeout = %d", archiveBusyTimeoutMillis)); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure archive busy timeout: %w", err)
 	}
 	current, err := db.SchemaVersion(ctx)
 	if err != nil {
@@ -210,6 +219,12 @@ func migrateArchiveSchema(ctx context.Context, db *store.Store) error {
 			{"asset_resource", "deletion_reason", "text"},
 			{"asset_resource", "source_identifier", "text"},
 			{"album_membership", "folder_path", "text not null default ''"},
+			{"face_observation", "person_uuid", "text"},
+			{"face_observation", "person_kind", "text"},
+			{"face_observation", "quality", "real"},
+			{"face_observation", "blur_score", "real"},
+			{"face_observation", "eyes_closed", "integer"},
+			{"face_observation", "smile", "integer"},
 		}
 		for _, column := range columns {
 			if err := ensureArchiveColumn(ctx, tx, column.table, column.name, column.definition); err != nil {
@@ -220,9 +235,12 @@ func migrateArchiveSchema(ctx context.Context, db *store.Store) error {
 			`create index if not exists asset_deleted_idx on asset(deleted_at)`,
 			`create index if not exists resource_deleted_idx on asset_resource(deleted_at)`,
 			`create index if not exists resource_source_identifier_idx on asset_resource(asset_id, source_identifier)`,
+			// Label lookups for similar; without it each shared label scans
+			// every visual observation.
+			`create index if not exists visual_type_label_idx on visual_observation(observation_type, label collate nocase)`,
 		} {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
-				return fmt.Errorf("create tombstone index: %w", err)
+				return fmt.Errorf("create archive index: %w", err)
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `

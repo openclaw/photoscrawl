@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/openclaw/crawlkit/store"
 	"github.com/openclaw/photoscrawl/internal/photos"
@@ -44,6 +45,108 @@ func TestNormalizeAssetLocalIdentifier(t *testing.T) {
 				t.Fatalf("normalizeAssetLocalIdentifier(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+	if got := facePersonKind(photosFaceRow{hasDetectionType: true, detectionType: sql.NullInt64{Int64: 3, Valid: true}}); got != "pet" {
+		t.Fatalf("pet detection type = %q", got)
+	}
+	if got := facePersonKind(photosFaceRow{hasDetectionType: true, detectionType: sql.NullInt64{Int64: 2, Valid: true}}); got != "unknown" {
+		t.Fatalf("unknown detection type = %q", got)
+	}
+}
+
+func TestFaceSignalDerivations(t *testing.T) {
+	tests := []struct {
+		name string
+		face photosFaceRow
+		want any
+	}{
+		{"both eyes closed", photosFaceRow{hasLeftEyeClosed: true, hasRightEyeClosed: true, leftEyeClosed: sql.NullInt64{Int64: 1, Valid: true}, rightEyeClosed: sql.NullInt64{Int64: 1, Valid: true}}, 1},
+		{"one eye closed", photosFaceRow{hasLeftEyeClosed: true, hasRightEyeClosed: true, leftEyeClosed: sql.NullInt64{Int64: 1, Valid: true}, rightEyeClosed: sql.NullInt64{Valid: true}}, 1},
+		{"neither eye closed", photosFaceRow{hasLeftEyeClosed: true, hasRightEyeClosed: true, leftEyeClosed: sql.NullInt64{Valid: true}, rightEyeClosed: sql.NullInt64{Valid: true}}, 0},
+		{"one eye open and one uncomputed", photosFaceRow{hasLeftEyeClosed: true, hasRightEyeClosed: true, leftEyeClosed: sql.NullInt64{Valid: true}}, nil},
+		{"source columns absent", photosFaceRow{}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := faceEyesClosed(tt.face); got != tt.want {
+				t.Fatalf("faceEyesClosed() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPhotoMetadataWritesDuplicateOnlyForFlaggedAsset(t *testing.T) {
+	ctx := context.Background()
+	paths := testPaths(t)
+	db, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	sourceID := "library"
+	execTestSQL(t, db.DB(), `insert into source_library values (?, '/fixture', 'snapshot', '2026-07-06T00:00:00Z', 'test', '{}')`, sourceID)
+	for _, asset := range []struct{ id, uuid string }{{"flagged", "asset-flagged"}, {"clear", "asset-clear"}} {
+		execTestSQL(t, db.DB(), `insert into asset(id, local_identifier, media_type, media_subtypes, creation_date, modification_date, added_date, timezone_name, width, height, duration_seconds, favorite, hidden, burst_identifier, represents_burst, source_library_id, metadata_json) values (?, ?, 'image', '', '', '', '', '', 0, 0, 0, 0, 0, '', 0, ?, '{}')`, asset.id, asset.uuid, sourceID)
+	}
+	tx, err := db.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	result, _, err := writePhotoMetadataImport(ctx, tx, photoMetadataImportInput{schema: map[string]string{"asset_table": "ZASSET"}, rows: []applePhotoMetadataRow{
+		{assetUUID: "asset-flagged", duplicate: map[string]any{"state": int64(1), "metadata_group": nil, "perceptual_group": nil}, hasDuplicate: true},
+		{assetUUID: "asset-clear", duplicate: map[string]any{"state": int64(0), "metadata_group": nil, "perceptual_group": nil}},
+	}}, appleAssetScope{libraryID: sourceID, byUUID: map[string]string{"asset-flagged": "flagged", "asset-clear": "clear"}}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DuplicateObservationsInserted != 1 {
+		t.Fatalf("duplicate observations = %d", result.DuplicateObservationsInserted)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, db.DB(), `select count(*) from model_observation where observation_type = 'apple_duplicate' and asset_id = 'flagged'`, 1)
+	assertCount(t, db.DB(), `select count(*) from model_observation where observation_type = 'apple_duplicate' and asset_id = 'clear'`, 0)
+}
+
+func TestImportFacesWithoutSignalColumnsStoresNulls(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	paths := Paths{DataDir: root, Database: filepath.Join(root, "photos.sqlite")}
+	libraryPath := filepath.Join(root, "Library.photoslibrary")
+	createTestPhotosDBWithoutFaceSignals(t, filepath.Join(libraryPath, "database", "Photos.sqlite"))
+
+	archiveDB, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID := stableID("source_library", libraryPath)
+	assetID := stableID("asset", sourceID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001")
+	execTestSQL(t, archiveDB.DB(), `insert into source_library values (?, ?, 'snapshot', '2026-07-06T00:00:00Z', 'test', '{}')`, sourceID, libraryPath)
+	execTestSQL(t, archiveDB.DB(), `insert into asset(id, local_identifier, media_type, media_subtypes, creation_date, modification_date, added_date, timezone_name, width, height, duration_seconds, favorite, hidden, burst_identifier, represents_burst, source_library_id, metadata_json) values (?, ?, 'image', '', '', '', '', '', 0, 0, 0, 0, 0, '', 0, ?, '{}')`, assetID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001", sourceID)
+	if err := archiveDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ImportFaces(ctx, paths, ImportFacesOptions{LibraryPath: libraryPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FaceObservationsInserted != 1 || result.FacesWithEyeState != 0 || result.FacesWithSmile != 0 || result.FacesWithBlurScore != 0 || result.FacesWithPersonKind != 0 {
+		t.Fatalf("import without face signals = %#v", result)
+	}
+	archiveDB, err = store.OpenReadOnly(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archiveDB.Close()
+	var eyes, smile, blur, kind any
+	if err := archiveDB.DB().QueryRowContext(ctx, `select eyes_closed, smile, blur_score, person_kind from face_observation`).Scan(&eyes, &smile, &blur, &kind); err != nil {
+		t.Fatal(err)
+	}
+	if eyes != nil || smile != nil || blur != nil || kind != "unknown" {
+		t.Fatalf("missing source signal values = eyes=%v smile=%v blur=%v kind=%v", eyes, smile, blur, kind)
 	}
 }
 
@@ -286,7 +389,7 @@ values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if faces.FaceObservationsInserted != 1 || faces.AssetsTouched != 1 || faces.NamedPersonsFound != 1 {
+	if faces.FaceObservationsInserted != 1 || faces.AssetsTouched != 1 || faces.NamedPersonsFound != 1 || faces.FacesWithEyeState != 1 || faces.FacesWithSmile != 1 || faces.FacesWithQuality != 1 || faces.FacesWithBlurScore != 1 || faces.FacesWithPersonKind != 1 {
 		t.Fatalf("face import counts = %#v", faces)
 	}
 
@@ -309,12 +412,13 @@ values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0
 	if combined.SyncStrategy != "atomic_authoritative_replace_by_source" || combined.TotalAssetsTouched != 1 {
 		t.Fatalf("combined import = %#v", combined)
 	}
-	if combined.PhotoMetadata.ExifObservationsInserted != 1 || combined.PhotoMetadata.QualityObservationsInserted != 1 || combined.PhotoMetadata.EditObservationsInserted != 1 {
+	if combined.PhotoMetadata.ExifObservationsInserted != 1 || combined.PhotoMetadata.QualityObservationsInserted != 1 || combined.PhotoMetadata.EditObservationsInserted != 1 || combined.PhotoMetadata.DuplicateObservationsInserted != 1 {
 		t.Fatalf("photo metadata import = %#v", combined.PhotoMetadata)
 	}
 	if combinedAgain.PhotoMetadata.ExifObservationsInserted != combined.PhotoMetadata.ExifObservationsInserted ||
 		combinedAgain.PhotoMetadata.QualityObservationsInserted != combined.PhotoMetadata.QualityObservationsInserted ||
 		combinedAgain.PhotoMetadata.EditObservationsInserted != combined.PhotoMetadata.EditObservationsInserted ||
+		combinedAgain.PhotoMetadata.DuplicateObservationsInserted != combined.PhotoMetadata.DuplicateObservationsInserted ||
 		combinedAgain.PhotoMetadata.AssetsTouched != combined.PhotoMetadata.AssetsTouched {
 		t.Fatalf("second photo metadata import = %#v, first %#v", combinedAgain.PhotoMetadata, combined.PhotoMetadata)
 	}
@@ -342,9 +446,25 @@ values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0
 	assertCount(t, archiveDB.DB(), `select count(*) from visual_observation where source = ?`, 3, photosSearchIndexSource)
 	assertCount(t, archiveDB.DB(), `select count(*) from face_observation where source = ?`, 1, photosSearchIndexSource)
 	assertCount(t, archiveDB.DB(), `select count(*) from evidence_ref where source = ? and evidence_kind = 'apple_search_index'`, 3, photosSearchIndexSource)
-	assertCount(t, archiveDB.DB(), `select count(*) from observation_fts where asset_id = ?`, 8, assetID)
-	assertCount(t, archiveDB.DB(), `select count(*) from model_observation where asset_id = ? and source = ? and model_id = ?`, 3, assetID, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID)
-	assertCount(t, archiveDB.DB(), `select count(*) from evidence_ref where asset_id = ? and evidence_kind = 'apple_photo_metadata'`, 3, assetID)
+	assertCount(t, archiveDB.DB(), `select count(*) from observation_fts where asset_id = ?`, 9, assetID)
+	assertCount(t, archiveDB.DB(), `select count(*) from model_observation where asset_id = ? and source = ? and model_id = ?`, 4, assetID, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID)
+	assertCount(t, archiveDB.DB(), `select count(*) from evidence_ref where asset_id = ? and evidence_kind = 'apple_photo_metadata'`, 4, assetID)
+	var personUUID, personKind string
+	var quality, blurScore float64
+	var eyesClosed, smile int
+	if err := archiveDB.DB().QueryRowContext(ctx, `select person_uuid, person_kind, quality, blur_score, eyes_closed, smile from face_observation where source = ?`, photosLibraryDBFaceSource).Scan(&personUUID, &personKind, &quality, &blurScore, &eyesClosed, &smile); err != nil {
+		t.Fatal(err)
+	}
+	if personUUID != "08EA22FD-06A7-4145-829F-D724B9DD1BB6" || personKind != "human" || quality != 0.9 || blurScore != 0.12 || eyesClosed != 1 || smile != 1 {
+		t.Fatalf("imported face signals = uuid=%q kind=%q quality=%v blur=%v eyes=%d smile=%d", personUUID, personKind, quality, blurScore, eyesClosed, smile)
+	}
+	var duplicateJSON string
+	if err := archiveDB.DB().QueryRowContext(ctx, `select value_json from model_observation where asset_id = ? and observation_type = 'apple_duplicate'`, assetID).Scan(&duplicateJSON); err != nil {
+		t.Fatal(err)
+	}
+	if duplicateJSON != `{"metadata_group":101,"perceptual_group":null,"state":1}` {
+		t.Fatalf("duplicate observation = %s", duplicateJSON)
+	}
 	metadataSearch, err := Search(ctx, paths, SearchOptions{Query: "iPhone", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -424,16 +544,62 @@ func createTestPhotosDB(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	execTestSQL(t, db, `create table ZPERSON (Z_PK integer primary key, ZDISPLAYNAME text, ZFULLNAME text, ZPERSONUUID text)`)
-	execTestSQL(t, db, `create table ZDETECTEDFACE (Z_PK integer primary key, ZUUID text, ZPERSONFORFACE integer, ZASSETFORFACE integer, ZCENTERX real, ZCENTERY real, ZSIZE real, ZQUALITY real, ZNAMESOURCE integer, ZCLOUDNAMESOURCE integer, ZSOURCEWIDTH integer, ZSOURCEHEIGHT integer)`)
-	execTestSQL(t, db, `create table ZASSET (Z_PK integer primary key, ZUUID text, ZADJUSTMENTSSTATE integer, ZOVERALLAESTHETICSCORE real, ZCURATIONSCORE real, ZPROMOTIONSCORE real, ZHIGHLIGHTVISIBILITYSCORE real)`)
+	execTestSQL(t, db, `create table ZPERSON (Z_PK integer primary key, ZDISPLAYNAME text, ZFULLNAME text, ZPERSONUUID text, ZDETECTIONTYPE integer)`)
+	execTestSQL(t, db, `create table ZDETECTEDFACE (Z_PK integer primary key, ZUUID text, ZPERSONFORFACE integer, ZASSETFORFACE integer, ZCENTERX real, ZCENTERY real, ZSIZE real, ZQUALITY real, ZBLURSCORE real, ZISLEFTEYECLOSED integer, ZISRIGHTEYECLOSED integer, ZHASSMILE integer, ZNAMESOURCE integer, ZCLOUDNAMESOURCE integer, ZSOURCEWIDTH integer, ZSOURCEHEIGHT integer)`)
+	execTestSQL(t, db, `create table ZASSET (Z_PK integer primary key, ZUUID text, ZADJUSTMENTSSTATE integer, ZDUPLICATEASSETVISIBILITYSTATE integer, ZDUPLICATEMETADATAMATCHINGALBUM integer, ZDUPLICATEPERCEPTUALMATCHINGALBUM integer, ZOVERALLAESTHETICSCORE real, ZCURATIONSCORE real, ZPROMOTIONSCORE real, ZHIGHLIGHTVISIBILITYSCORE real)`)
 	execTestSQL(t, db, `create table ZEXTENDEDATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZISO integer, ZFLASHFIRED integer, ZAPERTURE real, ZFOCALLENGTH real, ZCAMERAMAKE text, ZCAMERAMODEL text, ZLENSMODEL text, ZCODEC text)`)
 	execTestSQL(t, db, `create table ZCOMPUTEDASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZFAILURESCORE real, ZHARMONIOUSCOLORSCORE real, ZINTERESTINGSUBJECTSCORE real, ZPLEASANTCOMPOSITIONSCORE real, ZSHARPLYFOCUSEDSUBJECTSCORE real, ZWELLFRAMEDSUBJECTSCORE real)`)
-	execTestSQL(t, db, `insert into ZPERSON(Z_PK, ZDISPLAYNAME, ZFULLNAME, ZPERSONUUID) values (1, 'Alex', 'Alex', '08EA22FD-06A7-4145-829F-D724B9DD1BB6')`)
-	execTestSQL(t, db, `insert into ZASSET(Z_PK, ZUUID, ZADJUSTMENTSSTATE, ZOVERALLAESTHETICSCORE, ZCURATIONSCORE, ZPROMOTIONSCORE, ZHIGHLIGHTVISIBILITYSCORE) values (1, '92D69D06-27F0-4831-AEC7-C6F640F075BA', 1, 0.91, 0.82, 0.73, 0.64)`)
+	execTestSQL(t, db, `insert into ZPERSON(Z_PK, ZDISPLAYNAME, ZFULLNAME, ZPERSONUUID, ZDETECTIONTYPE) values (1, 'Alex', 'Alex', '08EA22FD-06A7-4145-829F-D724B9DD1BB6', 1)`)
+	execTestSQL(t, db, `insert into ZASSET(Z_PK, ZUUID, ZADJUSTMENTSSTATE, ZDUPLICATEASSETVISIBILITYSTATE, ZDUPLICATEMETADATAMATCHINGALBUM, ZDUPLICATEPERCEPTUALMATCHINGALBUM, ZOVERALLAESTHETICSCORE, ZCURATIONSCORE, ZPROMOTIONSCORE, ZHIGHLIGHTVISIBILITYSCORE) values (1, '92D69D06-27F0-4831-AEC7-C6F640F075BA', 1, 1, 101, null, 0.91, 0.82, 0.73, 0.64)`)
 	execTestSQL(t, db, `insert into ZEXTENDEDATTRIBUTES(Z_PK, ZASSET, ZISO, ZFLASHFIRED, ZAPERTURE, ZFOCALLENGTH, ZCAMERAMAKE, ZCAMERAMODEL, ZLENSMODEL, ZCODEC) values (1, 1, 100, 0, 1.8, 26, 'Apple', 'iPhone 15 Pro', 'iPhone 15 Pro back camera', 'HEVC')`)
 	execTestSQL(t, db, `insert into ZCOMPUTEDASSETATTRIBUTES(Z_PK, ZASSET, ZFAILURESCORE, ZHARMONIOUSCOLORSCORE, ZINTERESTINGSUBJECTSCORE, ZPLEASANTCOMPOSITIONSCORE, ZSHARPLYFOCUSEDSUBJECTSCORE, ZWELLFRAMEDSUBJECTSCORE) values (1, 1, 0.01, 0.75, 0.88, 0.92, 0.86, 0.94)`)
-	execTestSQL(t, db, `insert into ZDETECTEDFACE(Z_PK, ZUUID, ZPERSONFORFACE, ZASSETFORFACE, ZCENTERX, ZCENTERY, ZSIZE, ZQUALITY, ZNAMESOURCE, ZCLOUDNAMESOURCE, ZSOURCEWIDTH, ZSOURCEHEIGHT) values (1, 'face-1', 1, 1, 0.5, 0.5, 0.2, 0.9, 1, 0, 100, 100)`)
+	execTestSQL(t, db, `insert into ZDETECTEDFACE(Z_PK, ZUUID, ZPERSONFORFACE, ZASSETFORFACE, ZCENTERX, ZCENTERY, ZSIZE, ZQUALITY, ZBLURSCORE, ZISLEFTEYECLOSED, ZISRIGHTEYECLOSED, ZHASSMILE, ZNAMESOURCE, ZCLOUDNAMESOURCE, ZSOURCEWIDTH, ZSOURCEHEIGHT) values (1, 'face-1', 1, 1, 0.5, 0.5, 0.2, 0.9, 0.12, 1, 0, 1, 1, 0, 100, 100)`)
+	execTestSQL(t, db, `create table ZMEDIAANALYSISASSETATTRIBUTES (Z_PK integer primary key, ZASSET integer, ZBLURRINESSSCORE real)`)
+	execTestSQL(t, db, `insert into ZMEDIAANALYSISASSETATTRIBUTES(Z_PK, ZASSET, ZBLURRINESSSCORE) values (1, 1, 0.12)`)
+}
+
+func TestPhotoMetadataReadsMediaAnalysisBlurriness(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "Photos.sqlite")
+	createTestPhotosDB(t, path)
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	input, err := loadPhotoMetadataInput(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(input.rows) != 1 || input.rows[0].quality["media_blurriness"] != 0.12 {
+		t.Fatalf("media blurriness = %#v", input.rows)
+	}
+	execTestSQL(t, db, `drop table ZMEDIAANALYSISASSETATTRIBUTES`)
+	input, err = loadPhotoMetadataInput(ctx, db)
+	if err != nil {
+		t.Fatalf("import without the media analysis table failed: %v", err)
+	}
+	if _, ok := input.rows[0].quality["media_blurriness"]; ok {
+		t.Fatalf("media blurriness present without its table: %#v", input.rows[0].quality)
+	}
+}
+
+func createTestPhotosDBWithoutFaceSignals(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	execTestSQL(t, db, `create table ZPERSON (Z_PK integer primary key, ZDISPLAYNAME text, ZFULLNAME text, ZPERSONUUID text)`)
+	execTestSQL(t, db, `create table ZDETECTEDFACE (Z_PK integer primary key, ZUUID text, ZPERSONFORFACE integer, ZASSETFORFACE integer, ZCENTERX real, ZCENTERY real, ZSIZE real, ZQUALITY real, ZNAMESOURCE integer, ZCLOUDNAMESOURCE integer, ZSOURCEWIDTH integer, ZSOURCEHEIGHT integer)`)
+	execTestSQL(t, db, `create table ZASSET (Z_PK integer primary key, ZUUID text)`)
+	execTestSQL(t, db, `insert into ZPERSON values (1, 'Alex', 'Alex', '08EA22FD-06A7-4145-829F-D724B9DD1BB6')`)
+	execTestSQL(t, db, `insert into ZASSET values (1, '92D69D06-27F0-4831-AEC7-C6F640F075BA')`)
+	execTestSQL(t, db, `insert into ZDETECTEDFACE values (1, 'face-1', 1, 1, 0.5, 0.5, 0.2, 0.9, 1, 0, 100, 100)`)
 }
 
 func createTestPSIDB(t *testing.T, path string) {
@@ -487,5 +653,22 @@ func assertCount(t *testing.T, db *sql.DB, query string, want int, args ...any) 
 	}
 	if got != want {
 		t.Fatalf("count %q = %d, want %d", query, got, want)
+	}
+}
+
+func TestFaceQualityTreatsPhotosSentinelAsUnknown(t *testing.T) {
+	cases := map[string]struct {
+		in   sql.NullFloat64
+		want sql.NullFloat64
+	}{
+		"not computed": {sql.NullFloat64{Float64: -1, Valid: true}, sql.NullFloat64{}},
+		"missing":      {sql.NullFloat64{}, sql.NullFloat64{}},
+		"zero":         {sql.NullFloat64{Float64: 0, Valid: true}, sql.NullFloat64{Float64: 0, Valid: true}},
+		"scored":       {sql.NullFloat64{Float64: 0.42, Valid: true}, sql.NullFloat64{Float64: 0.42, Valid: true}},
+	}
+	for name, c := range cases {
+		if got := faceQuality(photosFaceRow{quality: c.in}); got != c.want {
+			t.Fatalf("%s: faceQuality(%v) = %v, want %v", name, c.in, got, c.want)
+		}
 	}
 }

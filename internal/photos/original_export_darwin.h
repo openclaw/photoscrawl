@@ -7,10 +7,13 @@ void *photoscrawl_export_create(void);
 void photoscrawl_export_set_limit(void *control, int64_t bytes);
 void photoscrawl_export_cancel(void *control);
 int photoscrawl_export_cancelled(void *control);
+void photoscrawl_export_register_image_request(void *control, int32_t requestID);
 void photoscrawl_export_release(void *control);
 int photoscrawl_export_original_resource(const char *identifier, const char *destination, int allowNetwork, void *control, char **errorOut);
 
 // Returns a retained PHAssetResource; the export bridge owns the reference.
 void *photoscrawl_copy_original_resource(const char *identifier, void *control, char **errorOut);
+
+int photoscrawl_export_image_preview(const char *localIdentifier, const char *destinationPath, int maxDimension, int allowNetwork, void *control, char **errorOut);
 
 #endif

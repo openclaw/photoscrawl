@@ -55,6 +55,124 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	switch args[0] {
+	case "people":
+		fs := newCommandFlags("people", &paths)
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.People(ctx, paths)
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "people", result)
+	case "find":
+		fs := newCommandFlags("find", &paths)
+		opts := findFlags(fs)
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.Find(ctx, paths, *opts)
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "find", result)
+	case "rank":
+		fs := newCommandFlags("rank", &paths)
+		find := rankFindFlags(fs)
+		ids := fs.String("ids-file", "", "JSON array or line-separated asset ids")
+		group := fs.String("group", "none", "group: none, burst, time, or day")
+		gap := fs.Int("gap-seconds", 90, "split time groups after this gap")
+		per := fs.Int("per-group", 0, "top assets per group; 0 keeps all")
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		if *ids != "" && hasFindFilters(*find) {
+			return output.UsageError{Err: errors.New("--ids-file cannot be combined with find filters")}
+		}
+		result, err := archive.Rank(ctx, paths, archive.RankOptions{FindOptions: *find, IDsFile: *ids, Group: *group, GapSeconds: *gap, PerGroup: *per})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "rank", result)
+	case "junk":
+		fs := newCommandFlags("junk", &paths)
+		kind := fs.String("kind", "all", "screenshots, blurry, eyes-closed, duplicates, or all")
+		older := fs.String("older-than", "30d", "age for screenshots, such as 30d or 12h")
+		limit := fs.Int("limit", 200, "max candidates")
+		blurMax := fs.Float64("blur-max", 0.3, "highest Photos blurriness score flagged as blurry (1 is sharp)")
+		exclude := fs.String("exclude-ids-file", "", "JSON array or line-separated ids to exclude")
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.Junk(ctx, paths, archive.JunkOptions{Kind: *kind, OlderThan: *older, Limit: *limit, ExcludeIDsFile: *exclude, BlurMax: *blurMax})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "junk", result)
+	case "sheet":
+		fs := newCommandFlags("sheet", &paths)
+		ids := fs.String("ids-file", "", "JSON array or line-separated asset ids")
+		files := fs.String("files-file", "", "JSON array or line-separated image paths")
+		title := fs.String("title", "", "title included in JSON output")
+		perSheet := fs.Int("per-sheet", 16, "tiles per contact sheet")
+		tile := fs.Int("tile", 480, "tile size in pixels")
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.Sheet(ctx, paths, archive.SheetOptions{IDsFile: *ids, FilesFile: *files, Title: *title, PerSheet: *perSheet, Tile: *tile})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "sheet", result)
+	case "similar":
+		fs := newCommandFlags("similar", &paths)
+		id := fs.String("id", "", "seed asset id; finds label similarity, not pixel similarity")
+		limit := fs.Int("limit", 30, "max results")
+		includeSameEvent := fs.Bool("include-same-event", false, "include photos from the seed's day, 12-hour window, and burst")
+		exclude := fs.String("exclude-ids-file", "", "JSON array or line-separated ids to exclude")
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.Similar(ctx, paths, archive.SimilarOptions{ID: *id, Limit: *limit, IncludeSameEvent: *includeSameEvent, ExcludeIDsFile: *exclude})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "similar", result)
+	case "forgotten":
+		fs := newCommandFlags("forgotten", &paths)
+		from := fs.String("from", "", "inclusive RFC 3339 timestamp or YYYY-MM-DD")
+		to := fs.String("to", "", "inclusive RFC 3339 timestamp or YYYY-MM-DD")
+		limit := fs.Int("limit", 12, "max results")
+		gapHours := fs.Float64("gap-hours", 3, "split moments after this many hours")
+		exclude := fs.String("exclude-ids-file", "", "JSON array or line-separated ids to exclude")
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.Forgotten(ctx, paths, archive.ForgottenOptions{From: *from, To: *to, Limit: *limit, GapHours: *gapHours, ExcludeIDsFile: *exclude})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "forgotten", result)
+	case "share-check":
+		fs := newCommandFlags("share-check", &paths)
+		ids := fs.String("ids-file", "", "JSON array or line-separated asset ids")
+		exclude := fs.String("exclude-ids-file", "", "JSON array or line-separated ids to exclude")
+		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		result, err := archive.ShareCheck(ctx, paths, archive.ShareCheckOptions{IDsFile: *ids, ExcludeIDsFile: *exclude})
+		if err != nil {
+			return err
+		}
+		return output.Write(os.Stdout, format, "share_check", result)
 	case "version":
 		if len(args) != 1 {
 			return output.UsageError{Err: errors.New("version takes no arguments")}
@@ -128,16 +246,18 @@ func run(ctx context.Context, args []string) error {
 		localModel := fs.String("local-model", "", "local vision model to use for content observations")
 		localModelAPI := fs.String("local-model-api", "", "local model API: ollama or openai")
 		localModelURL := fs.String("local-model-url", "", "local model endpoint URL")
+		allowICloud := fs.Bool("allow-icloud-downloads", false, "download bounded PhotoKit previews when local image content is missing")
 		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
 		}
 		result, err := archive.Classify(ctx, paths, archive.ClassifyOptions{
-			All:           *all,
-			Limit:         *limit,
-			LocalModel:    *localModel,
-			LocalModelAPI: *localModelAPI,
-			LocalModelURL: *localModelURL,
+			All:                  *all,
+			Limit:                *limit,
+			LocalModel:           *localModel,
+			LocalModelAPI:        *localModelAPI,
+			LocalModelURL:        *localModelURL,
+			AllowICloudDownloads: *allowICloud,
 		})
 		if err != nil {
 			return err
@@ -338,7 +458,31 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage() error {
-	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|import-apple|classify|search|timeline|open|export|neighbors|evidence|place-context|place-context-raw|place-card|place-backfill|eval-card>")}
+	return output.UsageError{Err: errors.New("usage: photoscrawl [--version] <version|metadata|init|status|crawl|import-apple|classify|search|people|find|rank|junk|sheet|similar|forgotten|share-check|timeline|open|export|neighbors|evidence|place-context|place-context-raw|place-card|place-backfill|eval-card>")}
+}
+
+func findFlags(fs *commandFlags) *archive.FindOptions {
+	o := rankFindFlags(fs)
+	fs.IntVar(&o.Limit, "limit", 50, "max assets")
+	return o
+}
+
+func rankFindFlags(fs *commandFlags) *archive.FindOptions {
+	o := &archive.FindOptions{}
+	fs.Func("person", "required named person (repeatable)", func(v string) error { o.People = append(o.People, v); return nil })
+	fs.StringVar(&o.From, "from", "", "inclusive RFC 3339 timestamp or YYYY-MM-DD")
+	fs.StringVar(&o.To, "to", "", "inclusive RFC 3339 timestamp or YYYY-MM-DD")
+	fs.StringVar(&o.Place, "place", "", "place or venue text")
+	fs.StringVar(&o.Query, "query", "", "existing full-text search query")
+	fs.StringVar(&o.Media, "media", "image", "image, video, or any")
+	fs.BoolVar(&o.IncludeHidden, "include-hidden", false, "include hidden assets")
+	fs.StringVar(&o.Rank, "rank", "date", "quality or date")
+	fs.StringVar(&o.ExcludeIDsFile, "exclude-ids-file", "", "JSON array or line-separated ids to exclude")
+	return o
+}
+
+func hasFindFilters(o archive.FindOptions) bool {
+	return len(o.People) > 0 || o.From != "" || o.To != "" || o.Place != "" || o.Query != "" || o.Media != "image" || o.IncludeHidden || o.Rank != "date"
 }
 
 func writeVersion(w io.Writer) error {
