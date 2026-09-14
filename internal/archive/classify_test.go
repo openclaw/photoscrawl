@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -715,13 +716,17 @@ func TestClassifyCancelledPreviewLeavesQueueRowForRetry(t *testing.T) {
 	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-07-31T10:00:00Z")}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Classify(ctx, paths, ClassifyOptions{
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	_, err := Classify(runCtx, paths, ClassifyOptions{
 		All:                  true,
 		LocalModel:           "fixture-vision",
 		LocalModelURL:        server.URL,
 		AllowICloudDownloads: true,
 		Now:                  fixedClock("2026-07-31T10:05:00Z"),
 		previewExporter: func(context.Context, string, string, int, bool) error {
+			// SIGINT cancels the run's context while the preview is in flight.
+			cancelRun()
 			return context.Canceled
 		},
 	})
@@ -802,5 +807,89 @@ func TestClassifyStalledPreviewTimesOutWithoutAbortingRun(t *testing.T) {
 	}
 	if state != "content_failed" || !strings.Contains(reason, "timed out") {
 		t.Fatalf("stalled preview queue row = state %q reason %q, want content_failed with a timeout reason", state, reason)
+	}
+}
+
+func TestClassifyRequestTimeoutFailsAssetAndContinuesRun(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(ollamaGenerateResponse{Response: `{"scene_summary":"Dinner at a shared table.","cluster_terms":["dinner"]}`, Done: true})
+	}))
+	defer server.Close()
+	cloudImage := func(identifier, created string) photos.Asset {
+		return photos.Asset{
+			LocalIdentifier: identifier,
+			MediaType:       "image",
+			CreationDate:    created,
+			Width:           4032,
+			Height:          3024,
+			Resources: []photos.Resource{{
+				SourceIdentifier: identifier + "-photo",
+				Type:             "photo",
+				OriginalFilename: identifier + ".jpeg",
+				Availability:     "unknown",
+			}},
+		}
+	}
+	provider := fakeProvider{snapshot: photos.LibrarySnapshot{
+		Provider: "fake",
+		Assets: []photos.Asset{
+			cloudImage("fixture-timeout-image", "2026-07-30T21:00:00Z"),
+			cloudImage("fixture-later-image", "2026-07-30T20:00:00Z"),
+		},
+	}}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-07-31T10:00:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Classify(ctx, paths, ClassifyOptions{
+		All:                  true,
+		LocalModel:           "fixture-vision",
+		LocalModelURL:        server.URL,
+		AllowICloudDownloads: true,
+		Now:                  fixedClock("2026-07-31T10:05:00Z"),
+		previewExporter: func(_ context.Context, identifier, destination string, _ int, _ bool) error {
+			if identifier == "fixture-timeout-image" {
+				// An http.Client timeout matches context.DeadlineExceeded while
+				// the run's own context is still live.
+				return fmt.Errorf("request timed out: %w", context.DeadlineExceeded)
+			}
+			return os.WriteFile(destination, []byte("bounded preview bytes"), 0o600)
+		},
+	})
+	if err != nil {
+		t.Fatalf("classify error = %v, want the run to continue past a request timeout", err)
+	}
+	if result.ContentClassified != 1 || result.ContentClassificationFailures != 1 {
+		t.Fatalf("classify result = classified %d failures %d, want 1 and 1", result.ContentClassified, result.ContentClassificationFailures)
+	}
+	db, err := store.OpenReadOnly(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	states := map[string]string{}
+	rows, err := db.DB().QueryContext(ctx, `select a.local_identifier, q.state from classification_queue q join asset a on a.id = q.asset_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var identifier, state string
+		if err := rows.Scan(&identifier, &state); err != nil {
+			t.Fatal(err)
+		}
+		states[identifier] = state
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if states["fixture-timeout-image"] != "content_failed" || states["fixture-later-image"] != "content_classified" {
+		t.Fatalf("queue states = %v, want the timed-out asset failed and the later asset classified", states)
 	}
 }

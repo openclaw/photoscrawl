@@ -204,8 +204,10 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 			}
 			if classifier != nil && contentErr != nil {
 				// A cancelled run is not a classification failure: leave the
-				// queue row untouched so the next run retries the asset.
-				if errors.Is(contentErr, context.Canceled) || errors.Is(contentErr, context.DeadlineExceeded) {
+				// queue row untouched so the next run retries the asset. Check
+				// the run's own context, because an http.Client timeout also
+				// matches context.DeadlineExceeded and is a per-asset failure.
+				if ctx.Err() != nil {
 					return contentErr
 				}
 				result.ContentClassificationFailures++
