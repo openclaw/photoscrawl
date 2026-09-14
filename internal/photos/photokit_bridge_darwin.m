@@ -605,7 +605,16 @@ int photoscrawl_export_image_preview(const char *localIdentifier, const char *de
     if (requestID == PHInvalidImageRequestID) {
       [request complete:nil info:nil];
     }
-    dispatch_semaphore_wait(request->completed, DISPATCH_TIME_FOREVER);
+    // PhotoKit may never deliver a result for a stalled iCloud download, even
+    // after cancelImageRequest, so poll and let cancellation end the wait. The
+    // copied result handler keeps the request alive if it arrives later.
+    while (dispatch_semaphore_wait(request->completed, dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC)) != 0) {
+      if (photoscrawl_export_cancelled(exportControl)) {
+        [request release];
+        pcSetError(errorOut, @"PhotoKit preview request was cancelled");
+        return 0;
+      }
+    }
     NSImage *preview = nil;
     NSDictionary *resultInfo = nil;
     @synchronized(request) {

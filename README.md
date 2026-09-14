@@ -206,6 +206,8 @@ By default, local-model classification only reads images already stored on the
 Mac. With `--allow-icloud-downloads`, missing images are requested from PhotoKit
 as bounded 1600-pixel JPEG previews. Each preview is removed after its model
 result is stored, so classification does not accumulate an originals archive.
+A preview that PhotoKit has not delivered within two minutes fails that asset
+instead of stalling the run, and cancelling a run stops an in-flight download.
 
 Local-model endpoints must resolve entirely to loopback addresses. Redirects
 are checked under the same rule. Evidence records the actual response endpoint

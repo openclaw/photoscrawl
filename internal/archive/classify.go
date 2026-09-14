@@ -19,6 +19,8 @@ const (
 	metadataClassifierInputVersion = "asset-resource-album.v1"
 )
 
+const defaultPreviewTimeout = 2 * time.Minute
+
 type ClassifyOptions struct {
 	All                  bool
 	Limit                int
@@ -27,6 +29,7 @@ type ClassifyOptions struct {
 	LocalModelURL        string
 	AllowICloudDownloads bool
 	PreviewMaxDimension  int
+	PreviewTimeout       time.Duration
 	Now                  func() time.Time
 	previewExporter      func(context.Context, string, string, int, bool) error
 }
@@ -336,8 +339,21 @@ func prepareClassificationPreview(ctx context.Context, paths Paths, input *class
 	}
 	previewName := strings.TrimPrefix(stableID("classification_preview", input.AssetID), "classification_preview:") + ".jpg"
 	previewPath := filepath.Join(previewDir, previewName)
-	if err := exporter(ctx, input.LocalIdentifier, previewPath, maxDimension, true); err != nil {
+	timeout := opts.PreviewTimeout
+	if timeout <= 0 {
+		timeout = defaultPreviewTimeout
+	}
+	// PhotoKit can stall an iCloud download indefinitely; bound each preview so
+	// one stuck asset fails instead of hanging the whole run.
+	previewCtx, cancelPreview := context.WithTimeout(ctx, timeout)
+	err = exporter(previewCtx, input.LocalIdentifier, previewPath, maxDimension, true)
+	timedOut := ctx.Err() == nil && errors.Is(previewCtx.Err(), context.DeadlineExceeded)
+	cancelPreview()
+	if err != nil {
 		_ = os.RemoveAll(previewDir)
+		if timedOut {
+			return "", fmt.Errorf("download PhotoKit preview: timed out after %s", timeout)
+		}
 		return "", fmt.Errorf("download PhotoKit preview: %w", err)
 	}
 	info, statErr := os.Stat(previewPath)

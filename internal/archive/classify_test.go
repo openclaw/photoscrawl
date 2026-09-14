@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openclaw/crawlkit/store"
 	"github.com/openclaw/photoscrawl/internal/photos"
@@ -738,5 +739,68 @@ func TestClassifyCancelledPreviewLeavesQueueRowForRetry(t *testing.T) {
 	}
 	if state == "content_failed" {
 		t.Fatalf("cancelled preview marked the asset failed: state=%q reason=%q", state, reason)
+	}
+}
+
+func TestClassifyStalledPreviewTimesOutWithoutAbortingRun(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(ollamaGenerateResponse{Response: `{"scene_summary":"unused"}`, Done: true})
+	}))
+	defer server.Close()
+	provider := fakeProvider{snapshot: photos.LibrarySnapshot{
+		Provider: "fake",
+		Assets: []photos.Asset{{
+			LocalIdentifier: "fixture-stalled-cloud-image",
+			MediaType:       "image",
+			CreationDate:    "2026-07-30T20:00:00Z",
+			Width:           4032,
+			Height:          3024,
+			Resources: []photos.Resource{{
+				SourceIdentifier: "stalled-cloud-photo",
+				Type:             "photo",
+				OriginalFilename: "stalled.jpeg",
+				Availability:     "unknown",
+			}},
+		}},
+	}}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-07-31T10:00:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Classify(ctx, paths, ClassifyOptions{
+		All:                  true,
+		LocalModel:           "fixture-vision",
+		LocalModelURL:        server.URL,
+		AllowICloudDownloads: true,
+		PreviewTimeout:       20 * time.Millisecond,
+		Now:                  fixedClock("2026-07-31T10:05:00Z"),
+		previewExporter: func(ctx context.Context, _, _ string, _ int, _ bool) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatalf("classify error = %v, want the run to finish", err)
+	}
+	if result.ICloudPreviewDownloadFailures != 1 {
+		t.Fatalf("preview download failures = %d, want 1", result.ICloudPreviewDownloadFailures)
+	}
+	db, err := store.OpenReadOnly(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var state, reason string
+	if err := db.DB().QueryRowContext(ctx, `select state, coalesce(reason, '') from classification_queue`).Scan(&state, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if state != "content_failed" || !strings.Contains(reason, "timed out") {
+		t.Fatalf("stalled preview queue row = state %q reason %q, want content_failed with a timeout reason", state, reason)
 	}
 }
