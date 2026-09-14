@@ -30,6 +30,8 @@ func TestBlockedCategoriesInPhrase(t *testing.T) {
 		{phrase: "no passport and no documents", want: []string{}},
 		{phrase: "child", want: []string{}},
 		{phrase: "driver's license visible", want: []string{"driver's license"}},
+		{phrase: "driver’s license visible", want: []string{"driver's license"}},
+		{phrase: "no driver’s license visible", want: []string{}},
 		{phrase: "drivers license visible", want: []string{"driver's license"}},
 		{phrase: "driver license visible", want: []string{"driver's license"}},
 		{phrase: "driving licence visible", want: []string{"driver's license"}},
@@ -272,5 +274,29 @@ func TestShareCheckBlocksSQLiteProviderScreenshots(t *testing.T) {
 	}
 	if len(got.Assets) != 1 || got.Assets[0].Status != "blocked" || !containsText(got.Assets[0].Reasons, "screenshot") {
 		t.Fatalf("SQLite-provider screenshot = %#v", got.Assets)
+	}
+}
+
+func TestShareCheckRequiresReviewForUnknownSensitivity(t *testing.T) {
+	paths := shareCheckFixture(t)
+	ctx := context.Background()
+	db, err := openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ids := writeCurationIDs(t, paths.DataDir, "unknown-privacy.txt", "pass")
+	for _, phrase := range []string{"phone number visible", "private chat visible", "faces with personal contact details", "no documents but phone number visible", "child and phone number visible"} {
+		t.Run(phrase, func(t *testing.T) {
+			evidence, err := json.Marshal(map[string]any{"classified_at": "2025-01-01T00:00:00Z", "parsed_response": map[string]any{"privacy_sensitivity": []string{phrase}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			execTestSQL(t, db.DB(), `update evidence_ref set value_json=? where id='classification-pass'`, string(evidence))
+			got, err := ShareCheck(ctx, paths, ShareCheckOptions{IDsFile: ids})
+			if err != nil || len(got.Assets) != 1 || got.Assets[0].Status != "unreviewed" {
+				t.Fatalf("unknown sensitivity: %#v, %v", got, err)
+			}
+		})
 	}
 }

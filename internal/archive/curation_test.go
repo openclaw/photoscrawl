@@ -125,6 +125,9 @@ func TestCurationDurationAndScreenshotSubtype(t *testing.T) {
 	if !isScreenshotSubtype("4") || isScreenshotSubtype("16") {
 		t.Fatal("screenshot subtype must be bit 2, not portrait bit 4")
 	}
+	if !isScreenshotSubtype("kind_subtype:10") || isScreenshotSubtype("kind_subtype:100") || isScreenshotSubtype("kind_subtype:101") {
+		t.Fatal("SQLite screenshot subtype must match 10 exactly")
+	}
 }
 
 func TestDuplicateGroupsBuildsDeterministicConnectedComponents(t *testing.T) {
@@ -152,6 +155,11 @@ func TestDuplicateGroupsBuildsDeterministicConnectedComponents(t *testing.T) {
 	resource("singleton", "singleton-unique")
 	resource("x", "shared-hash")
 	resource("y", "shared-hash")
+	duplicateObservation("singleton", `{"metadata_group":0,"perceptual_group":-1}`)
+	duplicateObservation("x", `{"metadata_group":0,"perceptual_group":-1}`)
+	for _, kind := range []string{"thumbnail", "local_derivative", "adjustment_data", "paired_video", "internal_resource:99"} {
+		execTestSQL(t, db.DB(), `insert into asset_resource(id,asset_id,source_identifier,resource_type,uti,original_filename,local_path,file_size,sha256,available_locally,needs_download) values(?,'singleton',?,?,'public.data','synthetic','','1','a-unique',0,0)`, "aux-"+kind, "aux-"+kind, kind)
+	}
 
 	assets, err := loadAssets(ctx, db.DB())
 	if err != nil {
@@ -465,4 +473,58 @@ func rankGroup(result RankResult, key string) RankGroup {
 		}
 	}
 	return RankGroup{}
+}
+
+func TestSearchPersonLabelsDoNotMaskDetectedEyeState(t *testing.T) {
+	ctx := context.Background()
+	paths := curationFixture(t)
+	writer, err := openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	for _, id := range []string{"burst-open", "burst-closed"} {
+		execTestSQL(t, writer.DB(), `insert into face_observation(id,asset_id,face_local_id,person_label,confidence,bounding_box_json,source,evidence_id) values(?,?,?,'Alex',1,'{}',?,'search-evidence')`, "search-"+id, id, "search-"+id, photosSearchIndexSource)
+	}
+	for _, mode := range []string{"curation", "similar"} {
+		t.Run(mode, func(t *testing.T) {
+			var got signals
+			var err error
+			if mode == "curation" {
+				got, err = loadSignals(ctx, writer.DB())
+			} else {
+				got, err = loadSimilarSignals(ctx, writer.DB(), []string{"burst-open", "burst-closed"})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !allOpen(got.faces["burst-open"]) || !allClosed(got.faces["burst-closed"]) {
+				t.Fatalf("search labels masked eyes: %#v", got.faces)
+			}
+		})
+	}
+}
+
+func TestClosedEyeReplacementPreservesNamedPeople(t *testing.T) {
+	for _, burst := range []string{"burst", ""} {
+		t.Run("burst="+burst, func(t *testing.T) {
+			created := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+			assets := []fullAsset{
+				{AssetRow: AssetRow{ID: "closed", MediaType: "image"}, created: created, burst: burst},
+				{AssetRow: AssetRow{ID: "different", MediaType: "image"}, created: created.Add(time.Second), burst: burst},
+			}
+			s := signals{faces: map[string][]faceSignal{
+				"closed":    {{label: "Alex", closed: sql.NullInt64{Int64: 1, Valid: true}}},
+				"different": {{label: "Bob", closed: sql.NullInt64{Valid: true}}},
+			}}
+			if got := closedEyeSiblings(assets, s); len(got) != 0 {
+				t.Fatalf("different person offered as replacement: %#v", got)
+			}
+			assets = append(assets, fullAsset{AssetRow: AssetRow{ID: "same", MediaType: "image"}, created: created.Add(2 * time.Second), burst: burst})
+			s.faces["same"] = []faceSignal{{label: " alex ", closed: sql.NullInt64{Valid: true}}}
+			if got := closedEyeSiblings(assets, s); len(got) != 1 || got[0].open.ID != "same" {
+				t.Fatalf("matching replacement = %#v", got)
+			}
+		})
+	}
 }

@@ -321,7 +321,8 @@ func loadAssets(ctx context.Context, db *sql.DB) ([]fullAsset, error) {
 }
 func loadSignals(ctx context.Context, db *sql.DB) (signals, error) {
 	s := signals{faces: map[string][]faceSignal{}, aesthetic: map[string]sql.NullFloat64{}, focus: map[string]sql.NullFloat64{}, blurriness: map[string]sql.NullFloat64{}}
-	r, e := db.QueryContext(ctx, `select asset_id,person_label,quality,eyes_closed from face_observation where trim(person_label)<>''`)
+	// Search-index people labels are not detected faces and have no eye state.
+	r, e := db.QueryContext(ctx, `select asset_id,person_label,quality,eyes_closed from face_observation where source = ? and trim(person_label)<>''`, photosLibraryDBFaceSource)
 	if e != nil {
 		return s, e
 	}
@@ -846,8 +847,8 @@ func (a fullAsset) favoriteBool() bool { return a.favorite != 0 }
 // "kind_subtype:10".
 func isScreenshotSubtype(x string) bool {
 	value := strings.TrimSpace(x)
-	if strings.Contains(value, "kind_subtype:10") {
-		return true
+	if strings.HasPrefix(value, "kind_subtype:") {
+		return value == "kind_subtype:10"
 	}
 	n, e := strconv.ParseUint(value, 0, 64)
 	return e == nil && n&(1<<2) != 0
@@ -939,7 +940,7 @@ func closedEyeSiblings(as []fullAsset, s signals) []eyeSibling {
 			return !datedImages[i].created.Before(a.created.Add(-90 * time.Second))
 		})
 		for ; i < len(datedImages) && !datedImages[i].created.After(a.created.Add(90*time.Second)); i++ {
-			if datedImages[i].ID != a.ID && allOpen(s.faces[datedImages[i].ID]) {
+			if datedImages[i].ID != a.ID && openReplacementFaces(s.faces[a.ID], s.faces[datedImages[i].ID]) {
 				out = append(out, eyeSibling{closed: a, open: datedImages[i]})
 				break
 			}
@@ -953,12 +954,24 @@ func openBurstSibling(a fullAsset, burst []fullAsset, s signals) (fullAsset, boo
 		return fullAsset{}, false
 	}
 	for _, b := range burst {
-		if b.ID != a.ID && allOpen(s.faces[b.ID]) {
+		if b.ID != a.ID && openReplacementFaces(s.faces[a.ID], s.faces[b.ID]) {
 			return b, true
 		}
 	}
 	return fullAsset{}, false
 }
+
+func openReplacementFaces(original, candidate []faceSignal) bool {
+	if !allOpen(candidate) {
+		return false
+	}
+	people := make([]string, 0, len(original))
+	for _, face := range original {
+		people = append(people, face.label)
+	}
+	return peopleMatch(candidate, people)
+}
+
 func hasFaceQualityAbove(fs []faceSignal, x float64) bool {
 	for _, f := range fs {
 		if f.quality.Valid && f.quality.Float64 > x {
@@ -1021,6 +1034,9 @@ func duplicateGroups(ctx context.Context, db *sql.DB, as []fullAsset) ([][]fullA
 			return nil, fmt.Errorf("parse duplicate observation for asset %q: %w", id, err)
 		}
 		for _, k := range []string{"metadata_group", "perceptual_group"} {
+			if group, numeric := number(x[k]); numeric && group <= 0 {
+				continue
+			}
 			if z := fmt.Sprint(x[k]); z != "<nil>" && z != "" {
 				addMember(k+":"+z, id)
 			}
@@ -1033,7 +1049,8 @@ func duplicateGroups(ctx context.Context, db *sql.DB, as []fullAsset) ([][]fullA
 	if err = r.Close(); err != nil {
 		return nil, err
 	}
-	r, err = db.QueryContext(ctx, `select asset_id, sha256 from asset_resource where deleted_at is null`)
+	r, err = db.QueryContext(ctx, `select asset_id, sha256 from asset_resource
+where deleted_at is null and resource_type in ('original', 'local_original', 'photo', 'video')`)
 	if err != nil {
 		return nil, err
 	}
