@@ -6,13 +6,18 @@
 - Add `people` (named people from live assets only), `find`, `rank`, and `junk` over the imported signals: required-people, date, place, and text filters; best-first ranking with reasons that replaces missing quality signals with their median, grouped by burst, time gap, or day; and screenshot, blurry, eyes-closed, and duplicate candidates with a suggested keeper. Assets with missing or malformed creation dates remain queryable, sort after dated assets in date order, stay out of date-bounded filters and age rules, and form separate time-based groups.
 - Add `sheet` for orientation-correct numbered contact sheets rendered from local files without PhotoKit, `similar` for label-overlap matches outside the seed's own moment that exclude hidden and other ineligible assets before shortlisting, `forgotten` for strong photos in no user or shared album across PhotoKit and SQLite provider encodings, and `share-check`, a privacy gate that requires a well-formed privacy assessment in the saved classifier reply, reads its complete phrases rather than shortened observations, blocks every affirmative sensitive-category occurrence, and fails closed on unclassified photos. Schema 5 adds a visual-label index; upgrade every process that shares an archive together, then run `photoscrawl init`.
 - Classify iCloud-only photos from bounded temporary PhotoKit previews owned by each invocation, leaving the queue row untouched when a run is cancelled with `classify --allow-icloud-downloads`, including assets previously marked unavailable; cancel in-flight preview requests promptly, retain preview callback values, and wait for bounded archive writers.
-- Update CrawlKit to v0.16.2, refresh the Nix development inputs, and align the Nix Go toolchain and formatter with the supported Go 1.27 line.
+
+## 0.3.4 - 2026-09-13
+
+**Highlights:** Place backfills keep their retry identities, timeline queries enforce schema and tombstones, and installed binaries carry the default photo-card prompt.
+
 - Preserve place-backfill retry identities when location ordering changes, keep distinct coordinate/accuracy values separate, and exclude retired artifacts from current summaries.
 - Embed the default photo-card prompt for installed binaries, and stop eval runs on model-evidence write failures or cancellation instead of reporting successful completion.
 - Enforce archive schema checks and retained tombstones in timeline queries, and preserve UTF-8 character boundaries when truncating model observations and failure reasons.
 - Preserve the requesting asset's identity on cached place lookups and render partial place cards without crashing.
 - Resolve status paths consistently with archive initialization and report filesystem errors instead of treating them as missing databases.
 - Reuse Apple search-category tables and the photo-card local media index, avoiding per-observation allocations and a second Photos package scan.
+- Update CrawlKit to v0.16.2, refresh the Nix development inputs, and align the Nix Go toolchain and formatter with the supported Go 1.27 line.
 
 ## 0.3.3 - 2026-09-11
 
