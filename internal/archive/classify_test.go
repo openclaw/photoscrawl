@@ -682,3 +682,61 @@ func TestPrepareClassificationPreviewGivesEachInvocationItsOwnFile(t *testing.T)
 		t.Fatalf("preview directory mode = %v, %v", info.Mode(), err)
 	}
 }
+
+func TestClassifyCancelledPreviewLeavesQueueRowForRetry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(ollamaGenerateResponse{Response: `{"scene_summary":"unused"}`, Done: true})
+	}))
+	defer server.Close()
+	provider := fakeProvider{snapshot: photos.LibrarySnapshot{
+		Provider: "fake",
+		Assets: []photos.Asset{{
+			LocalIdentifier: "fixture-cloud-image",
+			MediaType:       "image",
+			CreationDate:    "2026-07-30T20:00:00Z",
+			Width:           4032,
+			Height:          3024,
+			Resources: []photos.Resource{{
+				SourceIdentifier: "cloud-photo",
+				Type:             "photo",
+				OriginalFilename: "cloud.jpeg",
+				Availability:     "unknown",
+			}},
+		}},
+	}}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-07-31T10:00:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Classify(ctx, paths, ClassifyOptions{
+		All:                  true,
+		LocalModel:           "fixture-vision",
+		LocalModelURL:        server.URL,
+		AllowICloudDownloads: true,
+		Now:                  fixedClock("2026-07-31T10:05:00Z"),
+		previewExporter: func(context.Context, string, string, int, bool) error {
+			return context.Canceled
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("classify error = %v, want context.Canceled", err)
+	}
+	db, err := store.OpenReadOnly(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var state, reason string
+	if err := db.DB().QueryRowContext(ctx, `select state, coalesce(reason, '') from classification_queue`).Scan(&state, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if state == "content_failed" {
+		t.Fatalf("cancelled preview marked the asset failed: state=%q reason=%q", state, reason)
+	}
+}

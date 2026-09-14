@@ -200,6 +200,11 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 				result.WaitingForLocalContent++
 			}
 			if classifier != nil && contentErr != nil {
+				// A cancelled run is not a classification failure: leave the
+				// queue row untouched so the next run retries the asset.
+				if errors.Is(contentErr, context.Canceled) || errors.Is(contentErr, context.DeadlineExceeded) {
+					return contentErr
+				}
 				result.ContentClassificationFailures++
 				return updateClassificationQueue(ctx, tx, input.QueueID, "content_failed", truncateReason(contentErr.Error()), now().UTC())
 			}
