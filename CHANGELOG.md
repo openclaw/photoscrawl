@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.3.4 - 2026-09-13
 
 **Highlights:** Place backfills keep their retry identities, timeline queries enforce schema and tombstones, and installed binaries carry the default photo-card prompt.
