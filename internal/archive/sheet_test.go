@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -383,5 +386,144 @@ func assertSheetMode(t *testing.T, path string, want os.FileMode) {
 	}
 	if got := info.Mode().Perm(); got != want {
 		t.Fatalf("%s mode = %#o, want %#o", path, got, want)
+	}
+}
+
+func TestSheetPropagatesFinalTileCancellation(t *testing.T) {
+	for _, byID := range []bool{false, true} {
+		for _, failure := range []error{context.Canceled, context.DeadlineExceeded} {
+			t.Run(fmt.Sprintf("ids=%v/%v", byID, failure), func(t *testing.T) {
+				root := t.TempDir()
+				paths := Paths{DataDir: root, Database: filepath.Join(root, "photos.sqlite"), CacheDir: filepath.Join(root, "cache")}
+				input := filepath.Join(root, "synthetic.heic")
+				if err := os.WriteFile(input, []byte("synthetic image"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				opts := SheetOptions{Tile: 32, Renderer: func(context.Context, string, string, float64) error { return failure }}
+				if byID {
+					createSheetFixture(t, paths, []sheetFixtureAsset{{id: "one", localIdentifier: "one", resourceType: "original", localPath: input}})
+					opts.IDsFile = writeSheetList(t, root, "ids.txt", "one")
+				} else {
+					opts.FilesFile = writeSheetList(t, root, "files.txt", input)
+				}
+				if _, err := Sheet(context.Background(), paths, opts); !errors.Is(err, failure) {
+					t.Fatalf("sheet error = %v, want %v", err, failure)
+				}
+				entries, err := os.ReadDir(paths.CacheDir)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("cancelled sheet artifacts = %v, %v", entries, err)
+				}
+			})
+		}
+	}
+}
+
+type cancelOnPixelImage struct {
+	image.Image
+	cancel context.CancelFunc
+}
+
+func (i cancelOnPixelImage) At(x, y int) color.Color {
+	i.cancel()
+	return i.Image.At(x, y)
+}
+
+func TestSheetJPEGObservesCancellationDuringEncoding(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	input := cancelOnPixelImage{Image: image.NewRGBA(image.Rect(0, 0, 8, 8)), cancel: cancel}
+	if err := writeSheetJPEG(ctx, filepath.Join(t.TempDir(), "sheet.jpg"), input); !errors.Is(err, context.Canceled) {
+		t.Fatalf("encoding cancellation = %v", err)
+	}
+}
+
+func TestSheetRejectsExcessiveDimensionsBeforeAllocation(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		perSheet, tile int
+	}{
+		{"too many tiles", 10000, 480},
+		{"oversized tile", 16, 100000},
+		{"integer overflow", 16, int(^uint(0) >> 1)},
+		{"too many pixels", 16, 2048},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			paths := Paths{CacheDir: filepath.Join(root, "cache")}
+			files := make([]string, 16)
+			for i := range files {
+				files[i] = filepath.Join(root, "missing.png")
+			}
+			list := writeSheetList(t, root, "files.txt", files...)
+			_, err := Sheet(context.Background(), paths, SheetOptions{FilesFile: list, PerSheet: tc.perSheet, Tile: tc.tile})
+			if err == nil {
+				t.Fatal("excessive dimensions accepted")
+			}
+			entries, readErr := os.ReadDir(paths.CacheDir)
+			if readErr != nil && !os.IsNotExist(readErr) {
+				t.Fatal(readErr)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("failed sheet left artifacts: %v", entries)
+			}
+		})
+	}
+}
+
+func oversizedSheetImage(t *testing.T, format string) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	input := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	if format == "png" {
+		if err := png.Encode(&out, input); err != nil {
+			t.Fatal(err)
+		}
+		data := out.Bytes()
+		binary.BigEndian.PutUint32(data[16:20], 100000)
+		binary.BigEndian.PutUint32(data[20:24], 100000)
+		binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	} else {
+		if err := jpeg.Encode(&out, input, nil); err != nil {
+			t.Fatal(err)
+		}
+		data := out.Bytes()
+		sof := bytes.Index(data, []byte{0xff, 0xc0})
+		if sof < 0 {
+			t.Fatal("missing JPEG frame header")
+		}
+		binary.BigEndian.PutUint16(data[sof+5:sof+7], 65535)
+		binary.BigEndian.PutUint16(data[sof+7:sof+9], 65535)
+	}
+	return out.Bytes()
+}
+
+func TestSheetBoundsSourceAndRendererOutputBeforeDecoding(t *testing.T) {
+	for _, format := range []string{"png", "jpeg"} {
+		for _, rendered := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/rendered=%v", format, rendered), func(t *testing.T) {
+				root := t.TempDir()
+				input := filepath.Join(root, "source")
+				payload := oversizedSheetImage(t, format)
+				data := payload
+				if rendered {
+					data = []byte("synthetic unsupported source")
+				}
+				if err := os.WriteFile(input, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				calls := 0
+				renderer := func(_ context.Context, _ string, destination string, _ float64) error {
+					calls++
+					return os.WriteFile(destination, payload, 0o600)
+				}
+				_, err := decodeSheetImage(context.Background(), root, input, renderer)
+				if !errors.Is(err, errSheetSourceSize) {
+					t.Fatalf("oversized source error = %v", err)
+				}
+				if rendered && calls != 1 || !rendered && calls != 0 {
+					t.Fatalf("unexpected renderer calls: %d", calls)
+				}
+			})
+		}
 	}
 }

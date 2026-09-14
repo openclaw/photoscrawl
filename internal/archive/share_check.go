@@ -164,7 +164,9 @@ func shareCheckAsset(ctx context.Context, db *sql.DB, asset fullAsset, assessmen
 		row.Reasons = append(row.Reasons, "unreadable privacy sensitivity observation")
 	}
 	blocked := map[string]bool{}
+	needsReview := false
 	for _, phrase := range phrases {
+		needsReview = needsReview || privacyPhraseNeedsReview(phrase)
 		for _, category := range blockedCategoriesInPhrase(phrase) {
 			blocked[category] = true
 		}
@@ -202,6 +204,9 @@ func shareCheckAsset(ctx context.Context, db *sql.DB, asset fullAsset, assessmen
 	if !assessment.assessed {
 		row.Status = "unreviewed"
 		row.Reasons = append(row.Reasons, "privacy not assessed")
+	} else if needsReview {
+		row.Status = "unreviewed"
+		row.Reasons = append(row.Reasons, "unrecognized privacy sensitivity")
 	}
 	return row, nil
 }
@@ -448,8 +453,31 @@ func directlyNegated(clause string, start int) bool {
 	return false
 }
 
+// Only narrowly recognized absence/presence notes can pass without a category.
+// Free-form sensitivity text must never become a pass merely by missing aliases.
+func privacyPhraseNeedsReview(phrase string) bool {
+	for _, clause := range privacyClauseSeparator.Split(normalizePrivacyText(phrase), -1) {
+		clause = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(clause), "."))
+		switch clause {
+		case "none", "none observed", "no privacy concerns", "no sensitive information":
+			continue
+		}
+		clause = strings.TrimSuffix(strings.TrimSuffix(clause, " visible"), " present")
+		if whollyNegatedCategoryList(clause) {
+			continue
+		}
+		note, _ := trimNegationPrefix(clause)
+		if containsString(privacyNoteTerms, note) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func normalizePrivacyText(value string) string {
 	value = strings.ToLower(value)
+	value = strings.ReplaceAll(value, "’", "'")
 	value = strings.ReplaceAll(value, "_", " ")
 	value = strings.ReplaceAll(value, "-", " ")
 	return strings.Join(strings.Fields(value), " ")

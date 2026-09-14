@@ -87,20 +87,55 @@ those signals and never change Photos.
   photos being ranked, so photos without faces are not penalized.
 - `junk` lists screenshot, blurry, eyes-closed, and duplicate candidates with
   the signal values and a suggested photo to keep instead. These are review
-  candidates, not decisions.
+  candidates, not decisions. Open-eye replacements must include every named
+  person in the closed-eye photo.
 - `similar` finds photos sharing model terms and Apple labels with a seed,
   outside the seed's own moment; `forgotten` finds strong photos in no user
   or shared album; `sheet` renders numbered contact sheets.
 - `share-check` is an advisory privacy gate: a photo passes only when its
   saved model reply includes a privacy assessment and no sensitive category.
+  Unrecognized sensitivity phrases require review, even when they do not
+  match a known blocked category. Only narrowly recognized absence and
+  people-presence notes can pass without a category match.
   Show photos to a person before sending them anywhere.
 
 `find`, `rank`, `junk`, `similar`, `forgotten`, and `share-check` accept
 `--exclude-ids-file` with archive IDs or Photos local identifiers, so callers
 can skip photos they already handled.
 
-Schema 5 archives cannot be opened by older binaries. Upgrade every process
-that uses an archive together, then run `photoscrawl init` once.
+Quality and eye-state decisions use detected faces from the Photos database.
+Search-index person labels remain searchable but do not count as additional
+faces with unknown eye state.
+
+Duplicate candidates use positive Photos group IDs or matching primary-original
+resource hashes. Auxiliary thumbnails, edits, and paired resources cannot prove
+that two assets are duplicates. Similarity frequencies exclude retained deleted
+assets, hidden assets, and videos.
+Common-feature pruning starts at 40 live, visible images, so small libraries can
+still return label-overlap matches.
+Explicit hidden or video seeds can find visible image matches; their labels do
+not inflate the comparison corpus. Contact sheets allow up to 64 tiles per page
+and 2048 pixels per tile, with a 16-megapixel (64 MiB RGBA) canvas limit. Reduce
+`--per-sheet` or `--tile` when their combination exceeds that limit.
+Sources above 64 megapixels produce placeholders. Dimensions are checked before
+Go decoding or native rendering, and rendered output is checked before decoding.
+
+Schema 5 archives cannot be opened by older binaries. Stop every process that
+uses an archive and keep the previous binary. Before upgrading, make a
+consistent SQLite backup in a private directory (replace the example paths):
+
+```sh
+umask 077
+sqlite3 /path/to/photos.sqlite ".backup '/private/backup/photos-before-schema5.sqlite'"
+```
+
+Upgrade every process together, then run `photoscrawl init --db
+/path/to/photos.sqlite` once. To roll back, stop every process again, copy the
+backup to a **new** database filename with no existing `-wal` or `-shm` files,
+and point the previous binary and all archive consumers at that copy with
+`--db`. Keep the upgraded archive separately. Recovery restores the backup's
+state; imports and classifications performed after the backup are not included.
+There is no in-place schema downgrade.
 
 ## First Commands
 

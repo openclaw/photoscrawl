@@ -334,7 +334,7 @@ func TestSchemaV5MigrationAddsVisualLabelIndex(t *testing.T) {
 	}
 }
 
-func TestPopulatedSchemaV3ArchiveUpgradesToCurrentWithoutLosingRows(t *testing.T) {
+func TestPopulatedSchemaV3ArchiveUpgradeAndSnapshotRecovery(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "photos.sqlite")
@@ -365,6 +365,13 @@ func TestPopulatedSchemaV3ArchiveUpgradesToCurrentWithoutLosingRows(t *testing.T
 			t.Fatal(err)
 		}
 	}
+	// Include committed WAL rows in the recovery snapshot before closing the writer.
+	backup, cleanup, err := photos.CopySQLite(ctx, dbPath, "photoscrawl-migration-backup-")
+	if err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	defer cleanup()
 	if err := legacy.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -393,4 +400,31 @@ func TestPopulatedSchemaV3ArchiveUpgradesToCurrentWithoutLosingRows(t *testing.T
 		t.Fatalf("upgraded face = %q quality=%v eyes=%v, want the original label and null new signals", label, quality, eyesClosed)
 	}
 	assertCount(t, upgraded.DB(), `select count(*) from sqlite_master where type = 'index' and name = 'visual_type_label_idx'`, 1)
+
+	// Recover to a fresh filename: never mix a backup with an upgraded archive's WAL.
+	restoredPath := filepath.Join(t.TempDir(), "restored.sqlite")
+	contents, err := os.ReadFile(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(restoredPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := store.OpenReadOnly(ctx, restoredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	version, err = restored.SchemaVersion(ctx)
+	if err != nil || version != 3 {
+		t.Fatalf("restored version = %d, %v; want 3", version, err)
+	}
+	for _, table := range []string{"asset", "evidence_ref", "face_observation", "model_observation", "visual_observation"} {
+		assertCount(t, restored.DB(), "select count(*) from "+table, 1)
+	}
+	assertCount(t, restored.DB(), `select count(*) from pragma_table_info('face_observation') where name in ('person_uuid','person_kind','quality','blur_score','eyes_closed','smile')`, 0)
+	assertCount(t, restored.DB(), `select count(*) from sqlite_master where name = 'visual_type_label_idx'`, 0)
+	if err := restored.DB().QueryRowContext(ctx, `select person_label from face_observation where id = 'face:one'`).Scan(&label); err != nil || label != "Alex" {
+		t.Fatalf("restored face = %q, %v; want Alex", label, err)
+	}
 }

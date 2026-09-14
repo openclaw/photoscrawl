@@ -606,7 +606,7 @@ func TestPruneSimilarFeaturesDropsCommonLabelsAndShortlists(t *testing.T) {
 		"term:object_or_food\x00pasta": {key: "term:object_or_food\x00pasta", weight: 5},
 	}
 	features["second"] = map[string]similarFeature{"term:object_or_food\x00plate": {key: "term:object_or_food\x00plate", weight: 2}}
-	pruned := pruneSimilarFeatures(features, 100, 0)
+	pruned := pruneSimilarFeatures(features, 100, 0, true)
 	if _, ok := pruned["common-00"]; ok {
 		t.Fatalf("a label on more than 5%% of the library kept a candidate: %#v", pruned["common-00"])
 	}
@@ -616,8 +616,95 @@ func TestPruneSimilarFeaturesDropsCommonLabelsAndShortlists(t *testing.T) {
 	if len(pruned) != 2 {
 		t.Fatalf("pruned candidates = %d, want 2", len(pruned))
 	}
-	shortlisted := pruneSimilarFeatures(features, 100, 1)
+	shortlisted := pruneSimilarFeatures(features, 100, 1, true)
 	if _, ok := shortlisted["rare"]; !ok || len(shortlisted) != 1 {
 		t.Fatalf("shortlist kept %#v, want only the highest-scoring candidate", shortlisted)
+	}
+}
+
+func TestSimilarFrequenciesIgnoreIneligibleObservations(t *testing.T) {
+	ctx := context.Background()
+	paths := similarFixture(t)
+	before, err := Similar(ctx, paths, SimilarOptions{ID: "seed", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, id := range []string{"deleted", "hidden", "video"} {
+		execTestSQL(t, db.DB(), `insert into face_observation(id,asset_id,face_local_id,person_label,confidence,bounding_box_json,source,evidence_id) values(?,?,?,'Alex',1,'{}',?,'fixture')`, "ineligible-"+id, id, id, photosSearchIndexSource)
+		execTestSQL(t, db.DB(), `insert into visual_observation values(?,?,'apple_label','Coast',1,'{}','fixture','fixture','fixture')`, "ineligible-"+id, id)
+	}
+	after, err := Similar(ctx, paths, SimilarOptions{ID: "seed", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeJSON, _ := json.Marshal(before)
+	afterJSON, _ := json.Marshal(after)
+	if string(beforeJSON) != string(afterJSON) {
+		t.Fatalf("ineligible observations changed similar:\nbefore %s\nafter %s", beforeJSON, afterJSON)
+	}
+}
+
+func TestSimilarNoiseCutoffPreservesSmallLibraryMatches(t *testing.T) {
+	for _, tc := range []struct {
+		documents, frequency int
+		common               bool
+	}{
+		{2, 2, false}, {3, 3, false}, {39, 39, false}, {40, 2, false}, {40, 3, true}, {100, 5, false}, {100, 6, true},
+	} {
+		if got := similarFeatureIsCommon(tc.frequency, tc.documents); got != tc.common {
+			t.Fatalf("frequency %d/%d: common=%v, want %v", tc.frequency, tc.documents, got, tc.common)
+		}
+	}
+	ctx := context.Background()
+	paths := similarFixture(t)
+	db, err := openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Keep a seed/candidate pair, retaining other rows as tombstones.
+	execTestSQL(t, db.DB(), `update asset set deleted_at='2026-01-01' where id not in ('seed','strong')`)
+	for _, termsOnly := range []bool{false, true} {
+		if termsOnly {
+			execTestSQL(t, db.DB(), `delete from visual_observation`)
+			execTestSQL(t, db.DB(), `delete from face_observation`)
+		}
+		got, err := Similar(ctx, paths, SimilarOptions{ID: "seed"})
+		if err != nil || len(got.Assets) != 1 || got.Assets[0].ID != "strong" {
+			t.Fatalf("small library (terms-only=%v): %#v, %v", termsOnly, got, err)
+		}
+	}
+}
+
+func TestSimilarSeedOutsideCorpusDoesNotInflateFrequency(t *testing.T) {
+	for _, mode := range []string{"hidden", "video"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			paths := similarFixture(t)
+			db, err := openArchiveStore(ctx, paths.Database)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if mode == "hidden" {
+				execTestSQL(t, db.DB(), `update asset set hidden=1 where id='seed'`)
+			} else {
+				execTestSQL(t, db.DB(), `update asset set media_type='video' where id='seed'`)
+			}
+			count, err := loadSimilarDocumentCount(ctx, db.DB())
+			if err != nil || count < 59 {
+				t.Fatalf("fixture corpus = %d, %v", count, err)
+			}
+			execTestSQL(t, db.DB(), `update asset set deleted_at='2026-01-01' where id in (select id from asset where id like 'filler-%' order by id limit ?)`, count-59)
+			got, err := Similar(ctx, paths, SimilarOptions{ID: "seed", Limit: 100})
+			if err != nil || !hasSimilarID(got.Assets, "people-place") {
+				t.Fatalf("seed outside corpus: %#v, %v", got, err)
+			}
+		})
 	}
 }

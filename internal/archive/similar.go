@@ -18,6 +18,8 @@ const (
 	similarPlaceWeight      = 0.25
 	similarEventWindow      = 12 * time.Hour
 	similarCandidateChunk   = 500
+	// A seed/candidate pair needs 40 documents to fit the 5% noise cutoff.
+	similarNoiseMinDocuments = 40
 )
 
 // similarShortlist caps how many candidates load quality signals; broad
@@ -126,7 +128,7 @@ func Similar(ctx context.Context, paths Paths, opts SimilarOptions) (SimilarResu
 		return SimilarResult{}, err
 	}
 
-	features = pruneSimilarFeatures(features, documentCount, 0)
+	features = pruneSimilarFeatures(features, documentCount, 0, seed.MediaType == "image" && seed.hidden == 0)
 	assets, err := loadSimilarAssets(ctx, db.DB(), similarCandidateIDs(features))
 	if err != nil {
 		return SimilarResult{}, err
@@ -219,7 +221,7 @@ where id = ? and deleted_at is null
 
 func loadSimilarDocumentCount(ctx context.Context, db *sql.DB) (int, error) {
 	var count int
-	err := db.QueryRowContext(ctx, `select count(*) from asset where deleted_at is null and media_type = 'image'`).Scan(&count)
+	err := db.QueryRowContext(ctx, `select count(*) from asset where deleted_at is null and hidden = 0 and media_type = 'image'`).Scan(&count)
 	return count, err
 }
 
@@ -287,12 +289,12 @@ select count(distinct observation_term.asset_id)
 from observation_term
 join asset on asset.id = observation_term.asset_id
 where observation_term.term = ? and observation_term.term_type = ?
-  and asset.deleted_at is null and asset.media_type = 'image'
+  and asset.deleted_at is null and asset.hidden = 0 and asset.media_type = 'image'
 `, term.term, term.termType).Scan(&frequency)
 		if err != nil {
 			return nil, fmt.Errorf("load frequency for similar term %q: %w", term.term, err)
 		}
-		if documentCount == 0 || float64(frequency)/float64(documentCount) > similarNoisePolicy.maxDocumentFraction {
+		if documentCount == 0 || similarFeatureIsCommon(frequency, documentCount) {
 			continue
 		}
 		weights[similarTermKey(term.termType, term.term)] = math.Log(float64(documentCount+1)/float64(frequency+1)) + 1
@@ -360,6 +362,8 @@ from visual_observation source
 join visual_observation target
   on target.observation_type = source.observation_type
  and target.label = source.label collate nocase
+join asset on asset.id = target.asset_id
+  and asset.deleted_at is null and asset.hidden = 0 and asset.media_type = 'image'
 where source.asset_id = ?
   and source.observation_type in (`+placeholders+`)
   and trim(source.label) <> ''
@@ -385,6 +389,8 @@ func addSharedPeopleFeatures(ctx context.Context, db *sql.DB, id string, feature
 select distinct target.asset_id, source.person_label
 from face_observation source
 join face_observation target on target.person_label = source.person_label collate nocase
+join asset on asset.id = target.asset_id
+  and asset.deleted_at is null and asset.hidden = 0 and asset.media_type = 'image'
 where source.asset_id = ?
   and trim(source.person_label) <> ''
   and target.asset_id <> source.asset_id
@@ -408,19 +414,22 @@ where source.asset_id = ?
 // the noise fraction of the library (Apple labels such as "Food" or the
 // library owner's own face). Terms are already frequency-capped when their
 // weights are computed. If requested, the shortlist is applied after pruning.
-func pruneSimilarFeatures(features map[string]map[string]similarFeature, documentCount, shortlist int) map[string]map[string]similarFeature {
+func pruneSimilarFeatures(features map[string]map[string]similarFeature, documentCount, shortlist int, seedInCorpus bool) map[string]map[string]similarFeature {
 	keyCounts := map[string]int{}
 	for _, assetFeatures := range features {
 		for key := range assetFeatures {
 			keyCounts[key]++
 		}
 	}
-	limit := similarNoisePolicy.maxDocumentFraction * float64(documentCount)
 	pruned := make(map[string]map[string]similarFeature, len(features))
 	for id, assetFeatures := range features {
 		kept := map[string]similarFeature{}
 		for key, feature := range assetFeatures {
-			if !strings.HasPrefix(key, "term:") && float64(keyCounts[key]) > limit {
+			frequency := keyCounts[key]
+			if seedInCorpus {
+				frequency++
+			}
+			if !strings.HasPrefix(key, "term:") && similarFeatureIsCommon(frequency, documentCount) {
 				continue
 			}
 			kept[key] = feature
@@ -431,6 +440,11 @@ func pruneSimilarFeatures(features map[string]map[string]similarFeature, documen
 		pruned[id] = kept
 	}
 	return shortlistSimilarFeatures(pruned, shortlist)
+}
+
+func similarFeatureIsCommon(frequency, documentCount int) bool {
+	return documentCount >= similarNoiseMinDocuments &&
+		float64(frequency) > similarNoisePolicy.maxDocumentFraction*float64(documentCount)
 }
 
 // rankedSimilarIDs orders candidates by summed feature weight, then id.
@@ -545,7 +559,8 @@ func loadSimilarSignals(ctx context.Context, db *sql.DB, ids []string) (signals,
 		for _, id := range ids[start:end] {
 			args = append(args, id)
 		}
-		rows, err := db.QueryContext(ctx, `select asset_id, person_label, quality, eyes_closed from face_observation where trim(person_label) <> '' and asset_id in (`+placeholders+`)`, args...)
+		faceArgs := append([]any{photosLibraryDBFaceSource}, args...)
+		rows, err := db.QueryContext(ctx, `select asset_id, person_label, quality, eyes_closed from face_observation where source = ? and trim(person_label) <> '' and asset_id in (`+placeholders+`)`, faceArgs...)
 		if err != nil {
 			return s, fmt.Errorf("load similar candidate face signals: %w", err)
 		}

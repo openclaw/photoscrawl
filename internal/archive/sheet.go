@@ -21,10 +21,16 @@ import (
 )
 
 const (
-	defaultSheetSize = 16
-	defaultTileSize  = 480
-	maxSheetColumns  = 4
+	defaultSheetSize     = 16
+	defaultTileSize      = 480
+	maxSheetColumns      = 4
+	maxSheetSize         = 64
+	maxSheetTileSize     = 2048
+	maxSheetPixels       = 16 * 1024 * 1024
+	maxSheetSourcePixels = 64 * 1024 * 1024
 )
+
+var errSheetSourceSize = errors.New("sheet source must have valid dimensions within 64 megapixels")
 
 type CanonicalJPEGRenderer func(context.Context, string, string, float64) error
 
@@ -80,8 +86,11 @@ func Sheet(ctx context.Context, paths Paths, opts SheetOptions) (SheetResult, er
 	if opts.Tile < 1 {
 		return SheetResult{}, errors.New("tile must be positive")
 	}
+	if opts.PerSheet > maxSheetSize || opts.Tile > maxSheetTileSize {
+		return SheetResult{}, fmt.Errorf("sheet is limited to %d tiles and %d pixels per tile", maxSheetSize, maxSheetTileSize)
+	}
 	if opts.Renderer == nil {
-		opts.Renderer = photos.RenderCanonicalJPEG
+		opts.Renderer = renderSheetSource
 	}
 
 	inputs, err := loadSheetInputs(ctx, paths, opts)
@@ -120,13 +129,19 @@ func Sheet(ctx context.Context, paths Paths, opts SheetOptions) (SheetResult, er
 		if err != nil {
 			return SheetResult{}, err
 		}
+		if err := ctx.Err(); err != nil {
+			return SheetResult{}, err
+		}
 		pageNumber := len(result.Sheets) + 1
 		path := filepath.Join(outputDir, fmt.Sprintf("sheet-%03d.jpg", pageNumber))
-		if err := writeSheetJPEG(path, canvas); err != nil {
+		if err := writeSheetJPEG(ctx, path, canvas); err != nil {
 			return SheetResult{}, err
 		}
 		result.Sheets = append(result.Sheets, path)
 		result.Tiles = append(result.Tiles, tiles...)
+	}
+	if err := ctx.Err(); err != nil {
+		return SheetResult{}, err
 	}
 	keepOutput = true
 	return result, nil
@@ -240,8 +255,14 @@ func sheetResourceSource(resourceType, path string) (string, int) {
 }
 
 func renderSheetPage(ctx context.Context, outputDir string, inputs []sheetInput, firstNumber, tileSize int, renderer CanonicalJPEGRenderer) (*image.RGBA, []SheetTile, error) {
+	if len(inputs) < 1 || len(inputs) > maxSheetSize || tileSize < 1 || tileSize > maxSheetTileSize {
+		return nil, nil, errors.New("invalid sheet dimensions")
+	}
 	columns := min(maxSheetColumns, len(inputs))
 	rows := (len(inputs) + columns - 1) / columns
+	if int64(columns)*int64(rows)*int64(tileSize)*int64(tileSize) > maxSheetPixels {
+		return nil, nil, errors.New("sheet exceeds 16 megapixels; reduce --tile or --per-sheet")
+	}
 	canvas := image.NewRGBA(image.Rect(0, 0, columns*tileSize, rows*tileSize))
 	fillRect(canvas, canvas.Bounds(), color.RGBA{R: 26, G: 26, B: 26, A: 255})
 	tiles := make([]SheetTile, 0, len(inputs))
@@ -249,7 +270,13 @@ func renderSheetPage(ctx context.Context, outputDir string, inputs []sheetInput,
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-		tileImage, source := renderSheetInput(ctx, outputDir, input, renderer)
+		tileImage, source, err := renderSheetInput(ctx, outputDir, input, renderer)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		x := index % columns * tileSize
 		y := index / columns * tileSize
 		tileRect := image.Rect(x, y, x+tileSize, y+tileSize)
@@ -267,13 +294,16 @@ func renderSheetPage(ctx context.Context, outputDir string, inputs []sheetInput,
 	return canvas, tiles, nil
 }
 
-func renderSheetInput(ctx context.Context, outputDir string, input sheetInput, renderer CanonicalJPEGRenderer) (image.Image, string) {
+func renderSheetInput(ctx context.Context, outputDir string, input sheetInput, renderer CanonicalJPEGRenderer) (image.Image, string, error) {
 	if input.file != "" {
 		decoded, err := decodeSheetImage(ctx, outputDir, input.file, renderer)
 		if err == nil {
-			return decoded, "original"
+			return decoded, "original", nil
 		}
-		return placeholderImage(), "placeholder"
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, "", err
+		}
+		return placeholderImage(), "placeholder", nil
 	}
 	for _, resource := range input.resources {
 		info, err := os.Stat(resource.path)
@@ -282,10 +312,13 @@ func renderSheetInput(ctx context.Context, outputDir string, input sheetInput, r
 		}
 		decoded, err := decodeSheetImage(ctx, outputDir, resource.path, renderer)
 		if err == nil {
-			return decoded, resource.source
+			return decoded, resource.source, nil
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, "", err
 		}
 	}
-	return placeholderImage(), "placeholder"
+	return placeholderImage(), "placeholder", nil
 }
 
 func decodeSheetImage(ctx context.Context, outputDir, sourcePath string, renderer CanonicalJPEGRenderer) (image.Image, error) {
@@ -293,7 +326,11 @@ func decodeSheetImage(ctx context.Context, outputDir, sourcePath string, rendere
 	if err != nil {
 		return nil, err
 	}
-	decoded, format, decodeErr := image.Decode(file)
+	decoded, format, decodeErr := decodeBoundedSheetImage(file)
+	if errors.Is(decodeErr, errSheetSourceSize) {
+		_ = file.Close()
+		return nil, decodeErr
+	}
 	orientation := 1
 	if decodeErr == nil && format == "jpeg" {
 		if _, err := file.Seek(0, io.SeekStart); err == nil {
@@ -330,7 +367,7 @@ func decodeSheetImage(ctx context.Context, outputDir, sourcePath string, rendere
 		return nil, err
 	}
 	defer rendered.Close()
-	decoded, format, err = image.Decode(rendered)
+	decoded, format, err = decodeBoundedSheetImage(rendered)
 	if err != nil {
 		return nil, err
 	}
@@ -338,6 +375,46 @@ func decodeSheetImage(ctx context.Context, outputDir, sourcePath string, rendere
 		return nil, fmt.Errorf("renderer returned unsupported image format %q", format)
 	}
 	return decoded, nil
+}
+
+func checkSheetSourceSize(width, height float64) error {
+	if !(width > 0 && height > 0 && width <= float64(maxSheetSourcePixels)/height) {
+		return errSheetSourceSize
+	}
+	return nil
+}
+
+func decodeBoundedSheetImage(file io.ReadSeeker) (image.Image, string, error) {
+	config, format, err := image.DecodeConfig(file)
+	if err != nil {
+		return nil, format, err
+	}
+	if err := checkSheetSourceSize(float64(config.Width), float64(config.Height)); err != nil {
+		return nil, format, err
+	}
+	if format != "jpeg" && format != "png" {
+		return nil, format, image.ErrFormat
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, format, err
+	}
+	return image.Decode(file)
+}
+
+func renderSheetSource(ctx context.Context, source, destination string, quality float64) error {
+	metadata, err := photos.ImageMetadata(ctx, source)
+	if err != nil {
+		return err
+	}
+	width, hasWidth := number(metadata["PixelWidth"])
+	height, hasHeight := number(metadata["PixelHeight"])
+	if !hasWidth || !hasHeight {
+		return errSheetSourceSize
+	}
+	if err := checkSheetSourceSize(width, height); err != nil {
+		return err
+	}
+	return photos.RenderCanonicalJPEG(ctx, source, destination, quality)
 }
 
 func readJPEGOrientation(reader io.Reader) int {
@@ -568,13 +645,16 @@ func fillRect(destination *image.RGBA, bounds image.Rectangle, fill color.Color)
 	}
 }
 
-func writeSheetJPEG(path string, source image.Image) error {
+func writeSheetJPEG(ctx context.Context, path string, source image.Image) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("create sheet image: %w", err)
 	}
 	encodeErr := jpeg.Encode(file, source, &jpeg.Options{Quality: 88})
 	closeErr := file.Close()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if encodeErr != nil {
 		return fmt.Errorf("encode sheet image: %w", encodeErr)
 	}

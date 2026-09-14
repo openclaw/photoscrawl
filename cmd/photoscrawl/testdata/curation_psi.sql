@@ -1,0 +1,12 @@
+BEGIN TRANSACTION;
+CREATE TABLE assets (uuid_0 integer, uuid_1 integer);
+INSERT INTO "assets" VALUES(3551352356587034258,-5010834848571013202);
+CREATE TABLE ga (assetid integer, groupid integer);
+INSERT INTO "ga" VALUES(1,10);
+INSERT INTO "ga" VALUES(1,11);
+INSERT INTO "ga" VALUES(1,12);
+CREATE TABLE groups (category integer, owning_groupid integer, content_string text, normalized_string text, lookup_identifier text, score real);
+INSERT INTO "groups" VALUES(1500,NULL,'Antique Car','antique car','',0.9);
+INSERT INTO "groups" VALUES(1300,NULL,'Alex','alex','08EA22FD-06A7-4145-829F-D724B9DD1BB6',0.8);
+INSERT INTO "groups" VALUES(9999,NULL,'Future Thing','future thing','',0.7);
+COMMIT;

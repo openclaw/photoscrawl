@@ -672,3 +672,22 @@ func TestFaceQualityTreatsPhotosSentinelAsUnknown(t *testing.T) {
 		}
 	}
 }
+
+func TestPhotoMetadataIgnoresNonpositiveDuplicateGroups(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "Photos.sqlite")
+	createTestPhotosDB(t, path)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	execTestSQL(t, db, `update ZASSET set ZDUPLICATEASSETVISIBILITYSTATE=0, ZDUPLICATEMETADATAMATCHINGALBUM=0, ZDUPLICATEPERCEPTUALMATCHINGALBUM=-1`)
+	input, err := loadPhotoMetadataInput(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(input.rows) != 1 || input.rows[0].hasDuplicate || input.rows[0].duplicate["metadata_group"] != nil || input.rows[0].duplicate["perceptual_group"] != nil {
+		t.Fatalf("duplicate sentinels: %#v", input.rows)
+	}
+}

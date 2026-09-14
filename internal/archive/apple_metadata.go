@@ -396,7 +396,7 @@ func int64Value(value any) int64 {
 }
 
 func nullableInt64Value(value any) any {
-	if value == nil {
+	if value == nil || int64Value(value) <= 0 {
 		return nil
 	}
 	return int64Value(value)
