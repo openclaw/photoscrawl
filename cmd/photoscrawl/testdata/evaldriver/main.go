@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -68,12 +70,16 @@ func run(mode string) error {
 		CacheDir: filepath.Join(root, "cache"), Provider: syntheticProvider{},
 		Models: []string{"fixture"}, OllamaGenerateURL: server.URL, Limit: 1, Concurrency: 1,
 	}
+	if mode == "collisions" {
+		opts.Models = []string{"org/vision:latest", "org_vision:latest", "Vision:latest", "vision:latest"}
+		opts.Concurrency = len(opts.Models)
+	}
 	if mode == "blocked" {
 		opts.PromptPath = filepath.Join(root, "prompt.md")
 		if err := os.WriteFile(opts.PromptPath, []byte("Synthetic prompt {{.MetadataJSON}}"), 0o600); err != nil {
 			return err
 		}
-		path := filepath.Join(opts.OutputDir, "raw", "E001__ollama__fixture__"+evalcard.PromptVersion+".json")
+		path := filepath.Join(opts.OutputDir, "raw", fmt.Sprintf("E001__ollama__%x__%s.json", sha256.Sum256([]byte("fixture")), evalcard.PromptVersion))
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			return err
 		}
@@ -95,8 +101,39 @@ func run(mode string) error {
 	if runErr != nil {
 		return runErr
 	}
-	if result.AssetsPrepared != 1 || result.ModelCallsSucceeded != 1 || calls.Load() != 1 {
+	if result.AssetsPrepared != 1 || result.ModelCallsSucceeded != len(opts.Models) || int(calls.Load()) != len(opts.Models) {
 		return fmt.Errorf("native fixture was not evaluated: %+v", result)
+	}
+	files, err := os.ReadDir(filepath.Join(opts.OutputDir, "raw"))
+	if err != nil {
+		return err
+	}
+	if len(files) != len(opts.Models) {
+		return fmt.Errorf("retained %d outputs after %d successful calls", len(files), result.ModelCallsSucceeded)
+	}
+	seen := map[string]bool{}
+	for _, file := range files {
+		data, err := os.ReadFile(filepath.Join(opts.OutputDir, "raw", file.Name()))
+		if err != nil {
+			return err
+		}
+		var out struct{ Model, Response string }
+		if err := json.Unmarshal(data, &out); err != nil {
+			return err
+		}
+		if out.Response != "Synthetic photo card" || seen[out.Model] {
+			return fmt.Errorf("corrupt or duplicate model output: %+v", out)
+		}
+		seen[out.Model] = true
+	}
+	for _, model := range opts.Models {
+		if !seen[model] {
+			return fmt.Errorf("missing model output: %s", model)
+		}
+	}
+	if mode == "collisions" {
+		fmt.Println("PASS: native eval retains four distinct model results for punctuation and case collisions")
+		return nil
 	}
 	fmt.Println("PASS: native eval outside checkout renders synthetic PNG, uses built-in prompt and persists model output")
 	return nil

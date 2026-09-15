@@ -55,12 +55,17 @@ Default run output is:
 <crawlkit-data-dir>/evals/<run-id>/
   images/E001.jpg
   metadata/E001.json
-  raw/E001__ollama__<model>__photo-card-v1.json
+  raw/E001__ollama__<model-sha256>__photo-card-v1.json
   manifest.jsonl
   summary.json
 ```
 
 Nothing in that directory is commit-safe.
+
+The model filename key is the lowercase SHA-256 hex digest of the exact model
+name. Read the JSON `model` field for its original name. This keeps names with
+slashes, underscores, or differing case from overwriting each other's evidence,
+including on case-insensitive filesystems. Existing eval files are unchanged.
 
 Tracked repo artifacts are only:
 
