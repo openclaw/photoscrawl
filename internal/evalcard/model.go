@@ -3,6 +3,7 @@ package evalcard
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -180,12 +181,18 @@ func generateCard(ctx context.Context, client *http.Client, promptText string, i
 }
 
 func writeModelOutput(outputDir string, out storedModelOutput) error {
-	path := filepath.Join(outputDir, "raw", out.EvalID+"__ollama__"+safeName(out.Model)+"__"+PromptVersion+".json")
+	path := modelOutputPath(outputDir, out.EvalID, out.Model)
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o600)
+}
+
+func modelOutputPath(outputDir, evalID, model string) string {
+	// Sanitized names can collide, including by case on default macOS volumes.
+	key := sha256.Sum256([]byte(model))
+	return filepath.Join(outputDir, "raw", fmt.Sprintf("%s__ollama__%x__%s.json", evalID, key, PromptVersion))
 }
 
 func promptWithMetadata(promptText string, metadataJSON []byte) (string, error) {

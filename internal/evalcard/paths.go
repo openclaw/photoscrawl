@@ -109,12 +109,3 @@ func findGitRoot() (string, bool) {
 		dir = parent
 	}
 }
-
-func safeName(value string) string {
-	replacer := strings.NewReplacer("/", "_", ":", "_", " ", "_", "\\", "_")
-	value = replacer.Replace(strings.TrimSpace(value))
-	if value == "" {
-		return "default"
-	}
-	return value
-}

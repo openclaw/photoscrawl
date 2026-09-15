@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Cite the matching resource and hash in `neighbors` evidence instead of an unrelated resource, and retain evidence from multiple matches when their neighbor reason is deduplicated.
+- Preserve separate `eval-card` results for model names that differ by punctuation or case by using a SHA-256 model key in evidence filenames; the original model name remains in each JSON result.
 
 - Import Photos' face eye state, blur, smile, quality, and person kind, its duplicate flags, and its media-analysis blurriness through `import-apple`; missing columns import as null, and Photos' `-1` "not computed" face quality is stored as unknown; thanks @mbelinky.
 - Add `people` (named people from live assets only), `find`, `rank`, and `junk` over the imported signals: required-people, date, place, and text filters; best-first ranking with reasons that replaces missing quality signals with their median, grouped by burst, time gap, or day; and screenshot, blurry, eyes-closed, and duplicate candidates with a suggested keeper. Assets with missing or malformed creation dates remain queryable, sort after dated assets in date order, stay out of date-bounded filters and age rules, and form separate time-based groups; thanks @mbelinky.

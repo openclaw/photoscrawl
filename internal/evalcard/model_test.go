@@ -2,6 +2,7 @@ package evalcard
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,53 @@ import (
 
 	"github.com/openclaw/photoscrawl/internal/photos"
 )
+
+func TestRunPreservesDistinctModelOutputs(t *testing.T) {
+	opts := preparedModelOptions(t)
+	opts.Models = []string{"org/vision:latest", "org_vision:latest", "Vision:latest", "vision:latest"}
+	opts.Concurrency = len(opts.Models)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request ollamaGenerateRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(ollamaGenerateResponse{Response: "synthetic: " + request.Model, Done: true})
+	}))
+	defer server.Close()
+	opts.OllamaGenerateURL = server.URL
+	result, err := Run(context.Background(), opts)
+	if err != nil || result.ModelCallsSucceeded != len(opts.Models) {
+		t.Fatalf("run = %#v, %v", result, err)
+	}
+	files, err := os.ReadDir(filepath.Join(opts.OutputDir, "raw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != len(opts.Models) {
+		t.Fatalf("retained %d model outputs after %d successful calls", len(files), result.ModelCallsSucceeded)
+	}
+	seen := map[string]bool{}
+	for _, file := range files {
+		data, err := os.ReadFile(filepath.Join(opts.OutputDir, "raw", file.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out storedModelOutput
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("corrupt model evidence: %v", err)
+		}
+		if out.Response != "synthetic: "+out.Model || seen[out.Model] {
+			t.Fatalf("overwritten or mismatched model evidence: %#v", out)
+		}
+		seen[out.Model] = true
+	}
+	for _, model := range opts.Models {
+		if !seen[model] {
+			t.Errorf("missing output for %s", model)
+		}
+	}
+}
 
 func TestRunUsesBuiltInPromptOutsideCheckout(t *testing.T) {
 	opts, _ := evalRunOptions(t)
@@ -57,7 +105,7 @@ func TestRunStopsWhenModelOutputCannotBePersisted(t *testing.T) {
 	}))
 	defer server.Close()
 	opts.OllamaGenerateURL = server.URL
-	blocked := filepath.Join(opts.OutputDir, "raw", "E001__ollama__fixture__"+PromptVersion+".json")
+	blocked := modelOutputPath(opts.OutputDir, "E001", "fixture")
 	if err := os.MkdirAll(blocked, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +132,7 @@ func TestRunRetainsProviderFailuresAsEvidence(t *testing.T) {
 	if err != nil || result.ModelCallsFailed != 1 || result.ModelCallsSucceeded != 0 {
 		t.Fatalf("provider failure result = %#v, %v", result, err)
 	}
-	data, err := os.ReadFile(filepath.Join(opts.OutputDir, "raw", "E001__ollama__fixture__"+PromptVersion+".json"))
+	data, err := os.ReadFile(modelOutputPath(opts.OutputDir, "E001", "fixture"))
 	if err != nil || !strings.Contains(string(data), "synthetic provider failure") {
 		t.Fatalf("missing failure evidence: %s, %v", data, err)
 	}
