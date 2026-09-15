@@ -2,11 +2,66 @@ package archive
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/openclaw/photoscrawl/internal/photos"
 )
+
+func TestHashNeighborsCiteOnlyMatchingResources(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	library := t.TempDir()
+	snapshot := photos.LibrarySnapshot{Provider: "fake"}
+	for _, name := range []string{"source", "target"} {
+		snapshot.Assets = append(snapshot.Assets, photos.Asset{
+			LocalIdentifier: name, MediaType: "image",
+			Resources: []photos.Resource{
+				{SourceIdentifier: "original", Type: "photo", StableHash: name + "-unique"},
+				{SourceIdentifier: "preview", Type: "thumbnail", StableHash: "shared-preview"},
+				{SourceIdentifier: "render", Type: "render", StableHash: "shared-render"},
+			},
+		})
+	}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: library, Provider: fakeProvider{snapshot: snapshot}}); err != nil {
+		t.Fatal(err)
+	}
+	sourceID := stableID("source_library", library)
+	assetID := stableID("asset", sourceID, "source")
+	result, err := Neighbors(ctx, paths, NeighborOptions{ID: assetID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Neighbors) != 1 || len(result.Neighbors[0].Reasons) != 1 || result.Neighbors[0].Reasons[0].Type != "same_resource_hash" {
+		t.Fatalf("expected one hash neighbor: %#v", result)
+	}
+	var want []string
+	for _, name := range []string{"source", "target"} {
+		evidence, err := Evidence(ctx, paths, stableID("asset", sourceID, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range evidence.Evidence {
+			if row["evidence_kind"] != "asset_resource" {
+				continue
+			}
+			var resource photos.Resource
+			if err := json.Unmarshal([]byte(row["value_json"].(string)), &resource); err != nil {
+				t.Fatal(err)
+			}
+			if resource.StableHash == "shared-preview" || resource.StableHash == "shared-render" {
+				want = append(want, row["id"].(string))
+			}
+		}
+	}
+	slices.Sort(want)
+	if len(want) != 4 || !slices.Equal(result.Neighbors[0].EvidenceIDs, want) {
+		t.Fatalf("hash evidence = %v, want all four matching resource references %v", result.Neighbors[0].EvidenceIDs, want)
+	}
+}
 
 func TestNeighborsReturnsDeterministicSourceReasons(t *testing.T) {
 	t.Parallel()

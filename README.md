@@ -253,6 +253,10 @@ people, places, or clusters. Current reasons are deterministic archive facts:
 same burst id, same album id, same resource hash, nearby creation time, nearby
 raw GPS, and shared local observation labels.
 
+Hash-neighbor evidence refers to the specific matching resources and their
+recorded hashes. Multiple resource matches retain their evidence even when
+they share one neighbor reason.
+
 `timeline` returns raw geotagged asset observations for one explicit half-open
 time range. It preserves the asset and location-observation identifiers and
 reports upstream horizontal accuracy when available. It does not infer stops,
