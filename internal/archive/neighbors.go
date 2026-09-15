@@ -188,8 +188,16 @@ limit ?
 func sameResourceHashNeighbors(ctx context.Context, db *sql.DB, id string, limit int) ([]neighborCandidate, error) {
 	rows, err := db.QueryContext(ctx, `
 select distinct target.id, target.media_type, target.creation_date, target_resource.sha256,
-       coalesce((select id from evidence_ref where asset_id = source_resource.asset_id and evidence_kind = 'asset_resource' limit 1), ''),
-       coalesce((select id from evidence_ref where asset_id = target_resource.asset_id and evidence_kind = 'asset_resource' limit 1), '')
+       coalesce((select id from evidence_ref
+         where asset_id = source_resource.asset_id and evidence_kind = 'asset_resource'
+           and substr(pointer, -length('/resource:' || source_resource.id)) = '/resource:' || source_resource.id
+           and json_extract(value_json, '$.stable_hash') = source_resource.sha256
+         order by id limit 1), ''),
+       coalesce((select id from evidence_ref
+         where asset_id = target_resource.asset_id and evidence_kind = 'asset_resource'
+           and substr(pointer, -length('/resource:' || target_resource.id)) = '/resource:' || target_resource.id
+           and json_extract(value_json, '$.stable_hash') = target_resource.sha256
+         order by id limit 1), '')
 from asset_resource source_resource
 join asset_resource target_resource on target_resource.sha256 = source_resource.sha256 and target_resource.asset_id <> source_resource.asset_id
 join asset target on target.id = target_resource.asset_id
@@ -368,12 +376,13 @@ func aggregateNeighbors(candidates []neighborCandidate) []NeighborHit {
 			}
 			byID[candidate.ID] = hit
 		}
+		// Several matching resources can support the same reason.
+		hit.EvidenceIDs = appendUniqueStrings(hit.EvidenceIDs, candidate.EvidenceIDs...)
 		if hasReason(hit.Reasons, candidate.Reason) {
 			continue
 		}
 		hit.Reasons = append(hit.Reasons, candidate.Reason)
 		hit.Score += candidate.Reason.Weight
-		hit.EvidenceIDs = appendUniqueStrings(hit.EvidenceIDs, candidate.EvidenceIDs...)
 	}
 
 	out := make([]NeighborHit, 0, len(byID))
