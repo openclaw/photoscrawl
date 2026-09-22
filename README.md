@@ -31,8 +31,6 @@ extract `photoscrawl`, and place it on your `PATH`.
 photoscrawl --version
 ```
 
-There is no Homebrew formula in the debut release.
-
 ## Development
 
 Building from source requires Go 1.27.0 or later and the macOS SDK. The preferred
