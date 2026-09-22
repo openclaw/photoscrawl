@@ -2,16 +2,18 @@
 
 ## Unreleased
 
-- Reject malformed JSON selection and exclusion lists, including partial arrays and null or blank entries, instead of silently treating them as line-separated IDs or file paths.
-- Cite the matching resource and hash in `neighbors` evidence instead of an unrelated resource, and retain evidence from multiple matches when their neighbor reason is deduplicated.
-- Preserve separate `eval-card` results for model names that differ by punctuation or case by using a SHA-256 model key in evidence filenames; the original model name remains in each JSON result.
+## 0.4.0 - 2026-09-22
+
+**Highlights:** Find, rank, and curate photos using Apple’s existing signals, with bounded iCloud previews, contact sheets, and advisory sharing checks.
 
 - Import Photos' face eye state, blur, smile, quality, and person kind, its duplicate flags, and its media-analysis blurriness through `import-apple`; missing columns import as null, and Photos' `-1` "not computed" face quality is stored as unknown; thanks @mbelinky.
 - Add `people` (named people from live assets only), `find`, `rank`, and `junk` over the imported signals: required-people, date, place, and text filters; best-first ranking with reasons that replaces missing quality signals with their median, grouped by burst, time gap, or day; and screenshot, blurry, eyes-closed, and duplicate candidates with a suggested keeper. Assets with missing or malformed creation dates remain queryable, sort after dated assets in date order, stay out of date-bounded filters and age rules, and form separate time-based groups; thanks @mbelinky.
 - Add `sheet` for orientation-correct numbered contact sheets rendered from local files without PhotoKit, `similar` for label-overlap matches outside the seed's own moment that exclude hidden and other ineligible assets before shortlisting, `forgotten` for strong photos in no user or shared album across PhotoKit and SQLite provider encodings, and `share-check`, a privacy gate that requires a well-formed privacy assessment in the saved classifier reply, reads its complete phrases rather than shortened observations, blocks every affirmative sensitive-category occurrence, and fails closed on unclassified photos. Schema 5 adds a visual-label index; upgrade every process that shares an archive together, then run `photoscrawl init`; thanks @mbelinky.
 - Classify iCloud-only photos from bounded temporary PhotoKit previews owned by each invocation, leaving the queue row untouched when a run is cancelled with `classify --allow-icloud-downloads`, including assets previously marked unavailable; cancel in-flight preview requests promptly even when PhotoKit never delivers a result, fail a stalled preview download after two minutes instead of hanging the run, retain preview callback values, and wait for bounded archive writers; thanks @mbelinky.
-
 - Keep search-index labels out of detected-face eye-state decisions and preserve named people in keeper suggestions, require review for unknown privacy phrases, ignore nonpositive duplicate groups and auxiliary hashes, exclude ineligible assets from similarity frequencies while preserving small-library matches, and bound contact-sheet memory while propagating cancellation; add synthetic built-CLI regressions and tested archive snapshot recovery.
+- Reject malformed JSON selection and exclusion lists, including partial arrays and null or blank entries, instead of silently treating them as line-separated IDs or file paths.
+- Cite the matching resource and hash in `neighbors` evidence instead of an unrelated resource, and retain evidence from multiple matches when their neighbor reason is deduplicated.
+- Preserve separate `eval-card` results for model names that differ by punctuation or case by using a SHA-256 model key in evidence filenames; the original model name remains in each JSON result.
 
 ## 0.3.4 - 2026-09-13
 

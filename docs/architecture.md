@@ -27,28 +27,26 @@ with schema-version checks and evidence labels.
 The crawler has two stages:
 
 - `crawl`: enumerate assets and cheap metadata for all assets.
-- `classify`: add metadata observations and optionally classify already-local
-  images through a resumable queue. Video content classification is future work.
+- `classify`: add metadata observations and optionally classify local images or
+  opt-in PhotoKit previews through a resumable queue. Video content classification
+  is future work.
 
 `crawl` may record paths to files that already exist inside the Photos library
 package, such as derivatives, renders, or originals. It must not export media,
 write to Photos, or trigger iCloud downloads.
 
-Only the opt-in `eval-card --allow-icloud-downloads` flow currently downloads
+The opt-in `eval-card --allow-icloud-downloads` flow downloads
 originals. It prepares at most three times the requested sample size and limits
 new originals to 256 MiB each and 512 MiB per run, removing owned temporary
 originals after preparation. It builds one local media index per run and reuses
 it for snapshot metadata and original selection.
 
-Future classifier downloads must also be bounded:
-
-- keep a local cache budget;
-- process batches;
-- evict originals/thumbnails after observations and hashes are recorded;
-- resume from cursor state;
-- record `needs_download` when the original is not local.
-
-CPU is allowed. Disk blowups are not.
+`classify --local-model MODEL --allow-icloud-downloads` downloads temporary
+PhotoKit previews at a default maximum dimension of 1600 pixels. Each invocation
+owns its preview directory and removes it after classification. Downloads have
+a two-minute timeout; cancellation leaves the queue row available for retry.
+The explicit `export` command can also download a selected original through
+PhotoKit to the requested output directory.
 
 ## Classification Roadmap
 
