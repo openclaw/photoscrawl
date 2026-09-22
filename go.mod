@@ -5,12 +5,12 @@ go 1.27.0
 toolchain go1.27.1
 
 require (
-	github.com/openclaw/crawlkit v0.16.2
-	modernc.org/sqlite v1.58.0
+	github.com/openclaw/crawlkit v0.16.4
+	modernc.org/sqlite v1.59.0
 )
 
 require (
-	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
