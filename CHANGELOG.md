@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reject malformed JSON selection and exclusion lists, including partial arrays and null or blank entries, instead of silently treating them as line-separated IDs or file paths.
 - Cite the matching resource and hash in `neighbors` evidence instead of an unrelated resource, and retain evidence from multiple matches when their neighbor reason is deduplicated.
 - Preserve separate `eval-card` results for model names that differ by punctuation or case by using a SHA-256 model key in evidence filenames; the original model name remains in each JSON result.
 

@@ -103,6 +103,13 @@ those signals and never change Photos.
 `--exclude-ids-file` with archive IDs or Photos local identifiers, so callers
 can skip photos they already handled.
 
+ID lists and `sheet --files-file` accept a JSON array of nonempty strings or
+one entry per line. Malformed quoted JSON arrays are rejected, so a broken
+exclusion list cannot silently lose entries. Bracketed filenames such as
+`[cover].jpg` still work in newline lists. For a filename that itself starts
+like a JSON array (for example, `["cover"].jpg`), use `./` before the relative
+path or encode it in a JSON array.
+
 Quality and eye-state decisions use detected faces from the Photos database.
 Search-index person labels remain searchable but do not count as additional
 faces with unknown eye state.
