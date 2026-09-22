@@ -682,7 +682,16 @@ func readIDs(path string) ([]string, error) {
 		return nil, e
 	}
 	var ids []string
-	if json.Unmarshal(b, &ids) == nil {
+	input := strings.TrimSpace(string(b))
+	if isJSONListInput(input) {
+		if err := json.Unmarshal(b, &ids); err != nil {
+			return nil, fmt.Errorf("read ID list %q: expected a JSON array of strings: %w", path, err)
+		}
+		for i, id := range ids {
+			if strings.TrimSpace(id) == "" {
+				return nil, fmt.Errorf("read ID list %q: entry %d must be a nonempty string", path, i+1)
+			}
+		}
 		return ids, nil
 	}
 	for _, x := range strings.Split(string(b), "\n") {
@@ -692,6 +701,16 @@ func readIDs(path string) ([]string, error) {
 	}
 	return ids, nil
 }
+
+func isJSONListInput(input string) bool {
+	if !strings.HasPrefix(input, "[") && !strings.HasPrefix(input, "{") {
+		return false
+	}
+	// A bracketed filename is a valid line entry; a quoted first entry starts JSON.
+	rest := strings.TrimSpace(input[1:])
+	return rest == "" || strings.HasPrefix(rest, `"`) || json.Valid([]byte(input))
+}
+
 func readExcluded(path string) (map[string]bool, error) {
 	m := map[string]bool{}
 	if path == "" {
