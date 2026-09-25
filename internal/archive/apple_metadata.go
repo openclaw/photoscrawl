@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -101,21 +100,6 @@ var appleComputedScoreColumns = map[string]string{
 	"ZWELLCHOSENSUBJECTSCORE":       "well_chosen_subject",
 	"ZWELLFRAMEDSUBJECTSCORE":       "well_framed_subject",
 	"ZWELLTIMEDSHOTSCORE":           "well_timed_shot",
-}
-
-func preflightPhotoMetadataImport(ctx context.Context, libraryPath string) (photoMetadataImportInput, error) {
-	liveDBPath := filepath.Join(libraryPath, "database", "Photos.sqlite")
-	snapshotPath, cleanup, err := copyPhotosSQLite(ctx, liveDBPath)
-	if err != nil {
-		return photoMetadataImportInput{}, err
-	}
-	defer cleanup()
-	photosDB, err := store.OpenReadOnly(ctx, snapshotPath)
-	if err != nil {
-		return photoMetadataImportInput{}, fmt.Errorf("open copied Photos sqlite for metadata: %w", err)
-	}
-	defer photosDB.Close()
-	return loadPhotoMetadataInput(ctx, photosDB.DB())
 }
 
 func loadPhotoMetadataInput(ctx context.Context, db *sql.DB) (photoMetadataImportInput, error) {
