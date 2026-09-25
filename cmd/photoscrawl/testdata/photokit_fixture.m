@@ -56,8 +56,124 @@ static id fetch(id self, SEL selector, NSArray *identifiers, id options) {
 @end
 @implementation PCFixtureResource
 - (PHAssetResourceType)type { return PHAssetResourceTypePhoto; }
+- (NSString *)uniformTypeIdentifier { return @"public.jpeg"; }
+- (NSString *)originalFilename { return @"fixture.jpeg"; }
+- (NSString *)assetLocalIdentifier { return @"fixture-asset"; }
 @end
 static id resources(id self, SEL selector, id asset) { return @[[PCFixtureResource new]]; }
+
+@interface PCFixtureFetchResult : NSObject
+@property(nonatomic, strong) NSArray *objects;
+@end
+@implementation PCFixtureFetchResult
+- (NSUInteger)count { return self.objects.count; }
+- (void)enumerateObjectsUsingBlock:(void (^)(id, NSUInteger, BOOL *))block {
+  BOOL stop = NO;
+  [self.objects enumerateObjectsUsingBlock:^(id object, NSUInteger index, BOOL *innerStop) {
+    block(object, index, &stop);
+    if (stop) *innerStop = YES;
+  }];
+}
+@end
+static PCFixtureFetchResult *result(NSArray *objects) {
+  PCFixtureFetchResult *value = [PCFixtureFetchResult new];
+  value.objects = objects;
+  return value;
+}
+
+@interface PCFixtureAsset : NSObject
+@property(nonatomic, copy) NSString *identifier;
+@end
+@implementation PCFixtureAsset
+- (NSString *)localIdentifier { return self.identifier; }
+- (PHAssetMediaType)mediaType { return PHAssetMediaTypeImage; }
+- (PHAssetMediaSubtype)mediaSubtypes { return PHAssetMediaSubtypeNone; }
+- (NSDate *)creationDate { return [NSDate dateWithTimeIntervalSince1970:1700000000]; }
+- (NSDate *)modificationDate { return [NSDate dateWithTimeIntervalSince1970:1700000000]; }
+- (NSUInteger)pixelWidth { return 100; }
+- (NSUInteger)pixelHeight { return 100; }
+- (NSTimeInterval)duration { return 0; }
+- (BOOL)isFavorite { return NO; }
+- (BOOL)isHidden { return NO; }
+- (NSString *)burstIdentifier { return nil; }
+- (BOOL)representsBurst { return NO; }
+- (CLLocation *)location { return nil; }
+- (PHAssetSourceType)sourceType { return PHAssetSourceTypeUserLibrary; }
+@end
+
+@interface PCFixtureAlbum : NSObject
+@property(nonatomic, copy) NSString *identifier;
+@property(nonatomic, copy) NSString *title;
+@property(nonatomic) PHAssetCollectionType fixtureType;
+@property(nonatomic) PHAssetCollectionSubtype fixtureSubtype;
+@property(nonatomic, strong) NSArray *assets;
+@end
+@implementation PCFixtureAlbum
+- (NSString *)localIdentifier { return self.identifier; }
+- (NSString *)localizedTitle { return self.title; }
+- (PHAssetCollectionType)assetCollectionType { return self.fixtureType; }
+- (PHAssetCollectionSubtype)assetCollectionSubtype { return self.fixtureSubtype; }
+@end
+
+static PCFixtureAsset *fixtureAsset(NSString *identifier) {
+  PCFixtureAsset *asset = [PCFixtureAsset new];
+  asset.identifier = identifier;
+  return asset;
+}
+static PCFixtureAlbum *fixtureAlbum(NSString *identifier, NSString *title, PHAssetCollectionType type, PHAssetCollectionSubtype subtype, NSArray *assets) {
+  PCFixtureAlbum *album = [PCFixtureAlbum new];
+  album.identifier = identifier;
+  album.title = title;
+  album.fixtureType = type;
+  album.fixtureSubtype = subtype;
+  album.assets = assets;
+  return album;
+}
+static NSArray *fixtureAssets(void) {
+  static NSArray *assets;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ assets = @[fixtureAsset(@"fixture-asset-1"), fixtureAsset(@"fixture-asset-2")]; });
+  return assets;
+}
+static NSArray *fixtureAlbums(void) {
+  static NSArray *albums;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSArray *assets = fixtureAssets();
+    albums = @[
+      fixtureAlbum(@"album-regular", @"Regular", PHAssetCollectionTypeAlbum, PHAssetCollectionSubtypeAlbumRegular, assets),
+      fixtureAlbum(@"album-shared", @"Shared", PHAssetCollectionTypeAlbum, PHAssetCollectionSubtypeAlbumCloudShared, @[assets[0]]),
+      fixtureAlbum(@"album-smart", @"Smart", PHAssetCollectionTypeSmartAlbum, PHAssetCollectionSubtypeSmartAlbumFavorites, @[assets[1]])
+    ];
+  });
+  return albums;
+}
+static id fetchAllAssets(id self, SEL selector, id options) {
+  if (![mode isEqual:@"snapshot-albums"]) abort();
+  return result(fixtureAssets());
+}
+static id fetchTopLevelCollections(id self, SEL selector, id options) {
+  if (![mode isEqual:@"snapshot-albums"]) abort();
+  return result(@[]);
+}
+static id fetchAlbumCollections(id self, SEL selector, PHAssetCollectionType type, PHAssetCollectionSubtype subtype, id options) {
+  if (![mode isEqual:@"snapshot-albums"]) abort();
+  NSMutableArray *matches = [NSMutableArray array];
+  for (PCFixtureAlbum *album in fixtureAlbums()) {
+    if (album.fixtureType != type) continue;
+    if (subtype == PHAssetCollectionSubtypeAny || album.fixtureSubtype == subtype) [matches addObject:album];
+  }
+  return result(matches);
+}
+static id fetchAssetsInCollection(id self, SEL selector, PCFixtureAlbum *album, id options) {
+  if (![mode isEqual:@"snapshot-albums"]) abort();
+  return result(album.assets);
+}
+static id fetchContainingAlbums(id self, SEL selector, PCFixtureAsset *asset, PHAssetCollectionType type, id options) {
+  if (![mode isEqual:@"snapshot-albums"]) abort();
+  mark(@"containing-album-fetch");
+  return result(@[fixtureAlbums()[0]]);
+}
 
 @interface PCFixtureManager : NSObject
 @end
@@ -164,6 +280,11 @@ __attribute__((constructor)) static void installFixture(void) {
     replace(PHPhotoLibrary.class, @selector(authorizationStatusForAccessLevel:), (IMP)authorization);
     replace(PHPhotoLibrary.class, @selector(requestAuthorizationForAccessLevel:handler:), (IMP)authorize);
     replace(PHAsset.class, @selector(fetchAssetsWithLocalIdentifiers:options:), (IMP)fetch);
+	  replace(PHAsset.class, @selector(fetchAssetsWithOptions:), (IMP)fetchAllAssets);
+	  replace(PHAsset.class, @selector(fetchAssetsInAssetCollection:options:), (IMP)fetchAssetsInCollection);
+	  replace(PHCollectionList.class, @selector(fetchTopLevelUserCollectionsWithOptions:), (IMP)fetchTopLevelCollections);
+	  replace(PHAssetCollection.class, @selector(fetchAssetCollectionsWithType:subtype:options:), (IMP)fetchAlbumCollections);
+	  replace(PHAssetCollection.class, @selector(fetchAssetCollectionsContainingAsset:withType:options:), (IMP)fetchContainingAlbums);
     replace(PHAssetResource.class, @selector(assetResourcesForAsset:), (IMP)resources);
     replace(PHAssetResourceManager.class, @selector(defaultManager), (IMP)manager);
     mark(@"loaded");

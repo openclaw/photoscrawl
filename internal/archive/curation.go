@@ -151,19 +151,23 @@ func Find(ctx context.Context, paths Paths, o FindOptions) (FindResult, error) {
 		return FindResult{}, err
 	}
 	defer db.Close()
-	as, err := loadAssets(ctx, db.DB())
-	if err != nil {
-		return FindResult{}, err
-	}
-	s, err := loadSignals(ctx, db.DB())
-	if err != nil {
-		return FindResult{}, err
-	}
 	excluded, err := readExcluded(o.ExcludeIDsFile)
 	if err != nil {
 		return FindResult{}, err
 	}
-	as, err = filterAssets(ctx, db.DB(), as, s, o, excluded)
+	selection, err := findAssetSelection(o, nil, excluded)
+	if err != nil {
+		return FindResult{}, err
+	}
+	as, err := loadSelectedAssets(ctx, db.DB(), selection)
+	if err != nil {
+		return FindResult{}, err
+	}
+	s, err := loadSelectedSignals(ctx, db.DB(), selection)
+	if err != nil {
+		return FindResult{}, err
+	}
+	as, err = filterAssets(as, s, o, excluded)
 	if err != nil {
 		return FindResult{}, err
 	}
@@ -186,30 +190,37 @@ func Rank(ctx context.Context, paths Paths, o RankOptions) (RankResult, error) {
 		return RankResult{}, err
 	}
 	defer db.Close()
-	as, err := loadAssets(ctx, db.DB())
-	if err != nil {
-		return RankResult{}, err
-	}
-	s, err := loadSignals(ctx, db.DB())
-	if err != nil {
-		return RankResult{}, err
-	}
 	ex, err := readExcluded(o.ExcludeIDsFile)
 	if err != nil {
 		return RankResult{}, err
 	}
+	var wanted map[string]bool
 	if o.IDsFile != "" {
 		ids, e := readIDs(o.IDsFile)
 		if e != nil {
 			return RankResult{}, e
 		}
-		wanted := map[string]bool{}
+		wanted = map[string]bool{}
 		for _, id := range ids {
 			wanted[id] = true
 		}
+	}
+	selection, err := findAssetSelection(o.FindOptions, wanted, ex)
+	if err != nil {
+		return RankResult{}, err
+	}
+	as, err := loadSelectedAssets(ctx, db.DB(), selection)
+	if err != nil {
+		return RankResult{}, err
+	}
+	s, err := loadSelectedSignals(ctx, db.DB(), selection)
+	if err != nil {
+		return RankResult{}, err
+	}
+	if wanted != nil {
 		as = filterIDAssets(as, wanted)
 	} else {
-		as, err = filterAssets(ctx, db.DB(), as, s, o.FindOptions, ex)
+		as, err = filterAssets(as, s, o.FindOptions, ex)
 		if err != nil {
 			return RankResult{}, err
 		}
@@ -301,7 +312,16 @@ func Junk(ctx context.Context, paths Paths, o JunkOptions) (JunkResult, error) {
 }
 
 func loadAssets(ctx context.Context, db *sql.DB) ([]fullAsset, error) {
-	rs, e := db.QueryContext(ctx, `select id,local_identifier,creation_date,media_type,hidden,favorite,width,height,burst_identifier,media_subtypes,timezone_name from asset where deleted_at is null`)
+	return loadSelectedAssets(ctx, db, assetSelection{where: "a.deleted_at is null"})
+}
+
+type assetSelection struct {
+	where string
+	args  []any
+}
+
+func loadSelectedAssets(ctx context.Context, db *sql.DB, selection assetSelection) ([]fullAsset, error) {
+	rs, e := db.QueryContext(ctx, `select a.id,a.local_identifier,a.creation_date,a.media_type,a.hidden,a.favorite,a.width,a.height,a.burst_identifier,a.media_subtypes,a.timezone_name from asset a where `+selection.where, selection.args...)
 	if e != nil {
 		return nil, e
 	}
@@ -320,9 +340,16 @@ func loadAssets(ctx context.Context, db *sql.DB) ([]fullAsset, error) {
 	return out, rs.Err()
 }
 func loadSignals(ctx context.Context, db *sql.DB) (signals, error) {
+	return loadSelectedSignals(ctx, db, assetSelection{where: "a.deleted_at is null"})
+}
+
+func loadSelectedSignals(ctx context.Context, db *sql.DB, selection assetSelection) (signals, error) {
 	s := signals{faces: map[string][]faceSignal{}, aesthetic: map[string]sql.NullFloat64{}, focus: map[string]sql.NullFloat64{}, blurriness: map[string]sql.NullFloat64{}}
 	// Search-index people labels are not detected faces and have no eye state.
-	r, e := db.QueryContext(ctx, `select asset_id,person_label,quality,eyes_closed from face_observation where source = ? and trim(person_label)<>''`, photosLibraryDBFaceSource)
+	faceArgs := append([]any{photosLibraryDBFaceSource}, selection.args...)
+	r, e := db.QueryContext(ctx, `select face_observation.asset_id,face_observation.person_label,face_observation.quality,face_observation.eyes_closed
+from face_observation join asset a on a.id = face_observation.asset_id
+where face_observation.source = ? and trim(face_observation.person_label)<>'' and `+selection.where, faceArgs...)
 	if e != nil {
 		return s, e
 	}
@@ -342,7 +369,9 @@ func loadSignals(ctx context.Context, db *sql.DB) (signals, error) {
 	if e = r.Close(); e != nil {
 		return s, e
 	}
-	r, e = db.QueryContext(ctx, `select asset_id,value_json from model_observation where observation_type='apple_quality_scores'`)
+	r, e = db.QueryContext(ctx, `select model_observation.asset_id,model_observation.value_json
+from model_observation join asset a on a.id = model_observation.asset_id
+where model_observation.observation_type='apple_quality_scores' and `+selection.where, selection.args...)
 	if e != nil {
 		return s, e
 	}
@@ -372,7 +401,116 @@ func loadSignals(ctx context.Context, db *sql.DB) (signals, error) {
 	}
 	return s, r.Close()
 }
-func filterAssets(ctx context.Context, db *sql.DB, as []fullAsset, s signals, o FindOptions, ex map[string]bool) ([]fullAsset, error) {
+
+const maxSQLIdentifierFilters = 250
+
+func findAssetSelection(o FindOptions, wanted, excluded map[string]bool) (assetSelection, error) {
+	clauses := []string{"a.deleted_at is null"}
+	args := []any{}
+	if wanted != nil {
+		if clause, values := identifierFilterSQL(wanted, false); clause != "" {
+			clauses = append(clauses, clause)
+			args = append(args, values...)
+		}
+		if clause, values := identifierFilterSQL(excluded, true); clause != "" {
+			clauses = append(clauses, clause)
+			args = append(args, values...)
+		}
+		return assetSelection{where: strings.Join(clauses, " and "), args: args}, nil
+	}
+
+	from, err := parseDate(o.From, false)
+	if err != nil {
+		return assetSelection{}, err
+	}
+	to, err := parseDate(o.To, true)
+	if err != nil {
+		return assetSelection{}, err
+	}
+	media := o.Media
+	if media == "" {
+		media = "image"
+	}
+	if media != "image" && media != "video" && media != "any" {
+		return assetSelection{}, errors.New("media must be image, video, or any")
+	}
+	if !o.IncludeHidden {
+		clauses = append(clauses, "a.hidden = 0")
+	}
+	if media != "any" {
+		clauses = append(clauses, "a.media_type = ?")
+		args = append(args, media)
+	}
+	if from.Valid {
+		// SQLite dates are a coarse SQL prefilter; Go applies the exact
+		// nanosecond boundary below so ranking population cannot change.
+		clauses = append(clauses, "julianday(a.creation_date) >= julianday(?) - (1.0 / 86400.0)")
+		args = append(args, from.Time.Format(time.RFC3339Nano))
+	}
+	if to.Valid {
+		clauses = append(clauses, "julianday(a.creation_date) <= julianday(?) + (1.0 / 86400.0)")
+		args = append(args, to.Time.Format(time.RFC3339Nano))
+	}
+	if strings.TrimSpace(o.Query) != "" {
+		query := ftsQuery(o.Query)
+		clauses = append(clauses, `a.id in (
+select id from asset_fts where asset_fts match ?
+union
+select distinct asset_id from observation_fts where observation_fts match ?
+)`)
+		args = append(args, query, query)
+	} else if o.Query != "" {
+		// Preserve the existing behavior for a nonempty all-whitespace query.
+		clauses = append(clauses, "0")
+	}
+	if o.Place != "" {
+		clauses = append(clauses, `a.id in (
+select distinct asset_id from visual_observation
+where observation_type in ('apple_place','apple_venue') and lower(label) like lower(?)
+)`)
+		args = append(args, "%"+o.Place+"%")
+	}
+	if clause, values := identifierFilterSQL(excluded, true); clause != "" {
+		clauses = append(clauses, clause)
+		args = append(args, values...)
+	}
+	return assetSelection{where: strings.Join(clauses, " and "), args: args}, nil
+}
+
+func identifierFilterSQL(ids map[string]bool, negate bool) (string, []any) {
+	if len(ids) == 0 {
+		if negate {
+			return "", nil
+		}
+		return "0", nil
+	}
+	if len(ids) > maxSQLIdentifierFilters {
+		return "", nil
+	}
+	values := make([]string, 0, len(ids))
+	for id := range ids {
+		values = append(values, id)
+	}
+	sort.Strings(values)
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(values)), ",")
+	normalizedLocalID := `case
+when instr(trim(a.local_identifier), '/') > 0 then substr(trim(a.local_identifier), 1, instr(trim(a.local_identifier), '/') - 1)
+else trim(a.local_identifier)
+end`
+	match := fmt.Sprintf("(a.id in (%s) or a.local_identifier in (%s) or %s in (%s))", placeholders, placeholders, normalizedLocalID, placeholders)
+	if negate {
+		match = "not " + match
+	}
+	args := make([]any, 0, len(values)*3)
+	for repeat := 0; repeat < 3; repeat++ {
+		for _, value := range values {
+			args = append(args, value)
+		}
+	}
+	return match, args
+}
+
+func filterAssets(as []fullAsset, s signals, o FindOptions, ex map[string]bool) ([]fullAsset, error) {
 	from, e := parseDate(o.From, false)
 	if e != nil {
 		return nil, e
@@ -388,56 +526,9 @@ func filterAssets(ctx context.Context, db *sql.DB, as []fullAsset, s signals, o 
 	if media != "image" && media != "video" && media != "any" {
 		return nil, errors.New("media must be image, video, or any")
 	}
-	textIDs := map[string]bool{}
-	if strings.TrimSpace(o.Query) != "" {
-		rs, e := db.QueryContext(ctx, `select id from asset_fts where asset_fts match ? union select distinct asset_id from observation_fts where observation_fts match ?`, ftsQuery(o.Query), ftsQuery(o.Query))
-		if e != nil {
-			return nil, e
-		}
-		for rs.Next() {
-			var id string
-			if e = rs.Scan(&id); e != nil {
-				rs.Close()
-				return nil, e
-			}
-			textIDs[id] = true
-		}
-		if e = rs.Err(); e != nil {
-			rs.Close()
-			return nil, e
-		}
-		if e = rs.Close(); e != nil {
-			return nil, e
-		}
-	}
-	placeIDs := map[string]bool{}
-	if o.Place != "" {
-		rs, e := db.QueryContext(ctx, `select distinct asset_id from visual_observation where observation_type in ('apple_place','apple_venue') and lower(label) like lower(?)`, "%"+o.Place+"%")
-		if e != nil {
-			return nil, e
-		}
-		for rs.Next() {
-			var id string
-			if e = rs.Scan(&id); e != nil {
-				rs.Close()
-				return nil, e
-			}
-			placeIDs[id] = true
-		}
-		if e = rs.Err(); e != nil {
-			rs.Close()
-			return nil, e
-		}
-		if e = rs.Close(); e != nil {
-			return nil, e
-		}
-	}
 	out := []fullAsset{}
 	for _, a := range as {
-		if excludedMatch(a, ex) || (!o.IncludeHidden && a.hidden != 0) || (media != "any" && a.MediaType != media) || ((from.Valid || to.Valid) && !a.hasCreationDate()) || (from.Valid && a.created.Before(from.Time)) || (to.Valid && a.created.After(to.Time)) || (o.Query != "" && !textIDs[a.ID]) || !peopleMatch(s.faces[a.ID], o.People) {
-			continue
-		}
-		if o.Place != "" && !placeIDs[a.ID] {
+		if excludedMatch(a, ex) || (!o.IncludeHidden && a.hidden != 0) || (media != "any" && a.MediaType != media) || ((from.Valid || to.Valid) && !a.hasCreationDate()) || (from.Valid && a.created.Before(from.Time)) || (to.Valid && a.created.After(to.Time)) || !peopleMatch(s.faces[a.ID], o.People) {
 			continue
 		}
 		out = append(out, a)

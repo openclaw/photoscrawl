@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -157,6 +158,7 @@ func TestClassifyLocalModelWritesTypedObservations(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	assertObservationFTSWritersMapped(t, db.DB())
 	var runMetadata string
 	if err := db.DB().QueryRowContext(ctx, `select metadata_json from model_run where id = ?`, result.ModelRunID).Scan(&runMetadata); err != nil {
 		t.Fatal(err)
@@ -202,7 +204,7 @@ func TestClassifyLocalModelRetriesContentFailure(t *testing.T) {
 	}
 
 	server.Config.Handler = http.HandlerFunc(openAIResponseHandler)
-	retried, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", LocalModelAPI: localModelAPIOpenAI, LocalModelURL: server.URL, Now: fixedClock("2026-08-12T12:15:00Z")})
+	retried, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", LocalModelAPI: localModelAPIOpenAI, LocalModelURL: server.URL, Now: fixedClock("2026-08-19T12:15:00Z")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,26 +445,20 @@ func TestClassifyLocalModelRetriesUnavailableImagesOnlyWithDownloadsEnabled(t *t
 	if second.Processed != 0 {
 		t.Fatalf("unavailable image stayed retryable = %#v", second)
 	}
-	archiveDB, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	withDownloads, err := Classify(ctx, paths, ClassifyOptions{
+		All:                  true,
+		LocalModel:           "fixture-vision",
+		AllowICloudDownloads: true,
+		Now:                  fixedClock("2026-05-28T10:25:00Z"),
+		previewExporter: func(context.Context, string, string, int, bool) error {
+			return errors.New("fixture download failure")
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer archiveDB.Close()
-	tx, err := archiveDB.DB().BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	withoutDownloads, err := loadClassifyInputs(ctx, tx, 0, true, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	withDownloads, err := loadClassifyInputs(ctx, tx, 0, true, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(withoutDownloads) != 0 || len(withDownloads) != 1 || withDownloads[0].MediaType != "image" {
-		t.Fatalf("unavailable queue selection without=%#v with=%#v", withoutDownloads, withDownloads)
+	if withDownloads.Processed != 1 || withDownloads.ICloudPreviewDownloadFailures != 1 {
+		t.Fatalf("download-enabled retry = %#v", withDownloads)
 	}
 }
 
@@ -808,6 +804,35 @@ func TestClassifyStalledPreviewTimesOutWithoutAbortingRun(t *testing.T) {
 	if state != "content_failed" || !strings.Contains(reason, "timed out") {
 		t.Fatalf("stalled preview queue row = state %q reason %q, want content_failed with a timeout reason", state, reason)
 	}
+
+	// A failed asset waits out a cooldown instead of being retried on every pass.
+	exports := 0
+	retry := func(at string) ClassifyResult {
+		t.Helper()
+		result, err := Classify(ctx, paths, ClassifyOptions{
+			All:                  true,
+			LocalModel:           "fixture-vision",
+			LocalModelURL:        server.URL,
+			AllowICloudDownloads: true,
+			PreviewTimeout:       20 * time.Millisecond,
+			Now:                  fixedClock(at),
+			previewExporter: func(ctx context.Context, _, _ string, _ int, _ bool) error {
+				exports++
+				<-ctx.Done()
+				return ctx.Err()
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	if result := retry("2026-07-31T12:00:00Z"); result.Processed != 0 || exports != 0 {
+		t.Fatalf("same-day retry processed %d assets with %d downloads, want the failed asset skipped", result.Processed, exports)
+	}
+	if result := retry("2026-08-08T10:05:00Z"); result.Processed != 1 || exports != 1 {
+		t.Fatalf("retry after cooldown processed %d assets with %d downloads, want one retry", result.Processed, exports)
+	}
 }
 
 func TestClassifyRequestTimeoutFailsAssetAndContinuesRun(t *testing.T) {
@@ -891,5 +916,171 @@ func TestClassifyRequestTimeoutFailsAssetAndContinuesRun(t *testing.T) {
 	}
 	if states["fixture-timeout-image"] != "content_failed" || states["fixture-later-image"] != "content_classified" {
 		t.Fatalf("queue states = %v, want the timed-out asset failed and the later asset classified", states)
+	}
+}
+
+func TestConcurrentClassifiersClaimEachAssetOnce(t *testing.T) {
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var exports atomic.Int32
+	exporter := func(_ context.Context, _ string, destination string, _ int, _ bool) error {
+		if exports.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return os.WriteFile(destination, []byte("fixture preview"), 0o600)
+	}
+	snapshot := photos.LibrarySnapshot{Provider: "fake", Assets: []photos.Asset{{
+		LocalIdentifier: "claimed-asset", MediaType: "image", CreationDate: "2026-09-25T09:00:00Z",
+		Resources: []photos.Resource{{SourceIdentifier: "claimed-photo", Type: "photo", UTI: "public.jpeg", NeedsDownload: true, Availability: "remote"}},
+	}}}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: fakeProvider{snapshot: snapshot}, Now: fixedClock("2026-09-25T10:00:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	type classifyOutcome struct {
+		result ClassifyResult
+		err    error
+	}
+	firstDone := make(chan classifyOutcome, 1)
+	go func() {
+		result, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", LocalModelURL: "http://127.0.0.1:1", AllowICloudDownloads: true, previewExporter: exporter, Now: fixedClock("2026-09-25T10:05:00Z")})
+		firstDone <- classifyOutcome{result: result, err: err}
+	}()
+	<-started
+	second, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", LocalModelURL: "http://127.0.0.1:1", AllowICloudDownloads: true, previewExporter: exporter, Now: fixedClock("2026-09-25T10:05:01Z")})
+	if err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	close(release)
+	first := <-firstDone
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	if exports.Load() != 1 || first.result.Processed+second.Processed != 1 || second.Processed != 0 {
+		t.Fatalf("exports=%d first=%#v second=%#v", exports.Load(), first.result, second)
+	}
+}
+
+func TestClassifyRejectsResultAfterRecrawlChangesInput(t *testing.T) {
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var exports atomic.Int32
+	exporter := func(_ context.Context, _ string, destination string, _ int, _ bool) error {
+		if exports.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return os.WriteFile(destination, []byte("fixture preview"), 0o600)
+	}
+	asset := photos.Asset{
+		LocalIdentifier: "changing-asset", MediaType: "image", CreationDate: "2026-09-25T09:00:00Z", Width: 100, Height: 100,
+		Resources: []photos.Resource{{SourceIdentifier: "changing-photo", Type: "photo", UTI: "public.jpeg", NeedsDownload: true, Availability: "remote"}},
+	}
+	snapshot := photos.LibrarySnapshot{Provider: "fake", Assets: []photos.Asset{asset}}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: fakeProvider{snapshot: snapshot}, Now: fixedClock("2026-09-25T10:00:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	type classifyOutcome struct {
+		result ClassifyResult
+		err    error
+	}
+	firstDone := make(chan classifyOutcome, 1)
+	go func() {
+		result, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", LocalModelURL: "http://127.0.0.1:1", AllowICloudDownloads: true, previewExporter: exporter, Now: fixedClock("2026-09-25T10:05:00Z")})
+		firstDone <- classifyOutcome{result: result, err: err}
+	}()
+	<-started
+	asset.Width = 200
+	snapshot.Assets[0] = asset
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: fakeProvider{snapshot: snapshot}, Now: fixedClock("2026-09-25T10:06:00Z")}); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	close(release)
+	first := <-firstDone
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	if first.result.Processed != 1 || exports.Load() != 2 {
+		t.Fatalf("stale classify result = %#v", first.result)
+	}
+	db, err := store.OpenReadOnly(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	if err := db.DB().QueryRowContext(ctx, `select state from classification_queue`).Scan(&state); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	var metadataRows int
+	if err := db.DB().QueryRowContext(ctx, `select count(*) from visual_observation where source = ?`, metadataClassifierSource).Scan(&metadataRows); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	var evidenceJSON string
+	if err := db.DB().QueryRowContext(ctx, `select value_json from evidence_ref where evidence_kind = 'classification_input'`).Scan(&evidenceJSON); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if state != "content_failed" || metadataRows == 0 || !strings.Contains(evidenceJSON, `"width":200`) {
+		t.Fatalf("after stale result state=%q metadata rows=%d evidence=%s", state, metadataRows, evidenceJSON)
+	}
+}
+
+func TestClassifyReclaimsExpiredLease(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := photos.LibrarySnapshot{Provider: "fake", Assets: []photos.Asset{{
+		LocalIdentifier: "leased-asset", MediaType: "image", CreationDate: "2026-09-25T09:00:00Z",
+	}}}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: fakeProvider{snapshot: snapshot}, Now: fixedClock("2026-09-25T10:00:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB().ExecContext(ctx, `update classification_queue set claim_owner = 'abandoned', claim_expires_at = '2026-09-25T10:10:00Z'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	active, err := Classify(ctx, paths, ClassifyOptions{All: true, Now: fixedClock("2026-09-25T10:05:00Z")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.Processed != 0 {
+		t.Fatalf("active lease processed %d assets", active.Processed)
+	}
+	expired, err := Classify(ctx, paths, ClassifyOptions{All: true, Now: fixedClock("2026-09-25T10:11:00Z")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expired.Processed != 1 || expired.MetadataClassified != 1 {
+		t.Fatalf("expired lease classify = %#v", expired)
 	}
 }

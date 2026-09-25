@@ -127,15 +127,45 @@ func preflightFacesImport(ctx context.Context, libraryPath string) (facesImportI
 		return facesImportInput{}, fmt.Errorf("open copied Photos sqlite: %w", err)
 	}
 	defer photosDB.Close()
-	schema, err := validatePhotosFacesSchema(ctx, photosDB.DB())
+	return loadFacesImportInput(ctx, photosDB.DB(), libraryPath)
+}
+
+func preflightPhotosImports(ctx context.Context, libraryPath string) (facesImportInput, photoMetadataImportInput, error) {
+	liveDBPath := filepath.Join(libraryPath, "database", "Photos.sqlite")
+	if _, err := os.Stat(liveDBPath); err != nil {
+		return facesImportInput{}, photoMetadataImportInput{}, fmt.Errorf("find Photos sqlite: %w", err)
+	}
+	snapshotPath, cleanup, err := copyPhotosSQLite(ctx, liveDBPath)
+	if err != nil {
+		return facesImportInput{}, photoMetadataImportInput{}, err
+	}
+	defer cleanup()
+	photosDB, err := store.OpenReadOnly(ctx, snapshotPath)
+	if err != nil {
+		return facesImportInput{}, photoMetadataImportInput{}, fmt.Errorf("open copied Photos sqlite: %w", err)
+	}
+	defer photosDB.Close()
+	faces, err := loadFacesImportInput(ctx, photosDB.DB(), libraryPath)
+	if err != nil {
+		return facesImportInput{}, photoMetadataImportInput{}, err
+	}
+	metadata, err := loadPhotoMetadataInput(ctx, photosDB.DB())
+	if err != nil {
+		return facesImportInput{}, photoMetadataImportInput{}, err
+	}
+	return faces, metadata, nil
+}
+
+func loadFacesImportInput(ctx context.Context, db *sql.DB, libraryPath string) (facesImportInput, error) {
+	schema, err := validatePhotosFacesSchema(ctx, db)
 	if err != nil {
 		return facesImportInput{}, err
 	}
-	faceRows, namedPersons, unnamedFaces, err := loadPhotosFaceRows(ctx, photosDB.DB())
+	faceRows, namedPersons, unnamedFaces, err := loadPhotosFaceRows(ctx, db)
 	if err != nil {
 		return facesImportInput{}, err
 	}
-	peopleByUUID, err := loadPhotosPeopleByUUIDFromDB(ctx, photosDB.DB())
+	peopleByUUID, err := loadPhotosPeopleByUUIDFromDB(ctx, db)
 	if err != nil {
 		return facesImportInput{}, err
 	}
@@ -150,9 +180,11 @@ func preflightFacesImport(ctx context.Context, libraryPath string) (facesImportI
 }
 
 func writeFacesImport(ctx context.Context, tx *sql.Tx, paths Paths, input facesImportInput, assetByUUID appleAssetScope, importedAt time.Time) (ImportFacesResult, map[string]bool, error) {
-	if err := clearImportedFaces(ctx, tx, assetByUUID.libraryID); err != nil {
+	stage, err := beginAppleStage(ctx, tx, appleRecordFace)
+	if err != nil {
 		return ImportFacesResult{}, nil, err
 	}
+	defer stage.close()
 	inserted := 0
 	unresolved := 0
 	facesWithEyeState := 0
@@ -167,7 +199,11 @@ func writeFacesImport(ctx context.Context, tx *sql.Tx, paths Paths, input facesI
 			unresolved++
 			continue
 		}
-		if err := insertImportedFace(ctx, tx, assetID, face, importedAt); err != nil {
+		record, err := importedFaceRecord(assetID, face, importedAt)
+		if err != nil {
+			return ImportFacesResult{}, nil, err
+		}
+		if err := stage.add(ctx, record); err != nil {
 			return ImportFacesResult{}, nil, err
 		}
 		inserted++
@@ -187,6 +223,9 @@ func writeFacesImport(ctx context.Context, tx *sql.Tx, paths Paths, input facesI
 			facesWithPersonKind++
 		}
 		touched[assetID] = true
+	}
+	if err := stage.apply(ctx, assetByUUID.libraryID); err != nil {
+		return ImportFacesResult{}, nil, err
 	}
 	return ImportFacesResult{
 		Database:                 paths.Database,
@@ -363,25 +402,7 @@ where coalesce(ZPERSONUUID, '') <> ''
 	return out, rows.Err()
 }
 
-func clearImportedFaces(ctx context.Context, tx *sql.Tx, libraryID string) error {
-	if _, err := tx.ExecContext(ctx, `
-delete from observation_fts
-where id in (
-  select id from face_observation where source = ? and asset_id in (select id from asset where source_library_id = ?)
-)
-`, photosLibraryDBFaceSource, libraryID); err != nil {
-		return fmt.Errorf("clear imported face fts: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `delete from face_observation where source = ? and asset_id in (select id from asset where source_library_id = ?)`, photosLibraryDBFaceSource, libraryID); err != nil {
-		return fmt.Errorf("clear imported faces: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `delete from evidence_ref where source = ? and evidence_kind = ? and asset_id in (select id from asset where source_library_id = ?)`, photosLibraryDBFaceSource, "face_observation", libraryID); err != nil {
-		return fmt.Errorf("clear imported face evidence: %w", err)
-	}
-	return nil
-}
-
-func insertImportedFace(ctx context.Context, tx *sql.Tx, assetID string, face photosFaceRow, importedAt time.Time) error {
+func importedFaceRecord(assetID string, face photosFaceRow, importedAt time.Time) (stagedFaceRecord, error) {
 	faceLocalID := face.faceUUID
 	if strings.TrimSpace(faceLocalID) == "" {
 		faceLocalID = fmt.Sprintf("ZDETECTEDFACE:%d", face.facePK)
@@ -390,9 +411,9 @@ func insertImportedFace(ctx context.Context, tx *sql.Tx, assetID string, face ph
 	evidenceID := stableID("evidence", assetID, photosLibraryDBFaceSource, faceLocalID)
 	boundingJSON, err := jsonText(faceBoundingBox(face))
 	if err != nil {
-		return err
+		return stagedFaceRecord{}, err
 	}
-	evidenceJSON, err := jsonText(map[string]any{
+	evidence := map[string]any{
 		"schema_source":     "Photos.sqlite",
 		"face_table":        "ZDETECTEDFACE",
 		"person_table":      "ZPERSON",
@@ -410,31 +431,37 @@ func insertImportedFace(ctx context.Context, tx *sql.Tx, assetID string, face ph
 		"has_smile":         nullableSQLInt(face.smile),
 		"detection_type":    nullableSQLInt(face.detectionType),
 		"person_kind":       facePersonKind(face),
-		"imported_at":       importedAt.Format(time.RFC3339Nano),
 		"read_only":         true,
-	})
+	}
+	evidenceStableJSON, err := jsonText(evidence)
 	if err != nil {
-		return err
+		return stagedFaceRecord{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `
-insert into evidence_ref(id, asset_id, evidence_kind, source, pointer, value_json)
-values (?, ?, ?, ?, ?, ?)
-`, evidenceID, assetID, "face_observation", photosLibraryDBFaceSource, fmt.Sprintf("ZDETECTEDFACE:%d", face.facePK), evidenceJSON); err != nil {
-		return fmt.Errorf("write imported face evidence: %w", err)
+	evidence["imported_at"] = importedAt.Format(time.RFC3339Nano)
+	evidenceJSON, err := jsonText(evidence)
+	if err != nil {
+		return stagedFaceRecord{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `
-insert into face_observation(id, asset_id, face_local_id, person_label, person_uuid, person_kind, confidence, quality, blur_score, eyes_closed, smile, bounding_box_json, source, evidence_id)
-values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, observationID, assetID, faceLocalID, face.personLabel, face.personUUID, facePersonKind(face), 1.0, nullableSQLFloat(faceQuality(face)), nullableSQLFloat(face.blurScore), faceEyesClosed(face), faceSmile(face), boundingJSON, photosLibraryDBFaceSource, evidenceID); err != nil {
-		return fmt.Errorf("write imported face observation: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-insert into observation_fts(id, asset_id, title, body)
-values (?, ?, ?, ?)
-`, observationID, assetID, face.personLabel, strings.Join(nonEmpty("person", "face", face.personLabel, photosLibraryDBFaceSource), " ")); err != nil {
-		return fmt.Errorf("write imported face fts: %w", err)
-	}
-	return nil
+	return stagedFaceRecord{
+		AssetID:            assetID,
+		EvidenceID:         evidenceID,
+		EvidencePointer:    fmt.Sprintf("ZDETECTEDFACE:%d", face.facePK),
+		EvidenceJSON:       evidenceJSON,
+		EvidenceStableJSON: evidenceStableJSON,
+		ObservationID:      observationID,
+		FaceLocalID:        faceLocalID,
+		PersonLabel:        face.personLabel,
+		PersonUUID:         face.personUUID,
+		PersonKind:         facePersonKind(face),
+		Confidence:         1,
+		Quality:            floatPointer(faceQuality(face)),
+		BlurScore:          floatPointer(face.blurScore),
+		EyesClosed:         pointerInt(faceEyesClosed(face)),
+		Smile:              pointerInt(faceSmile(face)),
+		BoundingBoxJSON:    boundingJSON,
+		FTSTitle:           face.personLabel,
+		FTSBody:            strings.Join(nonEmpty("person", "face", face.personLabel, photosLibraryDBFaceSource), " "),
+	}, nil
 }
 
 // faceQuality treats Photos' negative quality sentinel (-1, "not computed")

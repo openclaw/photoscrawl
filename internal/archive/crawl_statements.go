@@ -15,7 +15,6 @@ type crawlStatements struct {
 	evidence            *sql.Stmt
 	location            *sql.Stmt
 	fts                 *sql.Stmt
-	deleteFTS           *sql.Stmt
 	queue               *sql.Stmt
 	seen                *sql.Stmt
 }
@@ -124,16 +123,18 @@ on conflict(id) do update set
   evidence_id = excluded.evidence_id
 `},
 		{&stmts.fts, `insert into asset_fts(id, title, body) values (?, ?, ?)`},
-		{&stmts.deleteFTS, `delete from asset_fts where id = ?`},
 		{&stmts.queue, `
-insert into classification_queue(id, asset_id, source_library_id, state, reason, needs_download, updated_at)
-values (?, ?, ?, ?, ?, ?, ?)
+insert into classification_queue(id, asset_id, source_library_id, state, reason, needs_download, updated_at, input_fingerprint, claim_owner, claim_expires_at)
+values (?, ?, ?, ?, ?, ?, ?, ?, '', null)
 on conflict(asset_id) do update set
   source_library_id = excluded.source_library_id,
   state = excluded.state,
   reason = excluded.reason,
   needs_download = excluded.needs_download,
-  updated_at = excluded.updated_at
+  updated_at = excluded.updated_at,
+  input_fingerprint = excluded.input_fingerprint,
+  claim_owner = '',
+  claim_expires_at = null
 `},
 		{&stmts.seen, `
 insert into crawl_seen_asset(source_library_id, asset_id, first_seen_snapshot_id, last_seen_snapshot_id, source_fingerprint, last_seen_at)
@@ -159,7 +160,7 @@ func (s *crawlStatements) close() {
 	if s == nil {
 		return
 	}
-	for _, stmt := range []*sql.Stmt{s.previousFingerprint, s.assetLive, s.assetTombstone, s.resource, s.resourceTombstone, s.album, s.evidence, s.location, s.fts, s.deleteFTS, s.queue, s.seen} {
+	for _, stmt := range []*sql.Stmt{s.previousFingerprint, s.assetLive, s.assetTombstone, s.resource, s.resourceTombstone, s.album, s.evidence, s.location, s.fts, s.queue, s.seen} {
 		if stmt != nil {
 			_ = stmt.Close()
 		}

@@ -183,6 +183,7 @@ func TestExportNativeIntegration(t *testing.T) {
 			t.Logf("real native bridge: %s; destination verified; no staging files", tc.name)
 		})
 	}
+	testPhotoKitSnapshotAlbums(t, cli)
 }
 
 func waitNativeMarker(t *testing.T, ctx context.Context, path string) {
@@ -197,4 +198,54 @@ func waitNativeMarker(t *testing.T, ctx context.Context, path string) {
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
+}
+
+func testPhotoKitSnapshotAlbums(t *testing.T, cli string) {
+	t.Helper()
+	t.Run("crawl-indexes-albums-without-per-asset-fetches", func(t *testing.T) {
+		dir := t.TempDir()
+		library := filepath.Join(dir, "Fixture.photoslibrary")
+		if err := os.Mkdir(library, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		database := filepath.Join(dir, "photos.sqlite")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, cli, "crawl", "--db", database, "--library", library, "--json")
+		cmd.Env = append(os.Environ(), "PHOTOSCRAWL_NATIVE_FIXTURE_DIR="+dir, "PHOTOSCRAWL_NATIVE_FIXTURE_MODE=snapshot-albums")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("native snapshot crawl: %v\n%s", err, out)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "containing-album-fetch")); !os.IsNotExist(err) {
+			t.Fatalf("crawl fetched containing albums per asset: %v", err)
+		}
+		db, err := sql.Open("sqlite", database)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		rows, err := db.Query(`
+select asset.local_identifier, album_membership.album_title
+from album_membership join asset on asset.id = album_membership.asset_id
+order by asset.local_identifier, album_membership.album_id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var memberships []string
+		for rows.Next() {
+			var assetID, title string
+			if err := rows.Scan(&assetID, &title); err != nil {
+				t.Fatal(err)
+			}
+			memberships = append(memberships, assetID+":"+title)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"fixture-asset-1:Regular", "fixture-asset-1:Shared", "fixture-asset-2:Regular", "fixture-asset-2:Smart"}
+		if strings.Join(memberships, "|") != strings.Join(want, "|") {
+			t.Fatalf("album memberships = %#v, want %#v", memberships, want)
+		}
+	})
 }

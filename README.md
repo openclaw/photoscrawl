@@ -125,13 +125,13 @@ and 2048 pixels per tile, with a 16-megapixel (64 MiB RGBA) canvas limit. Reduce
 Sources above 64 megapixels produce placeholders. Dimensions are checked before
 Go decoding or native rendering, and rendered output is checked before decoding.
 
-Schema 5 archives cannot be opened by older binaries. Stop every process that
+Schema 6 archives cannot be opened by older binaries. Stop every process that
 uses an archive and keep the previous binary. Before upgrading, make a
 consistent SQLite backup in a private directory (replace the example paths):
 
 ```sh
 umask 077
-sqlite3 /path/to/photos.sqlite ".backup '/private/backup/photos-before-schema5.sqlite'"
+sqlite3 /path/to/photos.sqlite ".backup '/private/backup/photos-before-schema6.sqlite'"
 ```
 
 Upgrade every process together, then run `photoscrawl init --db
@@ -148,6 +148,7 @@ There is no in-place schema downgrade.
 go run ./cmd/photoscrawl metadata --json
 go run ./cmd/photoscrawl init --json
 go run ./cmd/photoscrawl status --json
+go run ./cmd/photoscrawl status --full-check --json
 go run ./cmd/photoscrawl crawl --library "$HOME/Pictures/Photos Library.photoslibrary" --json
 go run ./cmd/photoscrawl import-apple --library "$HOME/Pictures/Photos Library.photoslibrary" --json
 go run ./cmd/photoscrawl crawl --provider sqlite --library "/path/to/scratch.photoslibrary" --json
@@ -174,7 +175,12 @@ go run ./cmd/photoscrawl eval-card --library "$HOME/Pictures/Photos Library.phot
 
 `status` reports the resolved archive filename used by `init` and other archive
 commands. Only a nonexistent archive is reported as missing; filesystem errors
-are returned to the caller.
+are returned to the caller. Routine writable opens inspect live WAL archives
+through a read-only connection, including when `-wal` and `-shm` sidecars are
+present. A rollback journal, or a recovery or locking error during that read,
+falls back to a verified private snapshot. Run `status --full-check` to
+explicitly make that snapshot and run SQLite's `quick_check`; this requires
+temporary free space for the archive copy.
 
 Default runtime paths come from crawlkit platform dirs. The primary database is
 `photos.sqlite` under the crawlkit data dir; provider caches and exported
@@ -209,10 +215,10 @@ places, people, camera/source clues, and photo types. Both the current
 import is an authoritative refresh of only the Apple-derived observation rows;
 it never writes to the Photos library or uploads the source databases.
 
-Before writing, Apple imports share one verified private archive copy for schema
-and library-binding checks. Writable archive opens still require temporary disk
-space for a complete archive copy; the shared check avoids a second concurrent
-copy during Apple imports.
+Each Apple import reads faces and photo metadata from one verified private copy
+of `Photos.sqlite`. The archive's schema and library binding use the same
+non-mutating preflight as other writable commands, with snapshot fallback for
+rollback journals or recovery and locking errors.
 
 Apple's Photos database is a private schema and can change between macOS
 releases. The importer validates every required table and column before it

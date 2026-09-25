@@ -3,8 +3,10 @@ package archive
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -139,7 +141,7 @@ func TestCrawlImportsSnapshotAndTracksDelta(t *testing.T) {
 	}
 }
 
-func TestUnchangedCrawlPreservesCompletedClassification(t *testing.T) {
+func TestCrawlSkipsUnchangedAssetsAndRefreshesSearchForChanges(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	paths := testPaths(t)
@@ -147,7 +149,9 @@ func TestUnchangedCrawlPreservesCompletedClassification(t *testing.T) {
 	if err := mkdirLibrary(libraryPath); err != nil {
 		t.Fatal(err)
 	}
-	provider := fakeProvider{snapshot: fakeSnapshot(false, false)}
+	snapshot := fakeSnapshot(false, true)
+	snapshot.Assets[0].Albums[0].AlbumTitle = "OriginalCollection"
+	provider := fakeProvider{snapshot: snapshot}
 	if _, err := Crawl(ctx, paths, CrawlOptions{
 		LibraryPath: libraryPath,
 		Provider:    provider,
@@ -159,6 +163,24 @@ func TestUnchangedCrawlPreservesCompletedClassification(t *testing.T) {
 		All: true,
 		Now: fixedClock("2026-08-12T08:05:00Z"),
 	}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstID, secondID string
+	if err := db.DB().QueryRowContext(ctx, `select id from asset where local_identifier = 'fixture-asset-1'`).Scan(&firstID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.DB().QueryRowContext(ctx, `select id from asset where local_identifier = 'fixture-asset-2'`).Scan(&secondID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	installCrawlWriteAudit(t, db.DB())
+	initialFTSRows := assetFTSRowIDs(t, db.DB(), firstID, secondID)
+	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -174,17 +196,176 @@ func TestUnchangedCrawlPreservesCompletedClassification(t *testing.T) {
 		t.Fatalf("unchanged crawl = unchanged %d queued %d", result.AssetsUnchanged, result.QueuedForClassify)
 	}
 
-	db, err := openArchiveStore(ctx, paths.Database)
+	db, err = openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCrawlWrites(t, db.DB(), nil)
+	assertAssetFTSRowIDs(t, db.DB(), initialFTSRows)
+	var pending, seenInSnapshot int
+	if err := db.DB().QueryRowContext(ctx, `select count(*) from classification_queue where state = 'pending'`).Scan(&pending); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		db.Close()
+		t.Fatalf("unchanged crawl requeued %d classified assets", pending)
+	}
+	if err := db.DB().QueryRowContext(ctx, `select count(*) from crawl_seen_asset where last_seen_snapshot_id = ?`, result.SnapshotID).Scan(&seenInSnapshot); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if seenInSnapshot != len(provider.snapshot.Assets) {
+		db.Close()
+		t.Fatalf("unchanged crawl recorded %d seen assets, want %d", seenInSnapshot, len(provider.snapshot.Assets))
+	}
+	clearCrawlWriteAudit(t, db.DB())
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertSearchCount(t, ctx, paths, "OriginalCollection", 1)
+	assertSearchCount(t, ctx, paths, "Kitchen", 1)
+
+	snapshot.Assets[0].Albums[0].AlbumTitle = "RenamedCollection"
+	provider.snapshot = snapshot
+	result, err = Crawl(ctx, paths, CrawlOptions{
+		LibraryPath: libraryPath,
+		Provider:    provider,
+		Now:         fixedClock("2026-08-12T08:30:00Z"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AssetsChanged != 1 || result.AssetsUnchanged != 1 {
+		t.Fatalf("album change crawl = changed %d unchanged %d", result.AssetsChanged, result.AssetsUnchanged)
+	}
+	db, err = openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCrawlWrites(t, db.DB(), map[string]bool{firstID: true})
+	changedFTSRows := assetFTSRowIDs(t, db.DB(), firstID, secondID)
+	if changedFTSRows[firstID] == initialFTSRows[firstID] || changedFTSRows[secondID] != initialFTSRows[secondID] {
+		db.Close()
+		t.Fatalf("selective FTS refresh rows = %#v, initial %#v", changedFTSRows, initialFTSRows)
+	}
+	clearCrawlWriteAudit(t, db.DB())
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertSearchCount(t, ctx, paths, "RenamedCollection", 1)
+	assertSearchCount(t, ctx, paths, "OriginalCollection", 0)
+
+	snapshot.Assets[1].DeletionSource = "fixture-explicit-feed"
+	snapshot.Assets[1].DeletionReason = "trashed_in_photos_library"
+	provider.snapshot = snapshot
+	result, err = Crawl(ctx, paths, CrawlOptions{
+		LibraryPath: libraryPath,
+		Provider:    provider,
+		Now:         fixedClock("2026-08-12T08:45:00Z"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AssetsDeleted != 1 || result.AssetsChanged != 1 || result.AssetsUnchanged != 1 {
+		t.Fatalf("tombstone crawl = deleted %d changed %d unchanged %d", result.AssetsDeleted, result.AssetsChanged, result.AssetsUnchanged)
+	}
+	db, err = openArchiveStore(ctx, paths.Database)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	var pending int
-	if err := db.DB().QueryRowContext(ctx, `select count(*) from classification_queue where state = 'pending'`).Scan(&pending); err != nil {
+	assertCrawlWrites(t, db.DB(), map[string]bool{secondID: true})
+	assertAssetFTSRowIDs(t, db.DB(), map[string]int64{firstID: changedFTSRows[firstID]})
+	var tombstonedFTSRows int
+	if err := db.DB().QueryRowContext(ctx, `select count(*) from asset_fts where id = ?`, secondID).Scan(&tombstonedFTSRows); err != nil {
 		t.Fatal(err)
 	}
-	if pending != 0 {
-		t.Fatalf("unchanged crawl requeued %d classified assets", pending)
+	if tombstonedFTSRows != 0 {
+		t.Fatalf("tombstoned asset has %d FTS rows", tombstonedFTSRows)
+	}
+	assertSearchCount(t, ctx, paths, "Kitchen", 0)
+}
+
+func installCrawlWriteAudit(t *testing.T, db *sql.DB) {
+	t.Helper()
+	execTestSQL(t, db, `create table crawl_write_audit(table_name text not null, asset_id text not null)`)
+	for _, table := range []string{"asset", "asset_resource", "album_membership", "evidence_ref"} {
+		idExpression := "new.asset_id"
+		if table == "asset" {
+			idExpression = "new.id"
+		}
+		for _, operation := range []string{"insert", "update"} {
+			execTestSQL(t, db, fmt.Sprintf(`
+create trigger audit_%s_%s after %s on %s begin
+  insert into crawl_write_audit(table_name, asset_id) values ('%s', %s);
+end`, table, operation, operation, table, table, idExpression))
+		}
+	}
+}
+
+func clearCrawlWriteAudit(t *testing.T, db *sql.DB) {
+	t.Helper()
+	execTestSQL(t, db, `delete from crawl_write_audit`)
+}
+
+func assertCrawlWrites(t *testing.T, db *sql.DB, wantAssetIDs map[string]bool) {
+	t.Helper()
+	rows, err := db.Query(`select distinct asset_id from crawl_write_audit order by asset_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]bool{}
+	for rows.Next() {
+		var assetID string
+		if err := rows.Scan(&assetID); err != nil {
+			t.Fatal(err)
+		}
+		got[assetID] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, wantAssetIDs) && !(len(got) == 0 && len(wantAssetIDs) == 0) {
+		t.Fatalf("crawl rewrote asset IDs %#v, want %#v", got, wantAssetIDs)
+	}
+}
+
+func assetFTSRowIDs(t *testing.T, db *sql.DB, assetIDs ...string) map[string]int64 {
+	t.Helper()
+	rows := make(map[string]int64, len(assetIDs))
+	for _, assetID := range assetIDs {
+		var rowID int64
+		if err := db.QueryRow(`select rowid from asset_fts where id = ?`, assetID).Scan(&rowID); err != nil {
+			t.Fatal(err)
+		}
+		rows[assetID] = rowID
+	}
+	return rows
+}
+
+func assertAssetFTSRowIDs(t *testing.T, db *sql.DB, want map[string]int64) {
+	t.Helper()
+	for assetID, wantRowID := range want {
+		var gotRowID int64
+		if err := db.QueryRow(`select rowid from asset_fts where id = ?`, assetID).Scan(&gotRowID); err != nil {
+			t.Fatal(err)
+		}
+		if gotRowID != wantRowID {
+			t.Fatalf("asset %s FTS rowid = %d, want %d", assetID, gotRowID, wantRowID)
+		}
+	}
+}
+
+func assertSearchCount(t *testing.T, ctx context.Context, paths Paths, query string, want int) {
+	t.Helper()
+	result, err := Search(ctx, paths, SearchOptions{Query: query, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Results) != want {
+		t.Fatalf("search %q returned %#v, want %d results", query, result.Results, want)
 	}
 }
 

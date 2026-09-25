@@ -73,7 +73,7 @@ func TestArchiveWhitespaceRejectsForeignTarget(t *testing.T) {
 						if err := openWhitespaceArchive(t, operation, raw, library); err == nil {
 							t.Fatal("foreign effective filename accepted")
 						}
-						if operation == "readonly" && journal == "WAL" {
+						if journal == "WAL" {
 							assertReadonlyWALTarget(t, target, before)
 						} else {
 							assertWhitespaceFiles(t, target, before)
@@ -99,10 +99,12 @@ func TestAppleArchiveWhitespaceChecksEffectiveBinding(t *testing.T) {
 			raw := target + suffix
 			createWhitespaceArchiveFixture(t, raw, requestedLibrary)
 			before, decoyBefore := pathFixtureFiles(t, target), pathFixtureFiles(t, raw)
+			identities := preflightFileIdentities(t, target)
 			if err := openWhitespaceArchive(t, "apple", raw, requestedLibrary); err == nil {
 				t.Fatal("decoy binding authorized a different effective archive")
 			}
-			assertWhitespaceFiles(t, target, before)
+			assertArchiveMainUnchanged(t, target, before)
+			assertPreflightExistingFileIdentities(t, target, identities)
 			assertWhitespaceFiles(t, raw, decoyBefore)
 		})
 	}

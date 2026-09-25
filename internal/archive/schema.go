@@ -1,6 +1,6 @@
 package archive
 
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 const Schema = `
 create table if not exists source_library (
@@ -51,7 +51,10 @@ create table if not exists classification_queue (
   state text not null,
   reason text not null,
   needs_download integer not null,
-  updated_at text not null
+  updated_at text not null,
+  input_fingerprint text not null default '',
+  claim_owner text not null default '',
+  claim_expires_at text
 );
 
 create table if not exists asset (
@@ -211,8 +214,14 @@ create table if not exists edge (
 create virtual table if not exists asset_fts using fts5(id unindexed, title, body);
 create virtual table if not exists observation_fts using fts5(id unindexed, asset_id unindexed, title, body);
 
+create table if not exists observation_fts_rowid (
+  fts_rowid integer primary key,
+  observation_id text not null
+);
+
 create index if not exists asset_creation_idx on asset(creation_date);
 create index if not exists asset_burst_idx on asset(burst_identifier);
+create index if not exists asset_source_library_idx on asset(source_library_id, id);
 create index if not exists crawl_snapshot_source_idx on crawl_snapshot(source_library_id, completed_at desc);
 create index if not exists crawl_seen_asset_snapshot_idx on crawl_seen_asset(last_seen_snapshot_id);
 create index if not exists sync_state_synced_at_idx on sync_state(synced_at desc);
@@ -229,6 +238,9 @@ create index if not exists model_observation_asset_idx on model_observation(asse
 create index if not exists model_observation_type_idx on model_observation(observation_type);
 create index if not exists observation_term_asset_idx on observation_term(asset_id);
 create index if not exists observation_term_term_idx on observation_term(term);
+create index if not exists observation_term_observation_idx on observation_term(observation_id);
+create index if not exists evidence_ref_asset_kind_source_idx on evidence_ref(asset_id, evidence_kind, source);
+create index if not exists observation_fts_observation_idx on observation_fts_rowid(observation_id);
 create index if not exists edge_from_idx on edge(from_id);
 create index if not exists edge_to_idx on edge(to_id);
 `

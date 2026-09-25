@@ -188,7 +188,7 @@ func shareCheckFixture(t *testing.T) Paths {
 		}
 		execTestSQL(t, db.DB(), `insert into asset(id,local_identifier,media_type,media_subtypes,creation_date,modification_date,added_date,timezone_name,width,height,duration_seconds,favorite,hidden,burst_identifier,represents_burst,source_library_id,metadata_json) values(?,?, 'image',?,?,'','','UTC',100,100,0,0,?,'',0,'fixture-library','{}')`, id, id+"-local", subtype, created, hiddenValue)
 		if state != "" {
-			execTestSQL(t, db.DB(), `insert into classification_queue values(?,?, 'fixture-library',?,'fixture',0,'2025-01-01T00:00:00Z')`, "queue-"+id, id, state)
+			execTestSQL(t, db.DB(), `insert into classification_queue(id, asset_id, source_library_id, state, reason, needs_download, updated_at) values(?,?, 'fixture-library',?,'fixture',0,'2025-01-01T00:00:00Z')`, "queue-"+id, id, state)
 		}
 		if state == "content_classified" {
 			evidence := `{"classified_at":"2025-01-01T00:00:00Z","parsed_response":{"privacy_sensitivity":[]}}`

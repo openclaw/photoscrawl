@@ -104,7 +104,14 @@ type crawlImporter struct {
 	startedAt   time.Time
 	completedAt time.Time
 	stmts       *crawlStatements
+	ftsRefresh  map[string]assetFTSRefresh
+	ftsOrder    []string
 	result      CrawlResult
+}
+
+type assetFTSRefresh struct {
+	asset   photos.Asset
+	deleted bool
 }
 
 func (c *crawlImporter) run(tx *sql.Tx) error {
@@ -195,11 +202,22 @@ values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		if !deleted && previouslyDeleted {
 			c.result.AssetsRestored++
 		}
+		if seenBefore && previousFingerprint == fingerprint && previouslyDeleted == deleted {
+			if err := c.upsertSeenAsset(ctx, tx, sourceID, assetID, snapshotID, fingerprint); err != nil {
+				return err
+			}
+			identities.remember(assetID, canonicalIdentifier, c.snapshot.Provider, asset)
+			continue
+		}
 		needsClassification := !seenBefore || previousFingerprint != fingerprint || previouslyDeleted
 		if err := c.upsertAsset(ctx, tx, sourceID, snapshotID, assetID, canonicalIdentifier, fingerprint, deleted, needsClassification, asset); err != nil {
 			return err
 		}
+		c.queueFTSRefresh(assetID, asset, deleted)
 		identities.remember(assetID, canonicalIdentifier, c.snapshot.Provider, asset)
+	}
+	if err := c.refreshFTS(ctx, tx); err != nil {
+		return err
 	}
 
 	var missing int
@@ -287,15 +305,12 @@ func (c *crawlImporter) upsertAsset(ctx context.Context, tx *sql.Tx, sourceID, s
 		}
 	}
 	if deleted {
-		if err := c.tombstoneAssetSubordinates(ctx, tx, assetID, asset); err != nil {
+		if err := c.tombstoneAssetSubordinates(ctx, tx, assetID, fingerprint, asset); err != nil {
 			return err
 		}
 	} else {
-		if err := c.insertFTS(ctx, tx, assetID, asset); err != nil {
-			return err
-		}
 		if needsClassification {
-			if err := c.upsertClassifyQueue(ctx, tx, sourceID, assetID); err != nil {
+			if err := c.upsertClassifyQueue(ctx, tx, sourceID, assetID, fingerprint); err != nil {
 				return err
 			}
 		}
@@ -475,16 +490,13 @@ order by folder_path, album_title, album_kind, id
 		return err
 	}
 	body := strings.Join(nonEmpty(bodyParts...), " ")
-	if _, err := c.stmts.deleteFTS.ExecContext(ctx, assetID); err != nil {
-		return fmt.Errorf("clear asset fts: %w", err)
-	}
 	if _, err := c.stmts.fts.ExecContext(ctx, assetID, title, body); err != nil {
 		return fmt.Errorf("insert asset fts: %w", err)
 	}
 	return nil
 }
 
-func (c *crawlImporter) tombstoneAssetSubordinates(ctx context.Context, tx *sql.Tx, assetID string, asset photos.Asset) error {
+func (c *crawlImporter) tombstoneAssetSubordinates(ctx context.Context, tx *sql.Tx, assetID, fingerprint string, asset photos.Asset) error {
 	if _, err := tx.ExecContext(ctx, `
 update asset_resource
 set deleted_at = coalesce(deleted_at, ?),
@@ -494,12 +506,64 @@ where asset_id = ?
 `, asset.DeletedAt, asset.DeletionSource, assetID); err != nil {
 		return fmt.Errorf("tombstone asset resources: %w", err)
 	}
-	if _, err := c.stmts.deleteFTS.ExecContext(ctx, assetID); err != nil {
-		return fmt.Errorf("clear tombstoned asset fts: %w", err)
-	}
 	queueID := stableID("classification_queue", assetID)
-	if _, err := c.stmts.queue.ExecContext(ctx, queueID, assetID, stableID("source_library", c.libraryPath), "deleted", "parent_asset_deleted", 0, c.completedAt.Format(time.RFC3339Nano)); err != nil {
+	if _, err := c.stmts.queue.ExecContext(ctx, queueID, assetID, stableID("source_library", c.libraryPath), "deleted", "parent_asset_deleted", 0, c.completedAt.Format(time.RFC3339Nano), fingerprint); err != nil {
 		return fmt.Errorf("retire classification queue: %w", err)
+	}
+	return nil
+}
+
+func (c *crawlImporter) queueFTSRefresh(assetID string, asset photos.Asset, deleted bool) {
+	if c.ftsRefresh == nil {
+		c.ftsRefresh = make(map[string]assetFTSRefresh)
+	}
+	if _, exists := c.ftsRefresh[assetID]; !exists {
+		c.ftsOrder = append(c.ftsOrder, assetID)
+	}
+	c.ftsRefresh[assetID] = assetFTSRefresh{asset: asset, deleted: deleted}
+}
+
+func (c *crawlImporter) refreshFTS(ctx context.Context, tx *sql.Tx) error {
+	if len(c.ftsOrder) == 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+create temp table if not exists crawl_fts_refresh (
+  id text primary key
+) without rowid
+`); err != nil {
+		return fmt.Errorf("create FTS refresh set: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `delete from temp.crawl_fts_refresh`); err != nil {
+		return fmt.Errorf("clear FTS refresh set: %w", err)
+	}
+	insertRefresh, err := tx.PrepareContext(ctx, `insert into temp.crawl_fts_refresh(id) values (?)`)
+	if err != nil {
+		return fmt.Errorf("prepare FTS refresh set: %w", err)
+	}
+	for _, assetID := range c.ftsOrder {
+		if _, err := insertRefresh.ExecContext(ctx, assetID); err != nil {
+			insertRefresh.Close()
+			return fmt.Errorf("collect FTS refresh asset: %w", err)
+		}
+	}
+	if err := insertRefresh.Close(); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+delete from asset_fts
+where id in (select id from temp.crawl_fts_refresh)
+`); err != nil {
+		return fmt.Errorf("clear refreshed asset FTS rows: %w", err)
+	}
+	for _, assetID := range c.ftsOrder {
+		refresh := c.ftsRefresh[assetID]
+		if refresh.deleted {
+			continue
+		}
+		if err := c.insertFTS(ctx, tx, assetID, refresh.asset); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -523,7 +587,7 @@ func (c *crawlImporter) upsertSeenAsset(ctx context.Context, tx *sql.Tx, sourceI
 	return nil
 }
 
-func (c *crawlImporter) upsertClassifyQueue(ctx context.Context, tx *sql.Tx, sourceID, assetID string) error {
+func (c *crawlImporter) upsertClassifyQueue(ctx context.Context, tx *sql.Tx, sourceID, assetID, fingerprint string) error {
 	hasLocalContent := false
 	needsDownload := false
 	rows, err := tx.QueryContext(ctx, `
@@ -556,7 +620,7 @@ where asset_id = ? and deleted_at is null
 	}
 	needsDownload = needsDownload && !hasLocalContent
 	queueID := stableID("classification_queue", assetID)
-	if _, err := c.stmts.queue.ExecContext(ctx, queueID, assetID, sourceID, "pending", "metadata_ingested", boolInt(needsDownload), c.completedAt.Format(time.RFC3339Nano)); err != nil {
+	if _, err := c.stmts.queue.ExecContext(ctx, queueID, assetID, sourceID, "pending", "metadata_ingested", boolInt(needsDownload), c.completedAt.Format(time.RFC3339Nano), fingerprint); err != nil {
 		return fmt.Errorf("upsert classification queue: %w", err)
 	}
 	c.result.QueuedForClassify++

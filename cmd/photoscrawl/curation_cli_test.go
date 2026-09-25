@@ -112,6 +112,31 @@ func TestCurationCLIImportsSyntheticPhotosLibrary(t *testing.T) {
 	if len(all.Assets) != 3 {
 		t.Fatalf("find all: %#v", all)
 	}
+	archiveDB, err := sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hiddenID string
+	if err := archiveDB.QueryRow(`select id from asset where local_identifier = 'fixture-screenshot'`).Scan(&hiddenID); err != nil {
+		archiveDB.Close()
+		t.Fatal(err)
+	}
+	if _, err := archiveDB.Exec(`update asset set hidden = 1 where id = ?`, hiddenID); err != nil {
+		archiveDB.Close()
+		t.Fatal(err)
+	}
+	if _, err := archiveDB.Exec(`insert into model_observation values('malformed-hidden-quality', ?, 'apple_quality_scores', '', '{malformed', 1, 'fixture', 'fixture', 'fixture', 'malformed-hidden-evidence')`, hiddenID); err != nil {
+		archiveDB.Close()
+		t.Fatal(err)
+	}
+	if err := archiveDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var visible archive.FindResult
+	invoke(&visible, "find", "--rank", "quality")
+	if len(visible.Assets) != 2 {
+		t.Fatalf("filtered find considered a hidden asset's malformed signal: %#v", visible)
+	}
 	ids := make([]string, 0, len(all.Assets))
 	for _, asset := range all.Assets {
 		ids = append(ids, asset.ID)

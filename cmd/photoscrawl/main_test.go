@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/openclaw/crawlkit/output"
+	"github.com/openclaw/photoscrawl/internal/archive"
 	"github.com/openclaw/photoscrawl/internal/place"
 	_ "modernc.org/sqlite"
 )
@@ -114,6 +115,40 @@ func TestRankRejectsLimitFlag(t *testing.T) {
 	err := run(context.Background(), []string{"rank", "--limit", "1"})
 	if !output.IsUsage(err) || !strings.Contains(err.Error(), "flag provided but not defined: -limit") {
 		t.Fatalf("rank --limit error = %v, want usage error", err)
+	}
+}
+
+func TestInitExistingArchiveDoesNotRequireSnapshotScratchSpace(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "photos.sqlite")
+	if _, err := archive.Init(context.Background(), archive.Paths{Database: database}); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocked, []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", blocked)
+	if err := run(context.Background(), []string{"init", "--db", database, "--json"}); err != nil {
+		t.Fatalf("init of a quiescent archive required snapshot scratch space: %v", err)
+	}
+}
+
+func TestStatusFullCheckUsesSnapshotScratchSpace(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "photos.sqlite")
+	if _, err := archive.Init(context.Background(), archive.Paths{Database: database}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"status", "--db", database, "--full-check", "--json"}); err != nil {
+		t.Fatalf("status --full-check: %v", err)
+	}
+	blocked := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocked, []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", blocked)
+	err := run(context.Background(), []string{"status", "--db", database, "--full-check", "--json"})
+	if err == nil || output.IsUsage(err) || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("status --full-check error = %v, want snapshot scratch-space failure", err)
 	}
 }
 

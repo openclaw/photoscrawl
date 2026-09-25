@@ -3,8 +3,12 @@ package archive
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -481,6 +485,154 @@ values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0
 	}
 }
 
+func TestImportAppleAppliesOnlyChangedRows(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	paths := Paths{DataDir: root, Database: filepath.Join(root, "photos.sqlite")}
+	libraryPath := filepath.Join(root, "Library.photoslibrary")
+	firstUUID := "92D69D06-27F0-4831-AEC7-C6F640F075BA"
+	secondUUID := "11111111-2222-3333-4444-555555555555"
+
+	archiveDB, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID := stableID("source_library", "test-library")
+	execTestSQL(t, archiveDB.DB(), `insert into source_library(id, library_path, snapshot_path, snapshot_created_at, photos_version, metadata_json) values (?, ?, 'snapshot', '2026-07-06T00:00:00Z', 'test', '{}')`, sourceID, libraryPath)
+	assetIDs := map[string]string{}
+	for _, uuid := range []string{firstUUID, secondUUID} {
+		assetID := stableID("asset", sourceID, uuid+"/L0/001")
+		assetIDs[uuid] = assetID
+		execTestSQL(t, archiveDB.DB(), `insert into asset(id, local_identifier, media_type, media_subtypes, creation_date, modification_date, added_date, timezone_name, width, height, duration_seconds, favorite, hidden, burst_identifier, represents_burst, source_library_id, metadata_json) values (?, ?, 'image', '', '', '', '', '', 100, 100, 0, 0, 0, '', 0, ?, '{}')`, assetID, uuid+"/L0/001", sourceID)
+	}
+	if err := archiveDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	photosPath := filepath.Join(libraryPath, "database", "Photos.sqlite")
+	searchPath := filepath.Join(libraryPath, "database", "search", "psi.sqlite")
+	createTestPhotosDB(t, photosPath)
+	createTestPSIDB(t, searchPath)
+	photosDB := openTestSQLite(t, photosPath)
+	execTestSQL(t, photosDB, `insert into ZASSET values (2, ?, 0, 0, null, null, 0.51, 0.42, 0.33, 0.24)`, secondUUID)
+	execTestSQL(t, photosDB, `insert into ZEXTENDEDATTRIBUTES(Z_PK, ZASSET, ZISO, ZCAMERAMAKE, ZCAMERAMODEL) values (2, 2, 200, 'Canon', 'EOS R5')`)
+	execTestSQL(t, photosDB, `insert into ZCOMPUTEDASSETATTRIBUTES(Z_PK, ZASSET, ZFAILURESCORE) values (2, 2, 0.02)`)
+	if err := photosDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	searchDB := openTestSQLite(t, searchPath)
+	uuid0, uuid1 := testPSIUUID(t, secondUUID)
+	execTestSQL(t, searchDB, `insert into assets(rowid, uuid_0, uuid_1) values (2, ?, ?)`, uuid0, uuid1)
+	execTestSQL(t, searchDB, `insert into groups(rowid, category, owning_groupid, content_string, normalized_string, lookup_identifier, score) values (20, 1500, null, 'Blue Bicycle', 'blue bicycle', '', 0.95)`)
+	execTestSQL(t, searchDB, `insert into ga(rowid, assetid, groupid) values (200, 2, 20)`)
+	if err := searchDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraryPath}); err != nil {
+		t.Fatal(err)
+	}
+	archiveDB, err = store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addImportWriteSentinels(t, archiveDB.DB(), assetIDs[firstUUID])
+	var metadataObservationID string
+	if err := archiveDB.DB().QueryRow(`select id from model_observation where asset_id = ? and observation_type = 'apple_exif'`, assetIDs[firstUUID]).Scan(&metadataObservationID); err != nil {
+		t.Fatal(err)
+	}
+	execTestSQL(t, archiveDB.DB(), `insert into observation_term values ('incremental-term', ?, ?, 'iPhone', 'camera', ?, ?)`, assetIDs[firstUUID], metadataObservationID, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID)
+	before := appleImportRowIDs(t, archiveDB.DB())
+	beforeSearch, err := Search(ctx, paths, SearchOptions{Query: "bicycle", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := archiveDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraryPath}); err != nil {
+		t.Fatal(err)
+	}
+	archiveDB, err = store.OpenReadOnly(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterIdentical := appleImportRowIDs(t, archiveDB.DB())
+	if !reflect.DeepEqual(afterIdentical, before) {
+		t.Fatalf("identical import rewrote rows:\nbefore=%#v\nafter=%#v", before, afterIdentical)
+	}
+	afterSearch, err := Search(ctx, paths, SearchOptions{Query: "bicycle", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterSearch.Results, beforeSearch.Results) {
+		t.Fatalf("identical import changed search results: before=%#v after=%#v", beforeSearch.Results, afterSearch.Results)
+	}
+	if err := archiveDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	searchDB = openTestSQLite(t, searchPath)
+	execTestSQL(t, searchDB, `update groups set content_string = 'Vintage Roadster', normalized_string = 'vintage roadster' where rowid = 10`)
+	if err := searchDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraryPath}); err != nil {
+		t.Fatal(err)
+	}
+	archiveDB, err = store.OpenReadOnly(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterChange := appleImportRowIDs(t, archiveDB.DB())
+	assertAssetRowsUnchanged(t, before, afterChange, assetIDs[secondUUID])
+	if reflect.DeepEqual(assetRowIDs(before, assetIDs[firstUUID]), assetRowIDs(afterChange, assetIDs[firstUUID])) {
+		t.Fatal("changed Apple data did not replace any row for its asset")
+	}
+	assertSearchResultCount(t, ctx, paths, "Vintage Roadster", 1)
+	assertSearchResultCount(t, ctx, paths, "Antique Car", 0)
+	beforeRemoval := afterChange
+	if err := archiveDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	photosDB = openTestSQLite(t, photosPath)
+	for _, statement := range []string{
+		`delete from ZDETECTEDFACE where ZASSETFORFACE = 2`,
+		`delete from ZEXTENDEDATTRIBUTES where ZASSET = 2`,
+		`delete from ZCOMPUTEDASSETATTRIBUTES where ZASSET = 2`,
+		`delete from ZMEDIAANALYSISASSETATTRIBUTES where ZASSET = 2`,
+		`delete from ZASSET where Z_PK = 2`,
+	} {
+		execTestSQL(t, photosDB, statement)
+	}
+	if err := photosDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	searchDB = openTestSQLite(t, searchPath)
+	execTestSQL(t, searchDB, `delete from ga where assetid = 2`)
+	execTestSQL(t, searchDB, `delete from assets where rowid = 2`)
+	if err := searchDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraryPath}); err != nil {
+		t.Fatal(err)
+	}
+	archiveDB, err = store.OpenReadOnly(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archiveDB.Close()
+	afterRemoval := appleImportRowIDs(t, archiveDB.DB())
+	assertAssetRowsUnchanged(t, beforeRemoval, afterRemoval, assetIDs[firstUUID])
+	if got := assetRowIDs(afterRemoval, assetIDs[secondUUID]); len(got) != 0 {
+		t.Fatalf("removed asset retained Apple import rows: %#v", got)
+	}
+	assertObservationFTSWritersMapped(t, archiveDB.DB())
+	assertSearchResultCount(t, ctx, paths, "Blue Bicycle", 0)
+}
+
 func TestImportLeoSearchIndexIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -638,6 +790,107 @@ func createTestLeoDB(t *testing.T, path string) {
 	execTestSQL(t, db, `insert into items(rowid, identifier, type, lexeme_ids) values (1, ?, 1, ?)`, "92D69D06-27F0-4831-AEC7-C6F640F075BA", []byte{1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0})
 }
 
+type importRowID struct {
+	assetID string
+	rowID   int64
+}
+
+func openTestSQLite(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func testPSIUUID(t *testing.T, uuid string) (int64, int64) {
+	t.Helper()
+	decoded, err := hex.DecodeString(strings.ReplaceAll(uuid, "-", ""))
+	if err != nil || len(decoded) != 16 {
+		t.Fatalf("decode test UUID %q: %v", uuid, err)
+	}
+	return int64(binary.LittleEndian.Uint64(decoded[:8])), int64(binary.LittleEndian.Uint64(decoded[8:]))
+}
+
+func addImportWriteSentinels(t *testing.T, db *sql.DB, assetID string) {
+	t.Helper()
+	execTestSQL(t, db, `insert into evidence_ref values ('write-sentinel-evidence', ?, 'test', 'test', 'test', '{}')`, assetID)
+	execTestSQL(t, db, `insert into face_observation(id, asset_id, face_local_id, person_label, confidence, bounding_box_json, source, evidence_id) values ('write-sentinel-face', ?, 'test', 'test', 1, '{}', 'test', 'write-sentinel-evidence')`, assetID)
+	execTestSQL(t, db, `insert into visual_observation values ('write-sentinel-visual', ?, 'test', 'test', 1, '{}', 'test', 'test', 'write-sentinel-evidence')`, assetID)
+	execTestSQL(t, db, `insert into model_observation values ('write-sentinel-model', ?, 'test', 'test', '{}', 1, 'test', 'test', 'test', 'write-sentinel-evidence')`, assetID)
+	execTestSQL(t, db, `insert into observation_term values ('write-sentinel-term', ?, 'write-sentinel-model', 'test', 'test', 'test', 'test')`, assetID)
+	execTestSQL(t, db, `insert into observation_fts values ('write-sentinel-fts', ?, 'test', 'test')`, assetID)
+}
+
+func appleImportRowIDs(t *testing.T, db *sql.DB) map[string]importRowID {
+	t.Helper()
+	out := map[string]importRowID{}
+	queries := []struct {
+		table string
+		query string
+		args  []any
+	}{
+		{"face_observation", `select rowid, id, asset_id from face_observation where source in (?, ?)`, []any{photosLibraryDBFaceSource, photosSearchIndexSource}},
+		{"visual_observation", `select rowid, id, asset_id from visual_observation where source = ?`, []any{photosSearchIndexSource}},
+		{"model_observation", `select rowid, id, asset_id from model_observation where source = ? and model_id = ?`, []any{photosLibraryDBFaceSource, photosLibraryDBMetadataModelID}},
+		{"observation_term", `select rowid, id, asset_id from observation_term where source in (?, ?)`, []any{photosLibraryDBFaceSource, photosSearchIndexSource}},
+		{"evidence_ref", `select rowid, id, asset_id from evidence_ref where source in (?, ?)`, []any{photosLibraryDBFaceSource, photosSearchIndexSource}},
+		{"observation_fts", `select rowid, id, asset_id from observation_fts where id <> 'write-sentinel-fts'`, nil},
+	}
+	for _, q := range queries {
+		rows, err := db.Query(q.query, q.args...)
+		if err != nil {
+			t.Fatalf("read %s row ids: %v", q.table, err)
+		}
+		for rows.Next() {
+			var rowID int64
+			var id, assetID string
+			if err := rows.Scan(&rowID, &id, &assetID); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			out[q.table+":"+id] = importRowID{assetID: assetID, rowID: rowID}
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out
+}
+
+func assetRowIDs(rows map[string]importRowID, assetID string) map[string]int64 {
+	out := map[string]int64{}
+	for key, row := range rows {
+		if row.assetID == assetID {
+			out[key] = row.rowID
+		}
+	}
+	return out
+}
+
+func assertAssetRowsUnchanged(t *testing.T, before, after map[string]importRowID, assetID string) {
+	t.Helper()
+	want, got := assetRowIDs(before, assetID), assetRowIDs(after, assetID)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unaffected asset rows changed:\nbefore=%#v\nafter=%#v", want, got)
+	}
+}
+
+func assertSearchResultCount(t *testing.T, ctx context.Context, paths Paths, query string, want int) {
+	t.Helper()
+	result, err := Search(ctx, paths, SearchOptions{Query: query, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Results) != want {
+		t.Fatalf("search %q returned %d results, want %d: %#v", query, len(result.Results), want, result.Results)
+	}
+}
+
 func execTestSQL(t *testing.T, db *sql.DB, query string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(query, args...); err != nil {
@@ -654,6 +907,21 @@ func assertCount(t *testing.T, db *sql.DB, query string, want int, args ...any) 
 	if got != want {
 		t.Fatalf("count %q = %d, want %d", query, got, want)
 	}
+}
+
+func assertObservationFTSWritersMapped(t *testing.T, db *sql.DB) {
+	t.Helper()
+	assertCount(t, db, `
+select count(*)
+from observation_fts f
+where (exists (select 1 from visual_observation v where v.id = f.id)
+       or exists (select 1 from face_observation face where face.id = f.id)
+       or exists (select 1 from model_observation model where model.id = f.id))
+  and not exists (
+    select 1 from observation_fts_rowid mapped
+    where mapped.fts_rowid = f.rowid and mapped.observation_id = f.id
+  )
+`, 0)
 }
 
 func TestFaceQualityTreatsPhotosSentinelAsUnknown(t *testing.T) {
