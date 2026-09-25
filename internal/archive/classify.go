@@ -277,6 +277,10 @@ func claimClassifyInput(ctx context.Context, tx *sql.Tx, owner string, claimedAt
 		retryUnavailable = 1
 	}
 	leaseExpiresAt := claimedAt.Add(classificationLeaseDuration)
+	retryFailed := 0
+	if includeMetadataClassified {
+		retryFailed = 1
+	}
 	var queueID string
 	err := tx.QueryRowContext(ctx, `
 update classification_queue
@@ -286,6 +290,7 @@ where id = (
   from classification_queue q
   join asset a on a.id = q.asset_id
   where (q.state in (`+classifyQueueStates(includeMetadataClassified)+`)
+         or (? <> 0 and q.state = 'content_failed' and julianday(q.updated_at) <= julianday(?))
          or (? <> 0 and q.state = 'content_unavailable' and a.media_type = 'image'))
     and a.deleted_at is null
     and (q.claim_owner = '' or q.claim_expires_at is null
@@ -294,7 +299,7 @@ where id = (
   limit 1
 )
 returning id
-`, owner, leaseExpiresAt.Format(time.RFC3339Nano), retryUnavailable, claimedAt.Format(time.RFC3339Nano)).Scan(&queueID)
+`, owner, leaseExpiresAt.Format(time.RFC3339Nano), retryFailed, claimedAt.Add(-failedContentRetryCooldown).Format(time.RFC3339Nano), retryUnavailable, claimedAt.Format(time.RFC3339Nano)).Scan(&queueID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -447,9 +452,15 @@ func classificationPreviewResource(path string) classifyResource {
 	}
 }
 
+// A failed content classification (an iCloud download that never finishes, or
+// unparseable model output) waits this long before another attempt, so a few
+// stubborn assets are not retried on every pass. A recrawl that changes the
+// asset re-queues it as pending right away.
+const failedContentRetryCooldown = 7 * 24 * time.Hour
+
 func classifyQueueStates(includeMetadataClassified bool) string {
 	if includeMetadataClassified {
-		return "'pending', 'metadata_classified', 'content_failed'"
+		return "'pending', 'metadata_classified'"
 	}
 	return "'pending'"
 }

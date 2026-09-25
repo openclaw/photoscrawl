@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Retry failed content classifications (stalled iCloud downloads, unparseable model output) after a 7-day cooldown instead of on every pass; changed assets are re-queued immediately.
 - Skip unchanged assets during crawl and refresh asset search rows in one set-based pass instead of a full FTS scan per asset.
 - Make `import-apple` incremental: stage Apple signals, apply only additions, changes and removals, and stream decoded search rows.
 - Upgrade archives to schema 6 with indexed observation-FTS row mappings and cleanup indexes, and lease classification work atomically so concurrent classifiers do not duplicate assets or save results after a recrawl changes their input.

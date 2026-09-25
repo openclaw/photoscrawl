@@ -204,7 +204,7 @@ func TestClassifyLocalModelRetriesContentFailure(t *testing.T) {
 	}
 
 	server.Config.Handler = http.HandlerFunc(openAIResponseHandler)
-	retried, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", LocalModelAPI: localModelAPIOpenAI, LocalModelURL: server.URL, Now: fixedClock("2026-08-12T12:15:00Z")})
+	retried, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", LocalModelAPI: localModelAPIOpenAI, LocalModelURL: server.URL, Now: fixedClock("2026-08-19T12:15:00Z")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -803,6 +803,35 @@ func TestClassifyStalledPreviewTimesOutWithoutAbortingRun(t *testing.T) {
 	}
 	if state != "content_failed" || !strings.Contains(reason, "timed out") {
 		t.Fatalf("stalled preview queue row = state %q reason %q, want content_failed with a timeout reason", state, reason)
+	}
+
+	// A failed asset waits out a cooldown instead of being retried on every pass.
+	exports := 0
+	retry := func(at string) ClassifyResult {
+		t.Helper()
+		result, err := Classify(ctx, paths, ClassifyOptions{
+			All:                  true,
+			LocalModel:           "fixture-vision",
+			LocalModelURL:        server.URL,
+			AllowICloudDownloads: true,
+			PreviewTimeout:       20 * time.Millisecond,
+			Now:                  fixedClock(at),
+			previewExporter: func(ctx context.Context, _, _ string, _ int, _ bool) error {
+				exports++
+				<-ctx.Done()
+				return ctx.Err()
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	if result := retry("2026-07-31T12:00:00Z"); result.Processed != 0 || exports != 0 {
+		t.Fatalf("same-day retry processed %d assets with %d downloads, want the failed asset skipped", result.Processed, exports)
+	}
+	if result := retry("2026-08-08T10:05:00Z"); result.Processed != 1 || exports != 1 {
+		t.Fatalf("retry after cooldown processed %d assets with %d downloads, want one retry", result.Processed, exports)
 	}
 }
 
