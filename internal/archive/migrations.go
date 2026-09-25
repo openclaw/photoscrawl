@@ -9,6 +9,8 @@ import (
 
 	"github.com/openclaw/crawlkit/store"
 	"github.com/openclaw/photoscrawl/internal/photos"
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const archiveBusyTimeoutMillis = 120000
@@ -78,6 +80,10 @@ func openArchiveStoreWithValidation(ctx context.Context, path string, validate f
 }
 
 func preflightArchive(ctx context.Context, path string, validate func(*sql.DB) error) error {
+	return preflightArchiveWithMode(ctx, path, validate, false)
+}
+
+func preflightArchiveWithMode(ctx context.Context, path string, validate func(*sql.DB) error, forceSnapshot bool) error {
 	// Reject accidental foreign-file selection without opening it writable.
 	// As with SQLite's pathname API, callers must keep the path stable through open.
 	info, err := os.Stat(path)
@@ -100,16 +106,75 @@ func preflightArchive(ctx context.Context, path string, validate func(*sql.DB) e
 	if linked {
 		return errors.New("cannot write a hardlinked archive: SQLite sidecars belong to a single filename")
 	}
-	private, cleanup, err := photos.CopySQLite(ctx, path, "photoscrawl-preflight-")
+	db, cleanup, snapshot, err := openArchiveInspection(ctx, path, forceSnapshot)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	db, err := store.OpenReadOnly(ctx, private)
+	defer db.Close()
+	if err := inspectArchiveDatabase(ctx, db, validate); err != nil {
+		if !snapshot && archiveReadOnlyNeedsSnapshot(err) {
+			_ = db.Close()
+			cleanup()
+			return preflightArchiveWithMode(ctx, path, validate, true)
+		}
+		return err
+	}
+	after, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	if !os.SameFile(info, after) {
+		return errors.New("archive changed identity during validation")
+	}
+	if !snapshot {
+		if err := inspectArchiveSidecars(path, false); err != nil {
+			return err
+		}
+		journal, err := archiveRollbackJournalPresent(path)
+		if err != nil {
+			return err
+		}
+		if journal {
+			_ = db.Close()
+			cleanup()
+			return preflightArchiveWithMode(ctx, path, validate, true)
+		}
+	}
+	return nil
+}
+
+func openArchiveInspection(ctx context.Context, path string, forceSnapshot bool) (*store.Store, func(), bool, error) {
+	needsSnapshot := forceSnapshot
+	if !needsSnapshot {
+		var err error
+		needsSnapshot, err = archiveRollbackJournalPresent(path)
+		if err != nil {
+			return nil, func() {}, false, err
+		}
+	}
+	if !needsSnapshot {
+		db, err := store.OpenReadOnly(ctx, path)
+		if err == nil {
+			return db, func() {}, false, nil
+		}
+		if !archiveReadOnlyNeedsSnapshot(err) {
+			return nil, func() {}, false, err
+		}
+	}
+	private, cleanup, err := photos.CopySQLite(ctx, path, "photoscrawl-preflight-")
+	if err != nil {
+		return nil, func() {}, false, err
+	}
+	db, err := store.OpenReadOnly(ctx, private)
+	if err != nil {
+		cleanup()
+		return nil, func() {}, false, err
+	}
+	return db, cleanup, true, nil
+}
+
+func inspectArchiveDatabase(ctx context.Context, db *store.Store, validate func(*sql.DB) error) error {
 	current, err := db.SchemaVersion(ctx)
 	if err != nil {
 		return err
@@ -129,18 +194,34 @@ func preflightArchive(ctx context.Context, path string, validate func(*sql.DB) e
 		return errors.New("database is not a photoscrawl archive")
 	}
 	if validate != nil {
-		if err := validate(db.DB()); err != nil {
-			return err
-		}
+		return validate(db.DB())
 	}
-	after, err := os.Stat(path)
+	return nil
+}
+
+func archiveReadOnlyNeedsSnapshot(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	code := sqliteErr.Code()
+	primary := code & 0xff
+	return primary == sqlite3.SQLITE_BUSY ||
+		primary == sqlite3.SQLITE_LOCKED ||
+		code == sqlite3.SQLITE_READONLY_RECOVERY
+}
+
+// CheckIntegrity snapshots the archive consistently and runs SQLite's quick
+// check before applying the same schema and identity checks as writable opens.
+func CheckIntegrity(ctx context.Context, paths Paths) error {
+	path, err := archiveFilename(paths.Database)
 	if err != nil {
 		return err
 	}
-	if !os.SameFile(info, after) {
-		return errors.New("archive changed identity during validation")
+	if _, err := os.Stat(path); err != nil {
+		return err
 	}
-	return nil
+	return preflightArchiveWithMode(ctx, path, nil, true)
 }
 
 func openArchiveReadOnly(ctx context.Context, path string) (*store.Store, error) {

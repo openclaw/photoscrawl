@@ -12,7 +12,7 @@ import (
 	"github.com/openclaw/crawlkit/store"
 )
 
-func TestAppleArchivePreflightRefusesBeforeMutation(t *testing.T) {
+func TestAppleArchivePreflightRefusesBeforeMainDatabaseMutation(t *testing.T) {
 	for _, fixture := range []string{"missing", "zero", "empty-sqlite", "foreign", "foreign-wal", "wrong-library", "legacy-wrong-library", "future", "ambiguous"} {
 		t.Run(fixture, func(t *testing.T) {
 			ctx := context.Background()
@@ -74,8 +74,8 @@ func TestAppleArchivePreflightRefusesBeforeMutation(t *testing.T) {
 				db.Close()
 				t.Fatal("unbound or unsupported archive accepted")
 			}
-			assertWhitespaceFiles(t, path, before)
-			assertPreflightFileIdentities(t, path, identities)
+			assertArchiveMainUnchanged(t, path, before)
+			assertPreflightExistingFileIdentities(t, path, identities)
 			assertPreflightScratchEmpty(t, scratch)
 			if fixture == "missing" {
 				requireArchivePathAbsent(t, filepath.Dir(path))
@@ -84,7 +84,7 @@ func TestAppleArchivePreflightRefusesBeforeMutation(t *testing.T) {
 	}
 }
 
-func TestAppleArchivePreflightUsesCommittedWALBinding(t *testing.T) {
+func TestAppleArchivePreflightReadsLiveWALAndSnapshotsRollbackJournal(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "current", true: "legacy"}[legacy], func(t *testing.T) {
 			ctx := context.Background()
@@ -110,15 +110,18 @@ func TestAppleArchivePreflightUsesCommittedWALBinding(t *testing.T) {
 			}
 			before := pathFixtureFiles(t, path)
 			identities := preflightFileIdentities(t, path)
-			scratch := t.TempDir()
-			t.Setenv("TMPDIR", scratch)
+			blocked := filepath.Join(root, "not-a-directory")
+			if err := os.WriteFile(blocked, []byte("synthetic"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("TMPDIR", blocked)
 			if db, err := openAppleArchive(ctx, path, filepath.Join(root, "Other.photoslibrary")); err == nil {
 				db.Close()
 				t.Fatal("wrong WAL binding accepted")
+			} else if !strings.Contains(err.Error(), "requested library is not in the archive") {
+				t.Fatalf("WAL binding was not inspected live: %v", err)
 			}
-			assertWhitespaceFiles(t, path, before)
 			assertPreflightFileIdentities(t, path, identities)
-			assertPreflightScratchEmpty(t, scratch)
 
 			db, err := openAppleArchive(ctx, path, library)
 			if err != nil {
@@ -131,9 +134,82 @@ func TestAppleArchivePreflightUsesCommittedWALBinding(t *testing.T) {
 			if got, err := libraryIdentity(ctx, db.DB(), library); err != nil || got != "wal-library" {
 				t.Fatalf("binding = %q, %v", got, err)
 			}
-			assertPreflightScratchEmpty(t, scratch)
+			if got := pathFixtureFiles(t, path)[""]; string(got.data) != string(before[""].data) {
+				t.Fatal("live WAL preflight changed the main database")
+			}
 		})
 	}
+
+	t.Run("empty-wal-and-shm", func(t *testing.T) {
+		ctx := context.Background()
+		root := t.TempDir()
+		path, library := filepath.Join(root, "archive.db"), filepath.Join(root, "Library.photoslibrary")
+		writer, err := store.Open(ctx, store.Options{Path: path, Schema: Schema, SchemaVersion: SchemaVersion})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer writer.Close()
+		execTestSQL(t, writer.DB(), `insert into source_library values('wal-library', ?, '', '', '', '{}')`, library)
+		execTestSQL(t, writer.DB(), "pragma wal_checkpoint(TRUNCATE)")
+		if wal, err := os.Stat(path + "-wal"); err != nil || wal.Size() != 0 {
+			t.Fatalf("empty WAL fixture = %v, %v", wal, err)
+		}
+		if shm, err := os.Stat(path + "-shm"); err != nil || shm.Size() == 0 {
+			t.Fatalf("SHM fixture = %v, %v", shm, err)
+		}
+		blocked := filepath.Join(root, "not-a-directory")
+		if err := os.WriteFile(blocked, []byte("synthetic"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TMPDIR", blocked)
+		db, err := openAppleArchive(ctx, path, library)
+		if err != nil {
+			t.Fatalf("empty live WAL required a snapshot: %v", err)
+		}
+		db.Close()
+	})
+
+	t.Run("rollback-journal", func(t *testing.T) {
+		ctx := context.Background()
+		root := t.TempDir()
+		path := filepath.Join(root, "archive.db")
+		archive, err := store.Open(ctx, store.Options{Path: path, Schema: Schema, SchemaVersion: SchemaVersion})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := archive.Close(); err != nil {
+			t.Fatal(err)
+		}
+		writer, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer writer.Close()
+		execTestSQL(t, writer, "pragma journal_mode=DELETE")
+		execTestSQL(t, writer, "create table journal_probe(value text)")
+		tx, err := writer.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx, `insert into journal_probe values('uncommitted')`); err != nil {
+			t.Fatal(err)
+		}
+		if journal, err := os.Stat(path + "-journal"); err != nil || journal.Size() == 0 {
+			t.Fatalf("rollback journal fixture = %v, %v", journal, err)
+		}
+		blocked := filepath.Join(root, "not-a-directory")
+		if err := os.WriteFile(blocked, []byte("synthetic"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TMPDIR", blocked)
+		if db, err := openArchiveStore(ctx, path); err == nil {
+			db.Close()
+			t.Fatal("rollback journal bypassed the snapshot path")
+		} else if !strings.Contains(err.Error(), "not a directory") {
+			t.Fatalf("rollback journal did not use snapshot scratch space: %v", err)
+		}
+	})
 }
 
 func TestAppleArchivePreflightRejectsFilesystemAliases(t *testing.T) {
@@ -183,7 +259,7 @@ func TestAppleArchivePreflightRejectsFilesystemAliases(t *testing.T) {
 	}
 }
 
-func TestArchivePreflightValidationChecksIdentityAndCleanup(t *testing.T) {
+func TestArchivePreflightValidationUsesQuiescentLiveFileAndChecksIdentity(t *testing.T) {
 	for _, replace := range []bool{false, true} {
 		t.Run(map[bool]string{false: "validator-error", true: "replacement"}[replace], func(t *testing.T) {
 			ctx := context.Background()
@@ -200,15 +276,15 @@ func TestArchivePreflightValidationChecksIdentityAndCleanup(t *testing.T) {
 			t.Setenv("TMPDIR", scratch)
 			sentinel := errors.New("synthetic validator refusal")
 			calls := 0
-			db, err := openArchiveStoreWithValidation(ctx, path, func(private *sql.DB) error {
+			db, err := openArchiveStoreWithValidation(ctx, path, func(inspected *sql.DB) error {
 				calls++
-				if _, err := libraryIdentity(ctx, private, library); err != nil {
+				if _, err := libraryIdentity(ctx, inspected, library); err != nil {
 					t.Fatal(err)
 				}
-				assertWhitespaceFiles(t, path, original)
+				assertArchiveMainUnchanged(t, path, original)
 				entries, err := os.ReadDir(scratch)
-				if err != nil || len(entries) != 1 {
-					t.Fatalf("private snapshot directories = %d, %v", len(entries), err)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("quiescent validation scratch entries = %d, %v", len(entries), err)
 				}
 				if !replace {
 					return sentinel
@@ -232,13 +308,13 @@ func TestArchivePreflightValidationChecksIdentityAndCleanup(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), "changed identity") {
 					t.Fatalf("identity refusal = %v", err)
 				}
-				assertWhitespaceFiles(t, path, foreignBefore)
-				assertWhitespaceFiles(t, moved, original)
+				assertArchiveMainUnchanged(t, path, foreignBefore)
+				assertArchiveMainUnchanged(t, moved, original)
 			} else {
 				if !errors.Is(err, sentinel) {
 					t.Fatalf("validation error = %v", err)
 				}
-				assertWhitespaceFiles(t, path, original)
+				assertArchiveMainUnchanged(t, path, original)
 			}
 			assertPreflightScratchEmpty(t, scratch)
 		})
@@ -271,6 +347,26 @@ func assertPreflightFileIdentities(t *testing.T, path string, before map[string]
 		if got := after[suffix]; got == nil || !os.SameFile(want, got) {
 			t.Fatalf("bundle identity changed for %q", suffix)
 		}
+	}
+}
+
+func assertPreflightExistingFileIdentities(t *testing.T, path string, before map[string]os.FileInfo) {
+	t.Helper()
+	after := preflightFileIdentities(t, path)
+	for suffix, want := range before {
+		if got := after[suffix]; got == nil || !os.SameFile(want, got) {
+			t.Fatalf("bundle identity changed for %q", suffix)
+		}
+	}
+}
+
+func assertArchiveMainUnchanged(t *testing.T, path string, before map[string]pathFixtureFile) {
+	t.Helper()
+	after := pathFixtureFiles(t, path)
+	want, exists := before[""]
+	got, remains := after[""]
+	if exists != remains || (exists && (got.mode != want.mode || string(got.data) != string(want.data))) {
+		t.Fatalf("main database changed: before=%v/%d bytes after=%v/%d bytes", want.mode, len(want.data), got.mode, len(got.data))
 	}
 }
 

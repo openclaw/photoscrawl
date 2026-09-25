@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Avoid routine full-archive copies before writable opens: inspect live WAL archives through a read-only connection, retain verified snapshot fallback for rollback journals or recovery and locking errors, and add `status --full-check` for an explicit snapshot-backed integrity check.
+- Build PhotoKit album memberships once per crawl, reuse status coverage totals, and restrict curation asset and signal reads to the requested candidate population.
+- Reuse one verified Photos database snapshot for faces and metadata during each `import-apple` run.
+
 ## 0.4.0 - 2026-09-22
 
 **Highlights:** Find, rank, and curate photos using Apple’s existing signals, with bounded iCloud previews, contact sheets, and advisory sharing checks.

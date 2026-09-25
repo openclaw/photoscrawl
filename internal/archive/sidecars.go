@@ -33,6 +33,19 @@ func inspectArchiveSidecars(path string, missing bool) error {
 	return nil
 }
 
+func archiveRollbackJournalPresent(path string) (bool, error) {
+	base, err := archiveSidecarBase(path, 0)
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Lstat(base + "-journal"); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return false, nil
+}
+
 func archiveSidecarBase(path string, links int) (string, error) {
 	if links > 255 {
 		return "", errors.New("too many symbolic links in archive path")

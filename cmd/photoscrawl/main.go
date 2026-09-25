@@ -198,9 +198,15 @@ func run(ctx context.Context, args []string) error {
 		return output.Write(os.Stdout, format, "init", result)
 	case "status":
 		fs := newCommandFlags("status", &paths)
+		fullCheck := fs.Bool("full-check", false, "snapshot the archive and run SQLite quick_check")
 		format, err := fs.parse(args[1:], false)
 		if err != nil {
 			return err
+		}
+		if *fullCheck {
+			if err := archive.CheckIntegrity(ctx, paths); err != nil {
+				return err
+			}
 		}
 		status, err := archive.Status(ctx, paths)
 		if err != nil {

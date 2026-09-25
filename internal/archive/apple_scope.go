@@ -68,8 +68,8 @@ func libraryComparisonPath(path string) (string, error) {
 }
 
 func openAppleArchive(ctx context.Context, path, libraryPath string) (*store.Store, error) {
-	// Share the schema preflight's private snapshot before any writable open.
-	// The transaction still resolves the binding again before replacement.
+	// Validate the library binding through the schema preflight's read-only
+	// connection. The transaction resolves it again before replacement.
 	return openArchiveStoreWithValidation(ctx, path, func(db *sql.DB) error {
 		_, err := libraryIdentity(ctx, db, libraryPath)
 		return err

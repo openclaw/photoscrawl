@@ -318,8 +318,13 @@ static void pcIndexCollectionMemberships(PHFetchResult<PHAssetCollection *> *col
   }];
 }
 
-static NSDictionary *pcSupplementalAlbumsByAssetID(NSDictionary *folderPaths) {
+static NSDictionary *pcAlbumsByAssetID(NSDictionary *folderPaths) {
   NSMutableDictionary *out = [NSMutableDictionary dictionary];
+  PHFetchResult<PHAssetCollection *> *albumCollections = [PHAssetCollection
+      fetchAssetCollectionsWithType:PHAssetCollectionTypeAlbum
+      subtype:PHAssetCollectionSubtypeAny
+      options:nil];
+  pcIndexCollectionMemberships(albumCollections, folderPaths, out);
   PHFetchResult<PHAssetCollection *> *sharedCollections = [PHAssetCollection
       fetchAssetCollectionsWithType:PHAssetCollectionTypeAlbum
       subtype:PHAssetCollectionSubtypeAlbumCloudShared
@@ -333,14 +338,10 @@ static NSDictionary *pcSupplementalAlbumsByAssetID(NSDictionary *folderPaths) {
   return out;
 }
 
-static NSArray *pcAlbums(PHAsset *asset, NSArray *knownSupplementalAlbums, NSDictionary *folderPaths) {
+static NSArray *pcAlbums(NSArray *knownAlbums) {
   NSMutableArray *out = [NSMutableArray array];
   NSMutableSet *albumIDs = [NSMutableSet set];
-  PHFetchResult<PHAssetCollection *> *collections = [PHAssetCollection fetchAssetCollectionsContainingAsset:asset withType:PHAssetCollectionTypeAlbum options:nil];
-  [collections enumerateObjectsUsingBlock:^(PHAssetCollection *collection, NSUInteger idx, BOOL *stop) {
-    pcAddAlbum(out, albumIDs, pcAlbumDictionary(collection, folderPaths));
-  }];
-  for (NSDictionary *album in knownSupplementalAlbums) {
+  for (NSDictionary *album in knownAlbums) {
     pcAddAlbum(out, albumIDs, album);
   }
   [out sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
@@ -349,7 +350,7 @@ static NSArray *pcAlbums(PHAsset *asset, NSArray *knownSupplementalAlbums, NSDic
   return out;
 }
 
-static NSDictionary *pcAssetDictionary(PHAsset *asset, NSArray *knownSupplementalAlbums, NSDictionary *folderPaths) {
+static NSDictionary *pcAssetDictionary(PHAsset *asset, NSArray *knownAlbums) {
   NSMutableDictionary *entry = [NSMutableDictionary dictionary];
   entry[@"local_identifier"] = pcString(asset.localIdentifier);
   entry[@"media_type"] = pcMediaType(asset.mediaType);
@@ -375,7 +376,7 @@ static NSDictionary *pcAssetDictionary(PHAsset *asset, NSArray *knownSupplementa
     entry[@"location"] = location;
   }
   entry[@"resources"] = pcResources(asset);
-  entry[@"albums"] = pcAlbums(asset, knownSupplementalAlbums, folderPaths);
+  entry[@"albums"] = pcAlbums(knownAlbums);
   entry[@"metadata"] = @{
     @"photokit_local_identifier": pcString(asset.localIdentifier),
     @"source_type": @((long long)asset.sourceType)
@@ -421,11 +422,11 @@ char *photoscrawl_photokit_snapshot(const char *libraryPath, char **errorOut) {
 
       PHFetchResult<PHAsset *> *fetch = [PHAsset fetchAssetsWithOptions:options];
       NSDictionary *folderPaths = pcCollectionFolderPaths();
-      NSDictionary *supplementalAlbumsByAssetID = pcSupplementalAlbumsByAssetID(folderPaths);
+      NSDictionary *albumsByAssetID = pcAlbumsByAssetID(folderPaths);
       NSMutableArray *assets = [NSMutableArray arrayWithCapacity:fetch.count];
       [fetch enumerateObjectsUsingBlock:^(PHAsset *asset, NSUInteger idx, BOOL *stop) {
-        NSArray *supplementalAlbums = supplementalAlbumsByAssetID[pcString(asset.localIdentifier)];
-        [assets addObject:pcAssetDictionary(asset, supplementalAlbums == nil ? @[] : supplementalAlbums, folderPaths)];
+        NSArray *albums = albumsByAssetID[pcString(asset.localIdentifier)];
+        [assets addObject:pcAssetDictionary(asset, albums == nil ? @[] : albums)];
       }];
       [assets sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
         return [pcString(left[@"local_identifier"]) compare:pcString(right[@"local_identifier"])];

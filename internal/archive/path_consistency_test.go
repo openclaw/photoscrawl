@@ -133,8 +133,9 @@ func TestArchiveWhitespaceTargetForeignRefusal(t *testing.T) {
 					t.Error("foreign target accepted")
 				}
 				// Compare while the source connection still owns its committed WAL.
-				after := pathFixtureFiles(t, target)
-				if !reflect.DeepEqual(before, after) {
+				if journal == "WAL" {
+					assertReadonlyWALTarget(t, target, before)
+				} else if after := pathFixtureFiles(t, target); !reflect.DeepEqual(before, after) {
 					for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
 						want, had := before[suffix]
 						got, has := after[suffix]

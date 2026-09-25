@@ -91,18 +91,12 @@ func counts(ctx context.Context, dbPath string) ([]control.Count, string, string
 		return nil, "", "", nil, err
 	}
 	out = append(out, useful...)
-	summary, err := statusSummary(ctx, db.DB())
-	if err != nil {
-		return nil, "", "", nil, err
-	}
+	summary := statusSummary(useful)
 	lastImportAt, err := lastImportAt(ctx, db.DB())
 	if err != nil {
 		return nil, "", "", nil, err
 	}
-	warnings, err := statusWarnings(ctx, db.DB())
-	if err != nil {
-		return nil, "", "", nil, err
-	}
+	warnings := statusWarnings(useful)
 	return out, summary, lastImportAt, warnings, nil
 }
 
@@ -233,32 +227,15 @@ func groupedCounts(ctx context.Context, db *sql.DB, prefix, labelPrefix, query s
 	return out, rows.Err()
 }
 
-func statusSummary(ctx context.Context, db *sql.DB) (string, error) {
-	var assets, located, observations, pending int64
-	if err := db.QueryRowContext(ctx, `select count(*) from asset where deleted_at is null`).Scan(&assets); err != nil {
-		return "", err
-	}
-	if err := db.QueryRowContext(ctx, `select count(distinct location_observation.asset_id) from location_observation join asset on asset.id = location_observation.asset_id where asset.deleted_at is null`).Scan(&located); err != nil {
-		return "", err
-	}
-	if err := db.QueryRowContext(ctx, `select count(distinct asset_id) from (
-  select asset_id from visual_observation
-  union
-  select asset_id from text_observation
-  union
-  select asset_id from face_observation
-  union
-  select asset_id from model_observation
-) where asset_id in (select id from asset where deleted_at is null)`).Scan(&observations); err != nil {
-		return "", err
-	}
-	if err := db.QueryRowContext(ctx, `select count(*) from classification_queue where state = 'pending'`).Scan(&pending); err != nil {
-		return "", err
-	}
+func statusSummary(counts []control.Count) string {
+	assets := statusCount(counts, "asset.active")
+	located := statusCount(counts, "asset.with_location")
+	observations := statusCount(counts, "asset.with_observation")
+	pending := statusCount(counts, "classification_queue.state.pending")
 	if assets == 0 {
-		return "photos.sqlite is initialized but has no active crawled assets", nil
+		return "photos.sqlite is initialized but has no active crawled assets"
 	}
-	return fmt.Sprintf("%d assets; %d with raw GPS; %d with local observations; %d pending classification", assets, located, observations, pending), nil
+	return fmt.Sprintf("%d assets; %d with raw GPS; %d with local observations; %d pending classification", assets, located, observations, pending)
 }
 
 func lastImportAt(ctx context.Context, db *sql.DB) (string, error) {
@@ -272,16 +249,21 @@ func lastImportAt(ctx context.Context, db *sql.DB) (string, error) {
 	return "", nil
 }
 
-func statusWarnings(ctx context.Context, db *sql.DB) ([]string, error) {
-	var pending int64
-	if err := db.QueryRowContext(ctx, `select count(*) from classification_queue where state = 'pending'`).Scan(&pending); err != nil {
-		return nil, err
-	}
+func statusWarnings(counts []control.Count) []string {
 	warnings := []string{}
-	if pending > 0 {
+	if statusCount(counts, "classification_queue.state.pending") > 0 {
 		warnings = append(warnings, "classification queue has pending assets")
 	}
-	return warnings, nil
+	return warnings
+}
+
+func statusCount(counts []control.Count, id string) int64 {
+	for _, count := range counts {
+		if count.ID == id {
+			return count.Value
+		}
+	}
+	return 0
 }
 
 func safeCountID(value string) string {
