@@ -251,9 +251,11 @@ from %s a`,
 }
 
 func writePhotoMetadataImport(ctx context.Context, tx *sql.Tx, input photoMetadataImportInput, assetByUUID appleAssetScope, importedAt time.Time) (ImportPhotoMetadataResult, map[string]bool, error) {
-	if err := clearImportedPhotoMetadata(ctx, tx, assetByUUID.libraryID); err != nil {
+	stage, err := beginAppleStage(ctx, tx, appleRecordMetadata)
+	if err != nil {
 		return ImportPhotoMetadataResult{}, nil, err
 	}
+	defer stage.close()
 	result := ImportPhotoMetadataResult{
 		Source:         photosLibraryDBFaceSource,
 		ModelID:        photosLibraryDBMetadataModelID,
@@ -270,19 +272,19 @@ func writePhotoMetadataImport(ctx context.Context, tx *sql.Tx, input photoMetada
 		}
 		result.AssetsResolved++
 		if len(row.exif) > 0 {
-			if err := insertPhotoMetadataObservation(ctx, tx, assetID, row.assetUUID, "apple_exif", row.exif, exifSummary(row.exif), "ZEXTENDEDATTRIBUTES", importedAt); err != nil {
+			if err := stagePhotoMetadataObservation(ctx, stage, assetID, row.assetUUID, "apple_exif", row.exif, exifSummary(row.exif), "ZEXTENDEDATTRIBUTES", importedAt); err != nil {
 				return ImportPhotoMetadataResult{}, nil, err
 			}
 			result.ExifObservationsInserted++
 		}
 		if len(row.quality) > 0 {
-			if err := insertPhotoMetadataObservation(ctx, tx, assetID, row.assetUUID, "apple_quality_scores", row.quality, "Apple Photos quality scores", "ZCOMPUTEDASSETATTRIBUTES", importedAt); err != nil {
+			if err := stagePhotoMetadataObservation(ctx, stage, assetID, row.assetUUID, "apple_quality_scores", row.quality, "Apple Photos quality scores", "ZCOMPUTEDASSETATTRIBUTES", importedAt); err != nil {
 				return ImportPhotoMetadataResult{}, nil, err
 			}
 			result.QualityObservationsInserted++
 		}
 		if row.hasDuplicate {
-			if err := insertPhotoMetadataObservation(ctx, tx, assetID, row.assetUUID, "apple_duplicate", row.duplicate, fmt.Sprintf("duplicate state %d", row.duplicate["state"]), input.schema["asset_table"], importedAt); err != nil {
+			if err := stagePhotoMetadataObservation(ctx, stage, assetID, row.assetUUID, "apple_duplicate", row.duplicate, fmt.Sprintf("duplicate state %d", row.duplicate["state"]), input.schema["asset_table"], importedAt); err != nil {
 				return ImportPhotoMetadataResult{}, nil, err
 			}
 			result.DuplicateObservationsInserted++
@@ -292,60 +294,57 @@ func writePhotoMetadataImport(ctx context.Context, tx *sql.Tx, input photoMetada
 		if row.hasAdjustments {
 			editText = "edited"
 		}
-		if err := insertPhotoMetadataObservation(ctx, tx, assetID, row.assetUUID, "apple_edit_state", edit, editText, input.schema["asset_table"], importedAt); err != nil {
+		if err := stagePhotoMetadataObservation(ctx, stage, assetID, row.assetUUID, "apple_edit_state", edit, editText, input.schema["asset_table"], importedAt); err != nil {
 			return ImportPhotoMetadataResult{}, nil, err
 		}
 		result.EditObservationsInserted++
 		touched[assetID] = true
 	}
+	if err := stage.apply(ctx, assetByUUID.libraryID); err != nil {
+		return ImportPhotoMetadataResult{}, nil, err
+	}
 	result.AssetsTouched = len(touched)
 	return result, touched, nil
 }
 
-func clearImportedPhotoMetadata(ctx context.Context, tx *sql.Tx, libraryID string) error {
-	if _, err := tx.ExecContext(ctx, `delete from observation_fts where id in (select id from model_observation where source = ? and model_id = ? and asset_id in (select id from asset where source_library_id = ?))`, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID, libraryID); err != nil {
-		return fmt.Errorf("clear Apple photo metadata search rows: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `delete from observation_term where observation_id in (select id from model_observation where source = ? and model_id = ? and asset_id in (select id from asset where source_library_id = ?))`, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID, libraryID); err != nil {
-		return fmt.Errorf("clear Apple photo metadata terms: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `delete from model_observation where source = ? and model_id = ? and asset_id in (select id from asset where source_library_id = ?)`, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID, libraryID); err != nil {
-		return fmt.Errorf("clear Apple photo metadata observations: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `delete from evidence_ref where source = ? and evidence_kind = 'apple_photo_metadata' and asset_id in (select id from asset where source_library_id = ?)`, photosLibraryDBFaceSource, libraryID); err != nil {
-		return fmt.Errorf("clear Apple photo metadata evidence: %w", err)
-	}
-	return nil
-}
-
-func insertPhotoMetadataObservation(ctx context.Context, tx *sql.Tx, assetID, assetUUID, observationType string, value map[string]any, valueText, table string, importedAt time.Time) error {
+func stagePhotoMetadataObservation(ctx context.Context, stage *appleStage, assetID, assetUUID, observationType string, value map[string]any, valueText, table string, importedAt time.Time) error {
 	valueJSON, err := jsonText(value)
 	if err != nil {
 		return err
 	}
 	observationID := stableID("model_observation", assetID, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID, observationType)
 	evidenceID := stableID("evidence", assetID, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID, observationType)
-	evidenceJSON, err := jsonText(map[string]any{
+	evidence := map[string]any{
 		"schema_source": "Photos.sqlite",
 		"table":         table,
 		"asset_uuid":    assetUUID,
 		"values":        value,
-		"imported_at":   importedAt.Format(time.RFC3339Nano),
 		"read_only":     true,
-	})
+	}
+	evidenceStableJSON, err := jsonText(evidence)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `insert into evidence_ref(id, asset_id, evidence_kind, source, pointer, value_json) values (?, ?, 'apple_photo_metadata', ?, ?, ?)`, evidenceID, assetID, photosLibraryDBFaceSource, table+":"+assetUUID, evidenceJSON); err != nil {
-		return fmt.Errorf("write Apple photo metadata evidence: %w", err)
+	evidence["imported_at"] = importedAt.Format(time.RFC3339Nano)
+	evidenceJSON, err := jsonText(evidence)
+	if err != nil {
+		return err
 	}
-	if _, err := tx.ExecContext(ctx, `insert into model_observation(id, asset_id, observation_type, value_text, value_json, confidence, source, model_id, prompt_version, evidence_id) values (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`, observationID, assetID, observationType, valueText, valueJSON, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID, photosLibraryDBMetadataVersion, evidenceID); err != nil {
-		return fmt.Errorf("write Apple photo metadata observation: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `insert into observation_fts(id, asset_id, title, body) values (?, ?, ?, ?)`, observationID, assetID, valueText, metadataSearchText(observationType, valueText, value)); err != nil {
-		return fmt.Errorf("write Apple photo metadata search row: %w", err)
-	}
-	return nil
+	return stage.add(ctx, stagedMetadataRecord{
+		AssetID:            assetID,
+		EvidenceID:         evidenceID,
+		EvidencePointer:    table + ":" + assetUUID,
+		EvidenceJSON:       evidenceJSON,
+		EvidenceStableJSON: evidenceStableJSON,
+		ObservationID:      observationID,
+		ObservationType:    observationType,
+		ValueText:          valueText,
+		ValueJSON:          valueJSON,
+		Confidence:         1,
+		PromptVersion:      photosLibraryDBMetadataVersion,
+		FTSTitle:           valueText,
+		FTSBody:            metadataSearchText(observationType, valueText, value),
+	})
 }
 
 func firstExistingTable(ctx context.Context, db *sql.DB, names ...string) (string, error) {

@@ -29,7 +29,18 @@ type appleSearchCategory struct {
 	SemanticKind string
 }
 
-func loadPSISearchRows(ctx context.Context, db *sql.DB) ([]appleSearchRow, error) {
+func visitAppleSearchRows(ctx context.Context, db *sql.DB, variant string, visit func(appleSearchRow) error) error {
+	switch variant {
+	case "psi":
+		return visitPSISearchRows(ctx, db, visit)
+	case "leo":
+		return visitLeoSearchRows(ctx, db, visit)
+	default:
+		return fmt.Errorf("unsupported Apple search index variant: %s", variant)
+	}
+}
+
+func visitPSISearchRows(ctx context.Context, db *sql.DB, visit func(appleSearchRow) error) error {
 	rows, err := db.QueryContext(ctx, `
 select ga.rowid,
        assets.uuid_0,
@@ -47,10 +58,9 @@ join assets on ga.assetid = assets.rowid
 order by ga.rowid
 `)
 	if err != nil {
-		return nil, fmt.Errorf("load Apple search index rows: %w", err)
+		return fmt.Errorf("load Apple search index rows: %w", err)
 	}
 	defer rows.Close()
-	out := []appleSearchRow{}
 	for rows.Next() {
 		var row appleSearchRow
 		if err := rows.Scan(
@@ -65,16 +75,18 @@ order by ga.rowid
 			&row.lookupIdentifier,
 			&row.score,
 		); err != nil {
-			return nil, err
+			return err
 		}
 		row.assetUUID = psiIntsToUUID(row.uuid0, row.uuid1)
 		row.searchVariant = "psi"
 		row.contentString = stripAppleSearchString(row.contentString)
 		row.normalizedString = stripAppleSearchString(row.normalizedString)
 		row.lookupIdentifier = stripAppleSearchString(row.lookupIdentifier)
-		out = append(out, row)
+		if err := visit(row); err != nil {
+			return err
+		}
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
 type leoLexeme struct {
@@ -82,14 +94,14 @@ type leoLexeme struct {
 	content  string
 }
 
-func loadLeoSearchRows(ctx context.Context, db *sql.DB) ([]appleSearchRow, error) {
+func visitLeoSearchRows(ctx context.Context, db *sql.DB, visit func(appleSearchRow) error) error {
 	lexemeRows, err := db.QueryContext(ctx, `
 select lexeme_id, type, category, coalesce(content, '')
 from lexicon
 order by lexeme_id
 `)
 	if err != nil {
-		return nil, fmt.Errorf("load Apple leo lexicon: %w", err)
+		return fmt.Errorf("load Apple leo lexicon: %w", err)
 	}
 	lexemes := map[uint32]leoLexeme{}
 	for lexemeRows.Next() {
@@ -98,7 +110,7 @@ order by lexeme_id
 		var content string
 		if err := lexemeRows.Scan(&id, &lexemeType, &category, &content); err != nil {
 			lexemeRows.Close()
-			return nil, err
+			return err
 		}
 		mappedCategory, ok := leoCategoryToPhotos8(category)
 		content = stripAppleSearchString(content)
@@ -107,10 +119,10 @@ order by lexeme_id
 		}
 	}
 	if err := lexemeRows.Close(); err != nil {
-		return nil, err
+		return err
 	}
 	if err := lexemeRows.Err(); err != nil {
-		return nil, err
+		return err
 	}
 
 	itemRows, err := db.QueryContext(ctx, `
@@ -120,17 +132,16 @@ where type = 1
 order by rowid
 `)
 	if err != nil {
-		return nil, fmt.Errorf("load Apple leo items: %w", err)
+		return fmt.Errorf("load Apple leo items: %w", err)
 	}
 	defer itemRows.Close()
-	out := []appleSearchRow{}
 	var observationRowID int64
 	for itemRows.Next() {
 		var itemRowID int64
 		var identifier string
 		var lexemeIDs []byte
 		if err := itemRows.Scan(&itemRowID, &identifier, &lexemeIDs); err != nil {
-			return nil, err
+			return err
 		}
 		assetUUID := strings.ToUpper(stripAppleSearchString(identifier))
 		if assetUUID == "" {
@@ -142,7 +153,7 @@ order by rowid
 				continue
 			}
 			observationRowID++
-			out = append(out, appleSearchRow{
+			if err := visit(appleSearchRow{
 				searchVariant:    "leo",
 				gaRowID:          observationRowID,
 				assetUUID:        assetUUID,
@@ -150,10 +161,12 @@ order by rowid
 				category:         lexeme.category,
 				contentString:    lexeme.content,
 				normalizedString: strings.ToLower(lexeme.content),
-			})
+			}); err != nil {
+				return err
+			}
 		}
 	}
-	return out, itemRows.Err()
+	return itemRows.Err()
 }
 
 func decodeLeoLexemeIDs(data []byte) []uint32 {

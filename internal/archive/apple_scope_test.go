@@ -71,6 +71,14 @@ func TestAppleImportReplacementIsLibraryScoped(t *testing.T) {
 	assertAppleRows(t, db.DB(), bID, beforeB)
 
 	// A late metadata failure must roll back earlier face/search replacement.
+	changed, err := sql.Open("sqlite", filepath.Join(libraries[1], "database", "Photos.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	execTestSQL(t, changed, `update ZASSET set ZOVERALLAESTHETICSCORE = 0.5 where Z_PK = 1`)
+	if err := changed.Close(); err != nil {
+		t.Fatal(err)
+	}
 	execTestSQL(t, db.DB(), `create trigger fail_metadata before insert on model_observation begin select raise(abort, 'synthetic metadata failure'); end`)
 	if _, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraries[1]}); err == nil {
 		t.Fatal("injected late failure accepted")

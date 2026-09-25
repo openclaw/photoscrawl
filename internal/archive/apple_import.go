@@ -33,7 +33,7 @@ func ImportApple(ctx context.Context, paths Paths, opts ImportAppleOptions) (Imp
 	if err != nil {
 		return ImportAppleResult{}, err
 	}
-	facesInput, err := preflightFacesImport(ctx, libraryPath)
+	facesInput, metadataInput, err := preflightPhotosImports(ctx, libraryPath)
 	if err != nil {
 		return ImportAppleResult{}, err
 	}
@@ -41,10 +41,7 @@ func ImportApple(ctx context.Context, paths Paths, opts ImportAppleOptions) (Imp
 	if err != nil {
 		return ImportAppleResult{}, err
 	}
-	metadataInput, err := preflightPhotoMetadataImport(ctx, libraryPath)
-	if err != nil {
-		return ImportAppleResult{}, err
-	}
+	defer searchInput.cleanup()
 	archiveDB, err := openAppleArchive(ctx, paths.Database, libraryPath)
 	if err != nil {
 		return ImportAppleResult{}, err

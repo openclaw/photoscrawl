@@ -39,10 +39,11 @@ type ImportSearchIndexResult struct {
 }
 
 type searchImportInput struct {
-	variant string
-	relPath string
-	schema  map[string]string
-	rows    []appleSearchRow
+	variant      string
+	relPath      string
+	schema       map[string]string
+	snapshotPath string
+	cleanup      func()
 }
 
 type ImportSearchIndexOptions struct {
@@ -58,6 +59,7 @@ func ImportSearchIndex(ctx context.Context, paths Paths, opts ImportSearchIndexO
 	if err != nil {
 		return ImportSearchIndexResult{}, err
 	}
+	defer input.cleanup()
 	archiveDB, err := openAppleArchive(ctx, paths.Database, libraryPath)
 	if err != nil {
 		return ImportSearchIndexResult{}, err
@@ -96,37 +98,41 @@ func preflightSearchImport(ctx context.Context, libraryPath string) (searchImpor
 	if err != nil {
 		return searchImportInput{}, err
 	}
-	defer cleanup()
 	searchDB, err := store.OpenReadOnly(ctx, snapshotPath)
 	if err != nil {
+		cleanup()
 		return searchImportInput{}, fmt.Errorf("open copied Apple search index: %w", err)
 	}
-	defer searchDB.Close()
-	input := searchImportInput{variant: variant, relPath: relPath}
+	input := searchImportInput{variant: variant, relPath: relPath, snapshotPath: snapshotPath, cleanup: cleanup}
 	switch variant {
 	case "psi":
 		input.schema, err = validatePSISearchSchema(ctx, searchDB.DB())
-		if err == nil {
-			input.rows, err = loadPSISearchRows(ctx, searchDB.DB())
-		}
 	case "leo":
 		input.schema, err = validateLeoSearchSchema(ctx, searchDB.DB())
-		if err == nil {
-			input.rows, err = loadLeoSearchRows(ctx, searchDB.DB())
-		}
 	default:
 		err = fmt.Errorf("unsupported Apple search index variant: %s", variant)
 	}
+	if closeErr := searchDB.Close(); err == nil {
+		err = closeErr
+	}
 	if err != nil {
+		cleanup()
 		return searchImportInput{}, err
 	}
 	return input, nil
 }
 
 func writeSearchImport(ctx context.Context, tx *sql.Tx, input searchImportInput, assetByUUID appleAssetScope, peopleByUUID map[string]photosPerson, importedAt time.Time) (ImportSearchIndexResult, map[string]bool, error) {
-	if err := clearImportedSearchIndex(ctx, tx, assetByUUID.libraryID); err != nil {
+	stage, err := beginAppleStage(ctx, tx, appleRecordSearch)
+	if err != nil {
 		return ImportSearchIndexResult{}, nil, err
 	}
+	defer stage.close()
+	searchDB, err := store.OpenReadOnly(ctx, input.snapshotPath)
+	if err != nil {
+		return ImportSearchIndexResult{}, nil, fmt.Errorf("open copied Apple search index: %w", err)
+	}
+	defer searchDB.Close()
 	result := ImportSearchIndexResult{
 		Source:         photosSearchIndexSource,
 		Variant:        input.variant,
@@ -136,7 +142,7 @@ func writeSearchImport(ctx context.Context, tx *sql.Tx, input searchImportInput,
 	}
 	touched := map[string]bool{}
 	unknownCategories := map[int]bool{}
-	for _, row := range input.rows {
+	err = visitAppleSearchRows(ctx, searchDB.DB(), input.variant, func(row appleSearchRow) error {
 		result.GroupsRead++
 		category := appleSearchCategoryForID(row.category)
 		result.CategoriesSeen[fmt.Sprint(row.category)]++
@@ -149,7 +155,7 @@ func writeSearchImport(ctx context.Context, tx *sql.Tx, input searchImportInput,
 		assetID, ok := assetByUUID.byUUID[row.assetUUID]
 		if !ok {
 			result.GroupsUnresolved++
-			continue
+			return nil
 		}
 		person, hasPerson := peopleByUUID[strings.ToUpper(row.lookupIdentifier)]
 		if category.Name == "PERSON" {
@@ -159,8 +165,12 @@ func writeSearchImport(ctx context.Context, tx *sql.Tx, input searchImportInput,
 				result.PersonLookupIdentifiersUnresolved++
 			}
 		}
-		if err := insertImportedSearchObservation(ctx, tx, assetID, row, category, person, hasPerson, importedAt); err != nil {
-			return ImportSearchIndexResult{}, nil, err
+		record, err := importedSearchRecord(assetID, row, category, person, hasPerson, importedAt)
+		if err != nil {
+			return err
+		}
+		if err := stage.add(ctx, record); err != nil {
+			return err
 		}
 		result.GroupsResolved++
 		result.VisualObservationsInserted++
@@ -168,6 +178,13 @@ func writeSearchImport(ctx context.Context, tx *sql.Tx, input searchImportInput,
 			result.PersonFaceObservationsInserted++
 		}
 		touched[assetID] = true
+		return nil
+	})
+	if err != nil {
+		return ImportSearchIndexResult{}, nil, err
+	}
+	if err := stage.apply(ctx, assetByUUID.libraryID); err != nil {
+		return ImportSearchIndexResult{}, nil, err
 	}
 	result.AssetsTouched = len(touched)
 	for id := range unknownCategories {
@@ -199,30 +216,7 @@ func resolveAppleSearchDB(libraryPath string) (string, string, string, error) {
 	return "", "", "", fmt.Errorf("find Apple Photos search index: neither %s nor %s exists with content", filepath.Join(searchDir, "psi.sqlite"), filepath.Join(searchDir, "leo.sqlite"))
 }
 
-func clearImportedSearchIndex(ctx context.Context, tx *sql.Tx, libraryID string) error {
-	if _, err := tx.ExecContext(ctx, `
-delete from observation_fts
-where id in (
-  select id from visual_observation where source = ? and asset_id in (select id from asset where source_library_id = ?)
-  union
-  select id from face_observation where source = ? and asset_id in (select id from asset where source_library_id = ?)
-)
-`, photosSearchIndexSource, libraryID, photosSearchIndexSource, libraryID); err != nil {
-		return fmt.Errorf("clear Apple search index fts: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `delete from visual_observation where source = ? and asset_id in (select id from asset where source_library_id = ?)`, photosSearchIndexSource, libraryID); err != nil {
-		return fmt.Errorf("clear Apple search index visual observations: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `delete from face_observation where source = ? and asset_id in (select id from asset where source_library_id = ?)`, photosSearchIndexSource, libraryID); err != nil {
-		return fmt.Errorf("clear Apple search index person observations: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `delete from evidence_ref where source = ? and evidence_kind = ? and asset_id in (select id from asset where source_library_id = ?)`, photosSearchIndexSource, "apple_search_index", libraryID); err != nil {
-		return fmt.Errorf("clear Apple search index evidence: %w", err)
-	}
-	return nil
-}
-
-func insertImportedSearchObservation(ctx context.Context, tx *sql.Tx, assetID string, row appleSearchRow, category appleSearchCategory, person photosPerson, hasPerson bool, importedAt time.Time) error {
+func importedSearchRecord(assetID string, row appleSearchRow, category appleSearchCategory, person photosPerson, hasPerson bool, importedAt time.Time) (stagedSearchRecord, error) {
 	label := row.contentString
 	if strings.TrimSpace(label) == "" {
 		label = row.normalizedString
@@ -243,7 +237,7 @@ func insertImportedSearchObservation(ctx context.Context, tx *sql.Tx, assetID st
 	}
 	searchDatabase := "database/search/" + searchVariant + ".sqlite"
 	evidenceID := stableID("evidence", assetID, photosSearchIndexSource, fmt.Sprint(row.gaRowID), fmt.Sprint(row.groupID))
-	evidenceJSON, err := jsonText(map[string]any{
+	evidence := map[string]any{
 		"schema_source":              searchDatabase,
 		"table":                      map[string]string{"psi": "ga", "leo": "items"}[searchVariant],
 		"ga_rowid":                   row.gaRowID,
@@ -262,51 +256,33 @@ func insertImportedSearchObservation(ctx context.Context, tx *sql.Tx, assetID st
 		"person_lookup_joined":       hasPerson,
 		"person_lookup_display_name": person.displayName,
 		"person_lookup_full_name":    person.fullName,
-		"imported_at":                importedAt.Format(time.RFC3339Nano),
 		"read_only":                  true,
-	})
-	if err != nil {
-		return err
 	}
-	if _, err := tx.ExecContext(ctx, `
-insert into evidence_ref(id, asset_id, evidence_kind, source, pointer, value_json)
-values (?, ?, ?, ?, ?, ?)
-`, evidenceID, assetID, "apple_search_index", photosSearchIndexSource, fmt.Sprintf("%s:%d:group:%d:category:%d", searchDatabase, row.gaRowID, row.groupID, row.category), evidenceJSON); err != nil {
-		return fmt.Errorf("write Apple search index evidence: %w", err)
+	evidenceStableJSON, err := jsonText(evidence)
+	if err != nil {
+		return stagedSearchRecord{}, err
+	}
+	evidence["imported_at"] = importedAt.Format(time.RFC3339Nano)
+	evidenceJSON, err := jsonText(evidence)
+	if err != nil {
+		return stagedSearchRecord{}, err
 	}
 	observationID := stableID("visual_observation", assetID, photosSearchIndexSource, fmt.Sprint(row.gaRowID), fmt.Sprint(row.groupID), label)
-	if _, err := tx.ExecContext(ctx, `
-insert into visual_observation(id, asset_id, observation_type, label, confidence, bounding_box_json, source, model_id, evidence_id)
-values (?, ?, ?, ?, ?, '{}', ?, ?, ?)
-`, observationID, assetID, category.SemanticKind, label, confidence, photosSearchIndexSource, photosSearchIndexModelID, evidenceID); err != nil {
-		return fmt.Errorf("write Apple search index visual observation: %w", err)
-	}
 	body := strings.Join(nonEmpty(category.SemanticKind, category.Name, label, row.normalizedString, row.lookupIdentifier, photosSearchIndexSource), " ")
-	if _, err := tx.ExecContext(ctx, `
-insert into observation_fts(id, asset_id, title, body)
-values (?, ?, ?, ?)
-`, observationID, assetID, label, body); err != nil {
-		return fmt.Errorf("write Apple search index fts: %w", err)
-	}
+	record := stagedSearchRecord{AssetID: assetID, EvidenceID: evidenceID, EvidencePointer: fmt.Sprintf("%s:%d:group:%d:category:%d", searchDatabase, row.gaRowID, row.groupID, row.category), EvidenceJSON: evidenceJSON, EvidenceStableJSON: evidenceStableJSON, VisualID: observationID, ObservationType: category.SemanticKind, Label: label, Confidence: confidence, VisualFTSTitle: label, VisualFTSBody: body}
 	if category.Name != "PERSON" {
-		return nil
+		return record, nil
 	}
 	faceLocalID := "psi:person:" + row.lookupIdentifier
 	if strings.TrimSpace(row.lookupIdentifier) == "" {
 		faceLocalID = fmt.Sprintf("psi:person:group:%d", row.groupID)
 	}
 	faceObservationID := stableID("face_observation", assetID, photosSearchIndexSource, faceLocalID, label, fmt.Sprint(row.gaRowID))
-	if _, err := tx.ExecContext(ctx, `
-insert into face_observation(id, asset_id, face_local_id, person_label, confidence, bounding_box_json, source, evidence_id)
-values (?, ?, ?, ?, ?, '{}', ?, ?)
-`, faceObservationID, assetID, faceLocalID, label, confidence, photosSearchIndexSource, evidenceID); err != nil {
-		return fmt.Errorf("write Apple search index person observation: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-insert into observation_fts(id, asset_id, title, body)
-values (?, ?, ?, ?)
-`, faceObservationID, assetID, label, strings.Join(nonEmpty("person", "face", "apple_search_index", label, row.lookupIdentifier), " ")); err != nil {
-		return fmt.Errorf("write Apple search index person fts: %w", err)
-	}
-	return nil
+	record.FaceID = faceObservationID
+	record.FaceLocalID = faceLocalID
+	record.FaceLabel = label
+	record.FaceConfidence = &confidence
+	record.FaceFTSTitle = label
+	record.FaceFTSBody = strings.Join(nonEmpty("person", "face", "apple_search_index", label, row.lookupIdentifier), " ")
+	return record, nil
 }
