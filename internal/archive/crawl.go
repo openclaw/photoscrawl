@@ -305,12 +305,12 @@ func (c *crawlImporter) upsertAsset(ctx context.Context, tx *sql.Tx, sourceID, s
 		}
 	}
 	if deleted {
-		if err := c.tombstoneAssetSubordinates(ctx, tx, assetID, asset); err != nil {
+		if err := c.tombstoneAssetSubordinates(ctx, tx, assetID, fingerprint, asset); err != nil {
 			return err
 		}
 	} else {
 		if needsClassification {
-			if err := c.upsertClassifyQueue(ctx, tx, sourceID, assetID); err != nil {
+			if err := c.upsertClassifyQueue(ctx, tx, sourceID, assetID, fingerprint); err != nil {
 				return err
 			}
 		}
@@ -496,7 +496,7 @@ order by folder_path, album_title, album_kind, id
 	return nil
 }
 
-func (c *crawlImporter) tombstoneAssetSubordinates(ctx context.Context, tx *sql.Tx, assetID string, asset photos.Asset) error {
+func (c *crawlImporter) tombstoneAssetSubordinates(ctx context.Context, tx *sql.Tx, assetID, fingerprint string, asset photos.Asset) error {
 	if _, err := tx.ExecContext(ctx, `
 update asset_resource
 set deleted_at = coalesce(deleted_at, ?),
@@ -507,7 +507,7 @@ where asset_id = ?
 		return fmt.Errorf("tombstone asset resources: %w", err)
 	}
 	queueID := stableID("classification_queue", assetID)
-	if _, err := c.stmts.queue.ExecContext(ctx, queueID, assetID, stableID("source_library", c.libraryPath), "deleted", "parent_asset_deleted", 0, c.completedAt.Format(time.RFC3339Nano)); err != nil {
+	if _, err := c.stmts.queue.ExecContext(ctx, queueID, assetID, stableID("source_library", c.libraryPath), "deleted", "parent_asset_deleted", 0, c.completedAt.Format(time.RFC3339Nano), fingerprint); err != nil {
 		return fmt.Errorf("retire classification queue: %w", err)
 	}
 	return nil
@@ -587,7 +587,7 @@ func (c *crawlImporter) upsertSeenAsset(ctx context.Context, tx *sql.Tx, sourceI
 	return nil
 }
 
-func (c *crawlImporter) upsertClassifyQueue(ctx context.Context, tx *sql.Tx, sourceID, assetID string) error {
+func (c *crawlImporter) upsertClassifyQueue(ctx context.Context, tx *sql.Tx, sourceID, assetID, fingerprint string) error {
 	hasLocalContent := false
 	needsDownload := false
 	rows, err := tx.QueryContext(ctx, `
@@ -620,7 +620,7 @@ where asset_id = ? and deleted_at is null
 	}
 	needsDownload = needsDownload && !hasLocalContent
 	queueID := stableID("classification_queue", assetID)
-	if _, err := c.stmts.queue.ExecContext(ctx, queueID, assetID, sourceID, "pending", "metadata_ingested", boolInt(needsDownload), c.completedAt.Format(time.RFC3339Nano)); err != nil {
+	if _, err := c.stmts.queue.ExecContext(ctx, queueID, assetID, sourceID, "pending", "metadata_ingested", boolInt(needsDownload), c.completedAt.Format(time.RFC3339Nano), fingerprint); err != nil {
 		return fmt.Errorf("upsert classification queue: %w", err)
 	}
 	c.result.QueuedForClassify++

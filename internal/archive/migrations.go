@@ -306,6 +306,9 @@ func migrateArchiveSchema(ctx context.Context, db *store.Store) error {
 			{"face_observation", "blur_score", "real"},
 			{"face_observation", "eyes_closed", "integer"},
 			{"face_observation", "smile", "integer"},
+			{"classification_queue", "input_fingerprint", "text not null default ''"},
+			{"classification_queue", "claim_owner", "text not null default ''"},
+			{"classification_queue", "claim_expires_at", "text"},
 		}
 		for _, column := range columns {
 			if err := ensureArchiveColumn(ctx, tx, column.table, column.name, column.definition); err != nil {
@@ -316,6 +319,10 @@ func migrateArchiveSchema(ctx context.Context, db *store.Store) error {
 			`create index if not exists asset_deleted_idx on asset(deleted_at)`,
 			`create index if not exists resource_deleted_idx on asset_resource(deleted_at)`,
 			`create index if not exists resource_source_identifier_idx on asset_resource(asset_id, source_identifier)`,
+			`create index if not exists asset_source_library_idx on asset(source_library_id, id)`,
+			`create index if not exists evidence_ref_asset_kind_source_idx on evidence_ref(asset_id, evidence_kind, source)`,
+			`create index if not exists observation_term_observation_idx on observation_term(observation_id)`,
+			`create index if not exists observation_fts_observation_idx on observation_fts_rowid(observation_id)`,
 			// Label lookups for similar; without it each shared label scans
 			// every visual observation.
 			`create index if not exists visual_type_label_idx on visual_observation(observation_type, label collate nocase)`,
@@ -323,6 +330,24 @@ func migrateArchiveSchema(ctx context.Context, db *store.Store) error {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return fmt.Errorf("create archive index: %w", err)
 			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+insert or ignore into observation_fts_rowid(fts_rowid, observation_id)
+select rowid, id from observation_fts
+`); err != nil {
+			return fmt.Errorf("map existing observation FTS rows: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+update classification_queue
+set input_fingerprint = coalesce((
+  select seen.source_fingerprint
+  from crawl_seen_asset seen
+  where seen.source_library_id = classification_queue.source_library_id
+    and seen.asset_id = classification_queue.asset_id
+), '')
+where input_fingerprint = ''
+`); err != nil {
+			return fmt.Errorf("backfill classification input fingerprints: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `
 update asset

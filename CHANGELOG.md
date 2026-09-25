@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Upgrade archives to schema 6 with indexed observation-FTS row mappings and cleanup indexes, and lease classification work atomically so concurrent classifiers do not duplicate assets or save results after a recrawl changes their input.
 - Avoid routine full-archive copies before writable opens: inspect live WAL archives through a read-only connection, retain verified snapshot fallback for rollback journals or recovery and locking errors, and add `status --full-check` for an explicit snapshot-backed integrity check.
 - Build PhotoKit album memberships once per crawl, reuse status coverage totals, and restrict curation asset and signal reads to the requested candidate population.
 - Reuse one verified Photos database snapshot for faces and metadata during each `import-apple` run.

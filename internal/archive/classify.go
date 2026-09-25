@@ -2,7 +2,9 @@ package archive
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -19,7 +21,10 @@ const (
 	metadataClassifierInputVersion = "asset-resource-album.v1"
 )
 
-const defaultPreviewTimeout = 2 * time.Minute
+const (
+	defaultPreviewTimeout       = 2 * time.Minute
+	classificationLeaseDuration = 15 * time.Minute
+)
 
 type ClassifyOptions struct {
 	All                  bool
@@ -62,22 +67,24 @@ type ClassifyResult struct {
 }
 
 type classifyInput struct {
-	QueueID         string
-	AssetID         string
-	LocalIdentifier string
-	SourceLibraryID string
-	NeedsDownload   bool
-	MediaType       string
-	MediaSubtypes   string
-	CreationDate    string
-	Width           int64
-	Height          int64
-	Favorite        bool
-	Hidden          bool
-	BurstIdentifier string
-	MetadataJSON    string
-	Resources       []classifyResource
-	Albums          []classifyAlbum
+	QueueID          string
+	AssetID          string
+	InputFingerprint string
+	ClaimOwner       string
+	LocalIdentifier  string
+	SourceLibraryID  string
+	NeedsDownload    bool
+	MediaType        string
+	MediaSubtypes    string
+	CreationDate     string
+	Width            int64
+	Height           int64
+	Favorite         bool
+	Hidden           bool
+	BurstIdentifier  string
+	MetadataJSON     string
+	Resources        []classifyResource
+	Albums           []classifyAlbum
 }
 
 type classifyResource struct {
@@ -122,6 +129,11 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 		return ClassifyResult{}, err
 	}
 	defer db.Close()
+	claimOwner, err := newClassificationClaimOwner()
+	if err != nil {
+		return ClassifyResult{}, err
+	}
+	defer releaseClassificationClaims(db.DB(), claimOwner)
 
 	result := ClassifyResult{
 		Database:               paths.Database,
@@ -149,23 +161,28 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 		result.ModelRunID = stableID("model_run", localModelClassifierSource, localModel, localModelPromptVersion, now().UTC().Format(time.RFC3339Nano))
 	}
 
-	var inputs []classifyInput
-	err = db.WithTx(ctx, func(tx *sql.Tx) error {
-		var err error
-		inputs, err = loadClassifyInputs(ctx, tx, limit, classifier != nil, classifier != nil && opts.AllowICloudDownloads)
-		return err
-	})
-	if err != nil {
-		return ClassifyResult{}, err
-	}
 	responseEndpoints := map[string]struct{}{}
-	for _, input := range inputs {
+	claimedInputs := 0
+	for limit == 0 || claimedInputs < limit {
+		var input *classifyInput
+		err = db.WithTx(ctx, func(tx *sql.Tx) error {
+			var err error
+			input, err = claimClassifyInput(ctx, tx, claimOwner, now().UTC(), classifier != nil, classifier != nil && opts.AllowICloudDownloads)
+			return err
+		})
+		if err != nil {
+			return ClassifyResult{}, err
+		}
+		if input == nil {
+			break
+		}
+		claimedInputs++
 		var contentResult *localModelResult
 		var contentErr error
 		imagePath, hasImage := input.contentImagePath()
 		temporaryPreview := ""
 		if classifier != nil && !hasImage && opts.AllowICloudDownloads && input.MediaType == "image" {
-			previewPath, err := prepareClassificationPreview(ctx, paths, &input, opts)
+			previewPath, err := prepareClassificationPreview(ctx, paths, input, opts)
 			if err != nil {
 				contentErr = err
 				result.ICloudPreviewDownloadFailures++
@@ -190,8 +207,12 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 		}
 
 		err := db.WithTx(ctx, func(tx *sql.Tx) error {
-			observations := classifyFromMetadata(input)
-			written, err := writeMetadataClassification(ctx, tx, input, observations, now().UTC())
+			current, err := lockCurrentClassificationClaim(ctx, tx, *input, now().UTC())
+			if err != nil || !current {
+				return err
+			}
+			observations := classifyFromMetadata(*input)
+			written, err := writeMetadataClassification(ctx, tx, *input, observations, now().UTC())
 			if err != nil {
 				return err
 			}
@@ -219,7 +240,7 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 				}
 				return nil
 			}
-			contentWritten, err := writeLocalModelClassification(ctx, tx, input, *classifier, *contentResult, now().UTC())
+			contentWritten, err := writeLocalModelClassification(ctx, tx, *input, *classifier, *contentResult, now().UTC())
 			if err != nil {
 				return err
 			}
@@ -241,7 +262,7 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 	if classifier != nil {
 		result.LocalModelResponseEndpoints = sortedEndpointSet(responseEndpoints)
 		err := db.WithTx(ctx, func(tx *sql.Tx) error {
-			return writeModelRun(ctx, tx, result.ModelRunID, *classifier, responseEndpoints, len(inputs), result.LocalModelHTTPRequestAttempts, result.LocalModelHTTPResponses, result.ContentClassified, result.ContentClassificationFailures, now().UTC())
+			return writeModelRun(ctx, tx, result.ModelRunID, *classifier, responseEndpoints, claimedInputs, result.LocalModelHTTPRequestAttempts, result.LocalModelHTTPResponses, result.ContentClassified, result.ContentClassificationFailures, now().UTC())
 		})
 		if err != nil {
 			return ClassifyResult{}, err
@@ -250,69 +271,118 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 	return result, nil
 }
 
-func loadClassifyInputs(ctx context.Context, tx *sql.Tx, limit int, includeMetadataClassified, retryUnavailableImages bool) ([]classifyInput, error) {
-	query := `
-select q.id, q.asset_id, a.local_identifier, q.source_library_id, q.needs_download,
-       a.media_type, a.media_subtypes, a.creation_date, a.width, a.height,
-       a.favorite, a.hidden, a.burst_identifier, a.metadata_json
-from classification_queue q
-join asset a on a.id = q.asset_id
-where (q.state in (` + classifyQueueStates(includeMetadataClassified) + `)
-       or (? <> 0 and q.state = 'content_unavailable' and a.media_type = 'image'))
-  and a.deleted_at is null
-order by case q.state when 'pending' then 0 else 1 end, a.creation_date desc, q.id
-`
+func claimClassifyInput(ctx context.Context, tx *sql.Tx, owner string, claimedAt time.Time, includeMetadataClassified, retryUnavailableImages bool) (*classifyInput, error) {
 	retryUnavailable := 0
 	if retryUnavailableImages {
 		retryUnavailable = 1
 	}
-	args := []any{retryUnavailable}
-	if limit > 0 {
-		query += "limit ?"
-		args = append(args, limit)
+	leaseExpiresAt := claimedAt.Add(classificationLeaseDuration)
+	var queueID string
+	err := tx.QueryRowContext(ctx, `
+update classification_queue
+set claim_owner = ?, claim_expires_at = ?
+where id = (
+  select q.id
+  from classification_queue q
+  join asset a on a.id = q.asset_id
+  where (q.state in (`+classifyQueueStates(includeMetadataClassified)+`)
+         or (? <> 0 and q.state = 'content_unavailable' and a.media_type = 'image'))
+    and a.deleted_at is null
+    and (q.claim_owner = '' or q.claim_expires_at is null
+         or julianday(q.claim_expires_at) <= julianday(?))
+  order by case q.state when 'pending' then 0 else 1 end, a.creation_date desc, q.id
+  limit 1
+)
+returning id
+`, owner, leaseExpiresAt.Format(time.RFC3339Nano), retryUnavailable, claimedAt.Format(time.RFC3339Nano)).Scan(&queueID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
 	}
-	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("load classification queue: %w", err)
+		return nil, fmt.Errorf("claim classification queue: %w", err)
 	}
-	defer rows.Close()
+	return loadClaimedClassifyInput(ctx, tx, queueID, owner)
+}
 
-	inputs := []classifyInput{}
-	for rows.Next() {
-		var input classifyInput
-		var needsDownload, favorite, hidden int
-		if err := rows.Scan(
-			&input.QueueID,
-			&input.AssetID,
-			&input.LocalIdentifier,
-			&input.SourceLibraryID,
-			&needsDownload,
-			&input.MediaType,
-			&input.MediaSubtypes,
-			&input.CreationDate,
-			&input.Width,
-			&input.Height,
-			&favorite,
-			&hidden,
-			&input.BurstIdentifier,
-			&input.MetadataJSON,
-		); err != nil {
-			return nil, err
-		}
-		input.NeedsDownload = needsDownload != 0
-		input.Favorite = favorite != 0
-		input.Hidden = hidden != 0
-		input.Resources, err = loadClassifyResources(ctx, tx, input.AssetID)
-		if err != nil {
-			return nil, err
-		}
-		input.Albums, err = loadClassifyAlbums(ctx, tx, input.AssetID)
-		if err != nil {
-			return nil, err
-		}
-		inputs = append(inputs, input)
+func loadClaimedClassifyInput(ctx context.Context, tx *sql.Tx, queueID, owner string) (*classifyInput, error) {
+	var input classifyInput
+	var needsDownload, favorite, hidden int
+	err := tx.QueryRowContext(ctx, `
+select q.id, q.asset_id, q.input_fingerprint, q.claim_owner,
+       a.local_identifier, q.source_library_id, q.needs_download,
+       a.media_type, a.media_subtypes, a.creation_date, a.width, a.height,
+       a.favorite, a.hidden, a.burst_identifier, a.metadata_json
+from classification_queue q
+join asset a on a.id = q.asset_id
+where q.id = ? and q.claim_owner = ?
+`, queueID, owner).Scan(
+		&input.QueueID,
+		&input.AssetID,
+		&input.InputFingerprint,
+		&input.ClaimOwner,
+		&input.LocalIdentifier,
+		&input.SourceLibraryID,
+		&needsDownload,
+		&input.MediaType,
+		&input.MediaSubtypes,
+		&input.CreationDate,
+		&input.Width,
+		&input.Height,
+		&favorite,
+		&hidden,
+		&input.BurstIdentifier,
+		&input.MetadataJSON,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load claimed classification input: %w", err)
 	}
-	return inputs, rows.Err()
+	input.NeedsDownload = needsDownload != 0
+	input.Favorite = favorite != 0
+	input.Hidden = hidden != 0
+	input.Resources, err = loadClassifyResources(ctx, tx, input.AssetID)
+	if err != nil {
+		return nil, err
+	}
+	input.Albums, err = loadClassifyAlbums(ctx, tx, input.AssetID)
+	if err != nil {
+		return nil, err
+	}
+	return &input, nil
+}
+
+func newClassificationClaimOwner() (string, error) {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", fmt.Errorf("create classification claim: %w", err)
+	}
+	return hex.EncodeToString(token[:]), nil
+}
+
+func lockCurrentClassificationClaim(ctx context.Context, tx *sql.Tx, input classifyInput, now time.Time) (bool, error) {
+	result, err := tx.ExecContext(ctx, `
+update classification_queue
+set claim_expires_at = claim_expires_at
+where id = ? and claim_owner = ? and input_fingerprint = ?
+  and julianday(claim_expires_at) > julianday(?)
+`, input.QueueID, input.ClaimOwner, input.InputFingerprint, now.Format(time.RFC3339Nano))
+	if err != nil {
+		return false, fmt.Errorf("validate classification claim: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows == 1, nil
+}
+
+func releaseClassificationClaims(db *sql.DB, owner string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = db.ExecContext(ctx, `
+update classification_queue
+set claim_owner = '', claim_expires_at = null
+where claim_owner = ?
+`, owner)
 }
 
 func prepareClassificationPreview(ctx context.Context, paths Paths, input *classifyInput, opts ClassifyOptions) (string, error) {
@@ -526,10 +596,7 @@ values (?, ?, ?, ?, ?, '{}', ?, ?, ?)
 `, observationID, input.AssetID, observation.ObservationType, observation.Label, observation.Confidence, metadataClassifierSource, metadataClassifierModelID, evidenceID); err != nil {
 			return written, fmt.Errorf("write visual observation: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, `
-insert into observation_fts(id, asset_id, title, body)
-values (?, ?, ?, ?)
-`, observationID, input.AssetID, observation.Label, strings.Join(nonEmpty(observation.ObservationType, observation.Label, metadataClassifierSource), " ")); err != nil {
+		if err := insertObservationFTS(ctx, tx, observationID, input.AssetID, observation.Label, strings.Join(nonEmpty(observation.ObservationType, observation.Label, metadataClassifierSource), " ")); err != nil {
 			return written, fmt.Errorf("write observation fts: %w", err)
 		}
 		written++
@@ -567,13 +634,23 @@ func clearMetadataObservations(ctx context.Context, tx *sql.Tx, assetID string) 
 	}
 	if _, err := tx.ExecContext(ctx, `
 delete from observation_fts
-where asset_id = ?
-  and id in (
-    select id from visual_observation
-    where asset_id = ? and source = ? and model_id = ?
+where rowid in (
+    select mapped.fts_rowid
+    from observation_fts_rowid mapped
+    join visual_observation visual on visual.id = mapped.observation_id
+    where visual.asset_id = ? and visual.source = ? and visual.model_id = ?
   )
-`, assetID, assetID, metadataClassifierSource, metadataClassifierModelID); err != nil {
+`, assetID, metadataClassifierSource, metadataClassifierModelID); err != nil {
 		return fmt.Errorf("clear metadata observation fts: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+delete from observation_fts_rowid
+where observation_id in (
+  select id from visual_observation
+  where asset_id = ? and source = ? and model_id = ?
+)
+`, assetID, metadataClassifierSource, metadataClassifierModelID); err != nil {
+		return fmt.Errorf("clear metadata observation FTS mappings: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 delete from visual_observation

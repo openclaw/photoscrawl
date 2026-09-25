@@ -45,6 +45,10 @@ it for snapshot metadata and original selection.
 PhotoKit previews at a default maximum dimension of 1600 pixels. Each invocation
 owns its preview directory and removes it after classification. Downloads have
 a two-minute timeout; cancellation leaves the queue row available for retry.
+Classifiers claim one queue row at a time with an expiring lease, perform model
+inference outside write transactions, and save results only while the claim and
+crawl-input fingerprint still match. A recrawl clears the old claim and queues
+the changed input; abandoned claims become eligible again after lease expiry.
 The explicit `export` command can also download a selected original through
 PhotoKit to the requested output directory.
 

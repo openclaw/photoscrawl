@@ -125,13 +125,13 @@ and 2048 pixels per tile, with a 16-megapixel (64 MiB RGBA) canvas limit. Reduce
 Sources above 64 megapixels produce placeholders. Dimensions are checked before
 Go decoding or native rendering, and rendered output is checked before decoding.
 
-Schema 5 archives cannot be opened by older binaries. Stop every process that
+Schema 6 archives cannot be opened by older binaries. Stop every process that
 uses an archive and keep the previous binary. Before upgrading, make a
 consistent SQLite backup in a private directory (replace the example paths):
 
 ```sh
 umask 077
-sqlite3 /path/to/photos.sqlite ".backup '/private/backup/photos-before-schema5.sqlite'"
+sqlite3 /path/to/photos.sqlite ".backup '/private/backup/photos-before-schema6.sqlite'"
 ```
 
 Upgrade every process together, then run `photoscrawl init --db

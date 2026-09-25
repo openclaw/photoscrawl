@@ -206,8 +206,18 @@ select secondary_id from temp.apple_import_current s join temp.apple_import_chan
 `); err != nil {
 		return fmt.Errorf("collect Apple %s FTS refresh rows: %w", s.kind, err)
 	}
-	if _, err := s.tx.ExecContext(ctx, `delete from observation_fts where id in (select id from temp.apple_import_fts_refresh)`); err != nil {
+	if _, err := s.tx.ExecContext(ctx, `
+delete from observation_fts
+where rowid in (
+  select mapped.fts_rowid
+  from observation_fts_rowid mapped
+  join temp.apple_import_fts_refresh refresh on refresh.id = mapped.observation_id
+)
+`); err != nil {
 		return fmt.Errorf("clear changed Apple %s FTS rows: %w", s.kind, err)
+	}
+	if _, err := s.tx.ExecContext(ctx, `delete from observation_fts_rowid where observation_id in (select id from temp.apple_import_fts_refresh)`); err != nil {
+		return fmt.Errorf("clear changed Apple %s FTS mappings: %w", s.kind, err)
 	}
 	if _, err := s.tx.ExecContext(ctx, `delete from observation_term where observation_id in (select id from temp.apple_import_fts_refresh)`); err != nil {
 		return fmt.Errorf("clear changed Apple %s terms: %w", s.kind, err)
@@ -383,6 +393,7 @@ type appleInsertStatements struct {
 	visual   *sql.Stmt
 	model    *sql.Stmt
 	fts      *sql.Stmt
+	ftsMap   *sql.Stmt
 }
 
 func prepareAppleInsertStatements(ctx context.Context, tx *sql.Tx) (*appleInsertStatements, error) {
@@ -396,6 +407,7 @@ func prepareAppleInsertStatements(ctx context.Context, tx *sql.Tx) (*appleInsert
 		{&s.visual, `insert into visual_observation(id, asset_id, observation_type, label, confidence, bounding_box_json, source, model_id, evidence_id) values (?, ?, ?, ?, ?, '{}', ?, ?, ?)`},
 		{&s.model, `insert into model_observation(id, asset_id, observation_type, value_text, value_json, confidence, source, model_id, prompt_version, evidence_id) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`},
 		{&s.fts, `insert into observation_fts(id, asset_id, title, body) values (?, ?, ?, ?)`},
+		{&s.ftsMap, `insert into observation_fts_rowid(fts_rowid, observation_id) values (last_insert_rowid(), ?)`},
 	}
 	for _, item := range statements {
 		stmt, err := tx.PrepareContext(ctx, item.query)
@@ -409,11 +421,21 @@ func prepareAppleInsertStatements(ctx context.Context, tx *sql.Tx) (*appleInsert
 }
 
 func (s *appleInsertStatements) close() {
-	for _, stmt := range []*sql.Stmt{s.evidence, s.face, s.visual, s.model, s.fts} {
+	for _, stmt := range []*sql.Stmt{s.evidence, s.face, s.visual, s.model, s.fts, s.ftsMap} {
 		if stmt != nil {
 			_ = stmt.Close()
 		}
 	}
+}
+
+func (s *appleInsertStatements) insertFTS(ctx context.Context, observationID, assetID, title, body string) error {
+	if _, err := s.fts.ExecContext(ctx, observationID, assetID, title, body); err != nil {
+		return err
+	}
+	if _, err := s.ftsMap.ExecContext(ctx, observationID); err != nil {
+		return fmt.Errorf("map Apple observation FTS row: %w", err)
+	}
+	return nil
 }
 
 func insertChangedAppleRecords(ctx context.Context, tx *sql.Tx, kind string) error {
@@ -444,7 +466,7 @@ func insertChangedAppleRecords(ctx context.Context, tx *sql.Tx, kind string) err
 			if _, err := stmts.face.ExecContext(ctx, r.ObservationID, r.AssetID, r.FaceLocalID, r.PersonLabel, r.PersonUUID, r.PersonKind, r.Confidence, r.Quality, r.BlurScore, r.EyesClosed, r.Smile, r.BoundingBoxJSON, photosLibraryDBFaceSource, r.EvidenceID); err != nil {
 				return err
 			}
-			if _, err := stmts.fts.ExecContext(ctx, r.ObservationID, r.AssetID, r.FTSTitle, r.FTSBody); err != nil {
+			if err := stmts.insertFTS(ctx, r.ObservationID, r.AssetID, r.FTSTitle, r.FTSBody); err != nil {
 				return err
 			}
 		case appleRecordSearch:
@@ -458,14 +480,14 @@ func insertChangedAppleRecords(ctx context.Context, tx *sql.Tx, kind string) err
 			if _, err := stmts.visual.ExecContext(ctx, r.VisualID, r.AssetID, r.ObservationType, r.Label, r.Confidence, photosSearchIndexSource, photosSearchIndexModelID, r.EvidenceID); err != nil {
 				return err
 			}
-			if _, err := stmts.fts.ExecContext(ctx, r.VisualID, r.AssetID, r.VisualFTSTitle, r.VisualFTSBody); err != nil {
+			if err := stmts.insertFTS(ctx, r.VisualID, r.AssetID, r.VisualFTSTitle, r.VisualFTSBody); err != nil {
 				return err
 			}
 			if r.FaceID != "" {
 				if _, err := stmts.face.ExecContext(ctx, r.FaceID, r.AssetID, r.FaceLocalID, r.FaceLabel, nil, nil, r.FaceConfidence, nil, nil, nil, nil, "{}", photosSearchIndexSource, r.EvidenceID); err != nil {
 					return err
 				}
-				if _, err := stmts.fts.ExecContext(ctx, r.FaceID, r.AssetID, r.FaceFTSTitle, r.FaceFTSBody); err != nil {
+				if err := stmts.insertFTS(ctx, r.FaceID, r.AssetID, r.FaceFTSTitle, r.FaceFTSBody); err != nil {
 					return err
 				}
 			}
@@ -480,7 +502,7 @@ func insertChangedAppleRecords(ctx context.Context, tx *sql.Tx, kind string) err
 			if _, err := stmts.model.ExecContext(ctx, r.ObservationID, r.AssetID, r.ObservationType, r.ValueText, r.ValueJSON, r.Confidence, photosLibraryDBFaceSource, photosLibraryDBMetadataModelID, r.PromptVersion, r.EvidenceID); err != nil {
 				return err
 			}
-			if _, err := stmts.fts.ExecContext(ctx, r.ObservationID, r.AssetID, r.FTSTitle, r.FTSBody); err != nil {
+			if err := stmts.insertFTS(ctx, r.ObservationID, r.AssetID, r.FTSTitle, r.FTSBody); err != nil {
 				return err
 			}
 		}

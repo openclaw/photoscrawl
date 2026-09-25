@@ -124,14 +124,17 @@ on conflict(id) do update set
 `},
 		{&stmts.fts, `insert into asset_fts(id, title, body) values (?, ?, ?)`},
 		{&stmts.queue, `
-insert into classification_queue(id, asset_id, source_library_id, state, reason, needs_download, updated_at)
-values (?, ?, ?, ?, ?, ?, ?)
+insert into classification_queue(id, asset_id, source_library_id, state, reason, needs_download, updated_at, input_fingerprint, claim_owner, claim_expires_at)
+values (?, ?, ?, ?, ?, ?, ?, ?, '', null)
 on conflict(asset_id) do update set
   source_library_id = excluded.source_library_id,
   state = excluded.state,
   reason = excluded.reason,
   needs_download = excluded.needs_download,
-  updated_at = excluded.updated_at
+  updated_at = excluded.updated_at,
+  input_fingerprint = excluded.input_fingerprint,
+  claim_owner = '',
+  claim_expires_at = null
 `},
 		{&stmts.seen, `
 insert into crawl_seen_asset(source_library_id, asset_id, first_seen_snapshot_id, last_seen_snapshot_id, source_fingerprint, last_seen_at)

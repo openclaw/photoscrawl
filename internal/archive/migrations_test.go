@@ -334,6 +334,150 @@ func TestSchemaV5MigrationAddsVisualLabelIndex(t *testing.T) {
 	}
 }
 
+func TestSchemaV6MigrationPreservesFTSRowsAndAddsQueryIndexes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "photos.sqlite")
+	v5Schema := strings.Replace(Schema, `
+  updated_at text not null,
+  input_fingerprint text not null default '',
+  claim_owner text not null default '',
+  claim_expires_at text
+`, `
+  updated_at text not null
+`, 1)
+	v5Schema = strings.Replace(v5Schema, `
+create table if not exists observation_fts_rowid (
+  fts_rowid integer primary key,
+  observation_id text not null
+);
+`, "", 1)
+	for _, statement := range []string{
+		"create index if not exists asset_source_library_idx on asset(source_library_id, id);\n",
+		"create index if not exists evidence_ref_asset_kind_source_idx on evidence_ref(asset_id, evidence_kind, source);\n",
+		"create index if not exists observation_term_observation_idx on observation_term(observation_id);\n",
+		"create index if not exists observation_fts_observation_idx on observation_fts_rowid(observation_id);\n",
+	} {
+		v5Schema = strings.Replace(v5Schema, statement, "", 1)
+	}
+	if v5Schema == Schema {
+		t.Fatal("fixture did not remove schema v6 objects")
+	}
+	legacy, err := store.Open(ctx, store.Options{Path: dbPath, Schema: v5Schema, SchemaVersion: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`insert into source_library values ('lib', '/fixture', 'snapshot', '2026-09-25T00:00:00Z', 'fixture', '{}')`,
+		`insert into asset(id,local_identifier,media_type,media_subtypes,creation_date,modification_date,added_date,timezone_name,width,height,duration_seconds,favorite,hidden,burst_identifier,represents_burst,source_library_id,metadata_json) values('asset:one','ONE/L0/001','image','0','2026-09-25T00:00:00Z','','','UTC',10,10,0,0,0,'',0,'lib','{}')`,
+		`insert into crawl_snapshot values ('snapshot','lib','2026-09-25T00:00:00Z','2026-09-25T00:00:00Z','photokit',1,0,0,0,'{}')`,
+		`insert into evidence_ref values ('evidence:one','asset:one','asset_metadata','photokit','asset:ONE/L0/001','{}')`,
+		`insert into observation_term values ('term:one','asset:one','observation:one','beach','scene','fixture','fixture')`,
+		`insert into classification_queue values ('queue:one','asset:one','lib','pending','fixture',0,'2026-09-25T00:00:00Z')`,
+		`insert into observation_fts(rowid,id,asset_id,title,body) values (41,'observation:one','asset:one','Beach','beach scene')`,
+		`insert into observation_fts(rowid,id,asset_id,title,body) values (99,'observation:two','asset:one','Dinner','shared table')`,
+	} {
+		if _, err := legacy.DB().ExecContext(ctx, statement); err != nil {
+			legacy.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := openArchiveStore(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	version, err := migrated.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != 6 {
+		t.Fatalf("schema version = %d, want 6", version)
+	}
+	var rows, mapped, mismatched int
+	if err := migrated.DB().QueryRowContext(ctx, `select count(*) from observation_fts`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrated.DB().QueryRowContext(ctx, `select count(*) from observation_fts_rowid`).Scan(&mapped); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrated.DB().QueryRowContext(ctx, `
+select count(*)
+from observation_fts f
+left join observation_fts_rowid m on m.fts_rowid = f.rowid and m.observation_id = f.id
+where m.fts_rowid is null
+`).Scan(&mismatched); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 2 || mapped != rows || mismatched != 0 {
+		t.Fatalf("migrated FTS rows=%d mapped=%d mismatched=%d", rows, mapped, mismatched)
+	}
+	var title, body string
+	if err := migrated.DB().QueryRowContext(ctx, `select title, body from observation_fts where rowid = 99`).Scan(&title, &body); err != nil {
+		t.Fatal(err)
+	}
+	if title != "Dinner" || body != "shared table" {
+		t.Fatalf("migrated FTS content = %q / %q", title, body)
+	}
+	columns, err := archiveTableColumns(ctx, migrated.DB(), "classification_queue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"input_fingerprint", "claim_owner", "claim_expires_at"} {
+		if !columns[column] {
+			t.Fatalf("classification_queue missing %q", column)
+		}
+	}
+	plans := []struct {
+		name, query string
+		indexes     []string
+	}{
+		{
+			"identity evidence",
+			`select e.asset_id, e.source, e.pointer, e.evidence_kind
+from evidence_ref e join asset a on a.id = e.asset_id
+where a.source_library_id = 'lib' and e.evidence_kind in ('asset_metadata', 'asset_tombstone')
+  and exists (select 1 from crawl_snapshot s where s.source_library_id = a.source_library_id and s.provider = e.source)`,
+			[]string{"asset_source_library_idx", "evidence_ref_asset_kind_source_idx"},
+		},
+		{"observation cleanup", `select id from observation_term where observation_id = 'observation:one'`, []string{"observation_term_observation_idx"}},
+		{"FTS row delete", `delete from observation_fts where rowid in (select fts_rowid from observation_fts_rowid where observation_id = 'observation:one')`, []string{"observation_fts_observation_idx"}},
+	}
+	for _, test := range plans {
+		plan, err := explainQueryPlan(ctx, migrated.DB(), test.query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, index := range test.indexes {
+			if !strings.Contains(plan, index) {
+				t.Errorf("%s plan = %q, want %s", test.name, plan, index)
+			}
+		}
+	}
+}
+
+func explainQueryPlan(ctx context.Context, db *sql.DB, query string) (string, error) {
+	rows, err := db.QueryContext(ctx, "explain query plan "+query)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var details []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			return "", err
+		}
+		details = append(details, detail)
+	}
+	return strings.Join(details, " | "), rows.Err()
+}
+
 func TestPopulatedSchemaV3ArchiveUpgradeAndSnapshotRecovery(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

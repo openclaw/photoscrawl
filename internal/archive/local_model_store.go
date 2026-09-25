@@ -63,10 +63,7 @@ values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, observationID, input.AssetID, observation.ObservationType, observation.ValueText, valueJSON, observation.Confidence, localModelClassifierSource, classifier.modelID, classifier.promptVersion, evidenceID); err != nil {
 			return written, fmt.Errorf("write model observation: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, `
-insert into observation_fts(id, asset_id, title, body)
-values (?, ?, ?, ?)
-`, observationID, input.AssetID, observation.ValueText, strings.Join(nonEmpty(observation.ObservationType, observation.ValueText, localModelClassifierSource, classifier.modelID), " ")); err != nil {
+		if err := insertObservationFTS(ctx, tx, observationID, input.AssetID, observation.ValueText, strings.Join(nonEmpty(observation.ObservationType, observation.ValueText, localModelClassifierSource, classifier.modelID), " ")); err != nil {
 			return written, fmt.Errorf("write model observation fts: %w", err)
 		}
 		for _, term := range observationTerms(observation) {
@@ -124,22 +121,31 @@ func clearLocalModelObservations(ctx context.Context, tx *sql.Tx, assetID, model
 	}
 	if _, err := tx.ExecContext(ctx, `
 delete from observation_fts
-where asset_id = ?
-  and id in (
-    select id from model_observation
-    where asset_id = ? and source = ? and model_id = ?
+where rowid in (
+    select mapped.fts_rowid
+    from observation_fts_rowid mapped
+    join model_observation model on model.id = mapped.observation_id
+    where model.asset_id = ? and model.source = ? and model.model_id = ?
   )
-`, assetID, assetID, localModelClassifierSource, modelID); err != nil {
+`, assetID, localModelClassifierSource, modelID); err != nil {
 		return fmt.Errorf("clear model observation fts: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
+delete from observation_fts_rowid
+where observation_id in (
+  select id from model_observation
+  where asset_id = ? and source = ? and model_id = ?
+)
+`, assetID, localModelClassifierSource, modelID); err != nil {
+		return fmt.Errorf("clear model observation FTS mappings: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
 delete from observation_term
-where asset_id = ?
-  and observation_id in (
+where observation_id in (
     select id from model_observation
     where asset_id = ? and source = ? and model_id = ?
   )
-`, assetID, assetID, localModelClassifierSource, modelID); err != nil {
+`, assetID, localModelClassifierSource, modelID); err != nil {
 		return fmt.Errorf("clear observation terms: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `

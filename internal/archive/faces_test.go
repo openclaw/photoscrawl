@@ -629,6 +629,7 @@ func TestImportAppleAppliesOnlyChangedRows(t *testing.T) {
 	if got := assetRowIDs(afterRemoval, assetIDs[secondUUID]); len(got) != 0 {
 		t.Fatalf("removed asset retained Apple import rows: %#v", got)
 	}
+	assertObservationFTSWritersMapped(t, archiveDB.DB())
 	assertSearchResultCount(t, ctx, paths, "Blue Bicycle", 0)
 }
 
@@ -906,6 +907,21 @@ func assertCount(t *testing.T, db *sql.DB, query string, want int, args ...any) 
 	if got != want {
 		t.Fatalf("count %q = %d, want %d", query, got, want)
 	}
+}
+
+func assertObservationFTSWritersMapped(t *testing.T, db *sql.DB) {
+	t.Helper()
+	assertCount(t, db, `
+select count(*)
+from observation_fts f
+where (exists (select 1 from visual_observation v where v.id = f.id)
+       or exists (select 1 from face_observation face where face.id = f.id)
+       or exists (select 1 from model_observation model where model.id = f.id))
+  and not exists (
+    select 1 from observation_fts_rowid mapped
+    where mapped.fts_rowid = f.rowid and mapped.observation_id = f.id
+  )
+`, 0)
 }
 
 func TestFaceQualityTreatsPhotosSentinelAsUnknown(t *testing.T) {
