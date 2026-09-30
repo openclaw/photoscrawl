@@ -5,8 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,16 @@ import (
 
 func TestSQLiteSnapshotProviderReadsSyntheticLibrary(t *testing.T) {
 	t.Parallel()
+	for _, generation := range []int{33, 34, 57} {
+		t.Run(fmt.Sprintf("model_%d", generation), func(t *testing.T) {
+			t.Parallel()
+			testSQLiteSnapshotProviderReadsSyntheticLibrary(t, generation)
+		})
+	}
+}
+
+func testSQLiteSnapshotProviderReadsSyntheticLibrary(t *testing.T, generation int) {
+	t.Helper()
 	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
 	dbPath := filepath.Join(libraryPath, "database", "Photos.sqlite")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
@@ -27,6 +39,19 @@ func TestSQLiteSnapshotProviderReadsSyntheticLibrary(t *testing.T) {
 	defer db.Close()
 	if err := createSyntheticPhotosDB(db.DB()); err != nil {
 		t.Fatal(err)
+	}
+	if generation != 33 {
+		for _, statement := range []string{
+			`alter table Z_33ASSETS add column Z_FOK_3ASSETS integer`,
+			fmt.Sprintf("alter table Z_33ASSETS rename column Z_33ALBUMS to Z_%dALBUMS", generation),
+			fmt.Sprintf("alter table Z_33ASSETS rename to Z_%dASSETS", generation),
+			`create table Z_33KEYASSETS (Z_3ASSETS integer, Z_33ALBUMS integer)`,
+			`create table Z_33ALBUMLISTS (Z_3ASSETS integer, Z_33ALBUMS integer)`,
+		} {
+			if _, err := db.DB().Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	before := map[string][]byte{}
 	for _, suffix := range []string{"", "-wal", "-shm"} {
@@ -68,7 +93,7 @@ func TestSQLiteSnapshotProviderReadsSyntheticLibrary(t *testing.T) {
 	if asset.Resources[0].SourceIdentifier != "sqlite_internal_resource:100" {
 		t.Fatalf("resource source identifier = %q", asset.Resources[0].SourceIdentifier)
 	}
-	if len(asset.Albums) != 1 || asset.Albums[0].AlbumTitle != "Synthetic Album" {
+	if len(asset.Albums) != 1 || asset.Albums[0] != (AlbumMembership{AlbumID: "album-uuid-1", AlbumTitle: "Synthetic Album", AlbumKind: "generic_album:2:0"}) {
 		t.Fatalf("albums = %#v", asset.Albums)
 	}
 	deleted := snapshot.Assets[1]
@@ -89,6 +114,38 @@ func TestFallbackProviderUsesSecondaryAfterPrimaryError(t *testing.T) {
 	}
 	if snapshot.Provider != "secondary" || snapshot.Metadata["source_strategy"] != "fallback_after_primary_error" {
 		t.Fatalf("snapshot = %#v", snapshot)
+	}
+}
+
+func TestSQLiteAlbumsRejectsUnknownOrAmbiguousMapping(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		sql  string
+	}{
+		{"missing", `drop table Z_33ASSETS`},
+		{"missing_album_column", `alter table Z_33ASSETS drop column Z_33ALBUMS`},
+		{"missing_asset_column", `alter table Z_33ASSETS drop column Z_3ASSETS`},
+		{"ambiguous", `create table Z_34ASSETS (Z_34ALBUMS integer, Z_3ASSETS integer)`},
+		{"non_numeric_generation", `alter table Z_33ASSETS rename to Z_33OTHERASSETS`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			db, err := store.Open(context.Background(), store.Options{Path: filepath.Join(t.TempDir(), "Photos.sqlite")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if err := createSyntheticPhotosDB(db.DB()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.DB().Exec(tc.sql); err != nil {
+				t.Fatal(err)
+			}
+			if albums, err := sqliteAlbums(context.Background(), db.DB()); err == nil || !strings.Contains(err.Error(), "album mapping") {
+				t.Fatalf("unsupported schema returned albums=%v, error=%v", albums, err)
+			}
+		})
 	}
 }
 

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Discover SQLite album membership mappings across Photos model generations, fixing the macOS 27 fallback crawl while rejecting unsupported or ambiguous layouts; thanks @oddm643.
 - Update CrawlKit to v0.16.6 to stay current with the shared crawler toolkit.
 - Retry failed content classifications (stalled iCloud downloads, unparseable model output) after a 7-day cooldown instead of on every pass; changed assets are re-queued immediately.
 - Skip unchanged assets during crawl and refresh asset search rows in one set-based pass instead of a full FTS scan per asset.
