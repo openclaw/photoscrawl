@@ -240,17 +240,21 @@ order by r.ZASSET, r.ZRESOURCETYPE, r.ZVERSION
 }
 
 func sqliteAlbums(ctx context.Context, db *sql.DB) (map[int64][]AlbumMembership, error) {
-	rows, err := db.QueryContext(ctx, `
+	table, albumColumn, err := sqliteAlbumMapping(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
 select m.Z_3ASSETS,
-       coalesce(g.ZUUID, printf('sqlite_album:%d', g.Z_PK)),
+       coalesce(g.ZUUID, printf('sqlite_album:%%d', g.Z_PK)),
        coalesce(g.ZTITLE, ''),
        coalesce(g.ZKIND, -1),
        coalesce(g.ZCLOUDALBUMSUBTYPE, 0)
-from Z_33ASSETS m
-join ZGENERICALBUM g on g.Z_PK = m.Z_33ALBUMS
+from %s m
+join ZGENERICALBUM g on g.Z_PK = m.%s
 where coalesce(g.ZTRASHEDSTATE, 0) = 0
 order by m.Z_3ASSETS, g.ZTITLE
-`)
+`, store.QuoteIdent(table), store.QuoteIdent(albumColumn)))
 	if err != nil {
 		return nil, fmt.Errorf("query sqlite albums: %w", err)
 	}
@@ -273,6 +277,56 @@ order by m.Z_3ASSETS, g.ZTITLE
 		return nil, err
 	}
 	return out, nil
+}
+
+func sqliteAlbumMapping(ctx context.Context, db *sql.DB) (string, string, error) {
+	rows, err := db.QueryContext(ctx, `select name from sqlite_master where type = 'table' and name glob 'Z_*ASSETS' order by name`)
+	if err != nil {
+		return "", "", fmt.Errorf("inspect sqlite album mapping: %w", err)
+	}
+	defer rows.Close()
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			return "", "", err
+		}
+		generation := strings.TrimSuffix(strings.TrimPrefix(table, "Z_"), "ASSETS")
+		if generation != "" && strings.Trim(generation, "0123456789") == "" {
+			tables = append(tables, table)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", err
+	}
+	// Release the schema cursor before inspecting columns on the same connection.
+	if err := rows.Close(); err != nil {
+		return "", "", err
+	}
+	var mappingTable, albumColumn string
+	for _, table := range tables {
+		// Core Data renumbers the album entity across Photos model generations.
+		column := strings.TrimSuffix(table, "ASSETS") + "ALBUMS"
+		valid := true
+		for _, required := range []string{"Z_3ASSETS", column} {
+			exists, err := sqliteColumnExists(ctx, db, table, required)
+			if err != nil {
+				return "", "", err
+			}
+			valid = valid && exists
+		}
+		if !valid {
+			continue
+		}
+		if mappingTable != "" {
+			return "", "", fmt.Errorf("ambiguous sqlite album mapping: multiple Z_<number>ASSETS tables have membership columns")
+		}
+		mappingTable, albumColumn = table, column
+	}
+	if mappingTable == "" {
+		return "", "", fmt.Errorf("unsupported sqlite album mapping: expected a Z_<number>ASSETS table with Z_3ASSETS and matching Z_<number>ALBUMS columns")
+	}
+	return mappingTable, albumColumn, nil
 }
 
 type sqliteAssetRow struct {

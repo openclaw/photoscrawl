@@ -199,6 +199,11 @@ source. If PhotoKit is unavailable or denied, the crawler falls back to a verifi
 private copy of `database/Photos.sqlite` and labels that evidence as
 `photos_sqlite_snapshot`.
 
+The SQLite fallback discovers the numbered album-membership table from the
+snapshot schema, including the macOS 27 generation-34 layout. It requires one
+unambiguous mapping with the expected asset and album columns; unsupported or
+ambiguous layouts fail with an album-mapping error before importing assets.
+
 `crawl` does not export originals or force iCloud downloads. It records already
 local package media paths for derivatives/renders/originals when they exist, so
 content classification can use local files without changing Photos or iCloud
