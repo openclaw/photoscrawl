@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Update SQLite to v1.60.1, its libc runtime to v1.77.1, and strftime to v1.1.0 while retaining the Go 1.27.0 minimum.
 - Discover SQLite album membership mappings across Photos model generations, fixing the macOS 27 fallback crawl while rejecting unsupported or ambiguous layouts; thanks @oddm643.
 - Update CrawlKit to v0.16.6 to stay current with the shared crawler toolkit.
 - Retry failed content classifications (stalled iCloud downloads, unparseable model output) after a 7-day cooldown instead of on every pass; changed assets are re-queued immediately.
