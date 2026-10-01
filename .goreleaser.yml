@@ -9,6 +9,8 @@ builds:
     no_unique_dist_dir: true
     env:
       - CGO_ENABLED=1
+      - CGO_CFLAGS=-O2 -g -mmacosx-version-min=13.0
+      - CGO_LDFLAGS=-O2 -g -mmacosx-version-min=13.0
     goos:
       - darwin
     goarch:
@@ -18,6 +20,9 @@ builds:
       - -trimpath
     ldflags:
       - -s -w -X main.version={{ .Version }}
+    hooks:
+      post:
+        - cmd: bash .github/scripts/check_macos_minimum.sh "{{ .Path }}"
 
 archives:
   - id: bundles

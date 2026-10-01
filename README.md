@@ -53,7 +53,9 @@ archive logic and synthetic providers; release builds remain macOS-only.
 1.27, including its formatter.
 
 `make snapshot` builds local GoReleaser artifacts without credentials and never
-publishes them.
+publishes them. Release builds explicitly target macOS 13 even when compiled
+with a newer SDK. A GoReleaser build hook checks every binary's deployment target
+before signing; native CI exercises the same hook for both architectures.
 
 On macOS, `go test -v -run TestExportNativeIntegration ./cmd/photoscrawl` builds
 the CLI with a required synthetic PhotoKit library. It exercises native export

@@ -30,6 +30,13 @@ jobs:
       - name: Check
         run: make check
 
+      - name: Build release binaries
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --snapshot --clean --parallelism=2
+
   portable:
     name: Portable (Go 1.27.0)
     runs-on: ubuntu-latest
