@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve the documented macOS 13 minimum in release binaries by pinning CGO compile and link deployment targets; verify both architectures in CI instead of inheriting the build runner's macOS version.
+
 ## 0.5.0 - 2026-09-30
 
 **Highlights:** Incremental crawls and Apple imports skip unchanged work, while routine archive opens avoid full-database copies.
