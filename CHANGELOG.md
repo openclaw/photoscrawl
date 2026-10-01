@@ -2,16 +2,20 @@
 
 ## Unreleased
 
-- Update SQLite to v1.60.1, its libc runtime to v1.77.1, and strftime to v1.1.0 while retaining the Go 1.27.0 minimum.
-- Discover SQLite album membership mappings across Photos model generations, fixing the macOS 27 fallback crawl while rejecting unsupported or ambiguous layouts; thanks @oddm643.
-- Update CrawlKit to v0.16.6 to stay current with the shared crawler toolkit.
-- Retry failed content classifications (stalled iCloud downloads, unparseable model output) after a 7-day cooldown instead of on every pass; changed assets are re-queued immediately.
-- Skip unchanged assets during crawl and refresh asset search rows in one set-based pass instead of a full FTS scan per asset.
+## 0.5.0 - 2026-09-30
+
+**Highlights:** Incremental crawls and Apple imports skip unchanged work, while routine archive opens avoid full-database copies.
+
 - Make `import-apple` incremental: stage Apple signals, apply only additions, changes and removals, and stream decoded search rows.
-- Upgrade archives to schema 6 with indexed observation-FTS row mappings and cleanup indexes, and lease classification work atomically so concurrent classifiers do not duplicate assets or save results after a recrawl changes their input.
+- Skip unchanged assets during crawl and refresh asset search rows in one set-based pass instead of a full FTS scan per asset.
 - Avoid routine full-archive copies before writable opens: inspect live WAL archives through a read-only connection, retain verified snapshot fallback for rollback journals or recovery and locking errors, and add `status --full-check` for an explicit snapshot-backed integrity check.
+- Upgrade archives to schema 6 with indexed observation-FTS row mappings and cleanup indexes, and lease classification work atomically so concurrent classifiers do not duplicate assets or save results after a recrawl changes their input.
+- Discover SQLite album membership mappings across Photos model generations, fixing the macOS 27 fallback crawl while rejecting unsupported or ambiguous layouts; thanks @oddm643.
+- Retry failed content classifications (stalled iCloud downloads, unparseable model output) after a 7-day cooldown instead of on every pass; changed assets are re-queued immediately.
 - Build PhotoKit album memberships once per crawl, reuse status coverage totals, and restrict curation asset and signal reads to the requested candidate population.
 - Reuse one verified Photos database snapshot for faces and metadata during each `import-apple` run.
+- Update CrawlKit to v0.16.6 to stay current with the shared crawler toolkit.
+- Update SQLite to v1.60.1, its libc runtime to v1.77.1, and strftime to v1.1.0 while retaining the Go 1.27.0 minimum.
 
 ## 0.4.0 - 2026-09-22
 
