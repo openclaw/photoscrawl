@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Update the dead-code checker to x/tools v0.51.0 and CI artifact uploads to v7.0.2 while retaining the Go 1.27.0 minimum.
+
 ## 0.5.1 - 2026-09-30
 
 **Highlights:** Release binaries target macOS 13, with deployment-target checks before signing.
