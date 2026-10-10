@@ -73,7 +73,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.27.1"
+          go-version: "1.27.2"
           cache: true
 
       - name: Verify structured scan evaluator
@@ -82,13 +82,13 @@ jobs:
       - name: Stage public modules, scanner and frozen advisories
         run: |
           go version
-          test "$(go env GOVERSION)" = "go1.27.1"
+          test "$(go env GOVERSION)" = "go1.27.2"
           go mod download
           GOBIN="$RUNNER_TEMP/vulntools" go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           python3 .github/scripts/vulncheck.py stage "$RUNNER_TEMP/vulndb"
 
       - name: Scan native configuration
-        run: python3 .github/scripts/vulncheck.py scan "$RUNNER_TEMP/vulndb" "$RUNNER_TEMP/vulntools/govulncheck" "$RUNNER_TEMP/vuln-preferred" go1.27.1 darwin
+        run: python3 .github/scripts/vulncheck.py scan "$RUNNER_TEMP/vulndb" "$RUNNER_TEMP/vulntools/govulncheck" "$RUNNER_TEMP/vuln-preferred" go1.27.2 darwin
 
       - name: Retain complete advisory evidence
         if: always()

@@ -34,7 +34,9 @@ photoscrawl --version
 ## Development
 
 Building from source requires Go 1.27.0 or later and the macOS SDK. The preferred
-build toolchain is Go 1.27.1, selected by the `toolchain` directive in `go.mod`.
+build toolchain is Go 1.27.2, selected by the `toolchain` directive in `go.mod`.
+Use the preferred toolchain for builds to include the latest standard-library
+security fixes; Go 1.27.0 remains the source compatibility minimum.
 
 The Makefile exposes the same core targets as the other OpenClaw crawler
 repositories:
