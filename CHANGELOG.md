@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Prefer Go 1.27.2 for builds and native vulnerability scans to fix reachable standard-library vulnerabilities, and update x/sys to v0.49.0; retain Go 1.27.0 source compatibility.
 - Update the dead-code checker to x/tools v0.51.0 and CI artifact uploads to v7.0.2 while retaining the Go 1.27.0 minimum.
 
 ## 0.5.1 - 2026-09-30
