@@ -252,8 +252,27 @@ func run(ctx context.Context, args []string) error {
 		localModel := fs.String("local-model", "", "local vision model to use for content observations")
 		localModelAPI := fs.String("local-model-api", "", "local model API: ollama or openai")
 		localModelURL := fs.String("local-model-url", "", "local model endpoint URL")
+		completionFlags := map[string]string{
+			"local-model-max-tokens":           "OpenAI-compatible completion budget (default 2048; PHOTOSCRAWL_LOCAL_MODEL_MAX_TOKENS)",
+			"local-model-reasoning-effort":     "reasoning effort: none, minimal, low, medium, high, xhigh, max (PHOTOSCRAWL_LOCAL_MODEL_REASONING_EFFORT)",
+			"local-model-reasoning-enabled":    "OpenRouter reasoning enabled: true or false (PHOTOSCRAWL_LOCAL_MODEL_REASONING_ENABLED)",
+			"local-model-reasoning-max-tokens": "OpenRouter reasoning token cap (PHOTOSCRAWL_LOCAL_MODEL_REASONING_MAX_TOKENS)",
+		}
+		for name, help := range completionFlags {
+			fs.String(name, "", help)
+		}
 		allowICloud := fs.Bool("allow-icloud-downloads", false, "download bounded PhotoKit previews when local image content is missing")
 		format, err := fs.parse(args[1:], false)
+		if err != nil {
+			return err
+		}
+		overrides := map[string]string{}
+		fs.Visit(func(f *flag.Flag) {
+			if _, ok := completionFlags[f.Name]; ok {
+				overrides[f.Name] = f.Value.String()
+			}
+		})
+		completion, err := archive.ResolveCompletionConfig(overrides)
 		if err != nil {
 			return err
 		}
@@ -263,6 +282,7 @@ func run(ctx context.Context, args []string) error {
 			LocalModel:           *localModel,
 			LocalModelAPI:        *localModelAPI,
 			LocalModelURL:        *localModelURL,
+			LocalModelCompletion: completion,
 			AllowICloudDownloads: *allowICloud,
 		})
 		if err != nil {

@@ -268,6 +268,43 @@ Local-model endpoints must resolve entirely to loopback addresses. Redirects
 are checked under the same rule. Evidence records the actual response endpoint
 and that image bytes were transmitted over the loopback interface.
 
+OpenAI-compatible classification accepts `--local-model-max-tokens` (default
+2048, sent as `max_tokens`). Reasoning controls are optional:
+`--local-model-reasoning-effort` (`none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, `max`), `--local-model-reasoning-enabled=true|false`, and
+`--local-model-reasoning-max-tokens` (a positive cap).
+The enabled and cap controls use OpenRouter's `reasoning.enabled` and
+`reasoning.max_tokens`; explicit false disables reasoning. Excluding reasoning
+text does not disable reasoning, and photoscrawl does not send `reasoning.exclude`.
+Effort cannot be combined with enabled or cap controls; disabled reasoning cannot
+be combined with a cap.
+
+Each flag overrides its environment variable: `PHOTOSCRAWL_LOCAL_MODEL_MAX_TOKENS`,
+`PHOTOSCRAWL_LOCAL_MODEL_REASONING_EFFORT`,
+`PHOTOSCRAWL_LOCAL_MODEL_REASONING_ENABLED`, and
+`PHOTOSCRAWL_LOCAL_MODEL_REASONING_MAX_TOKENS`. Invalid values fail before
+classification. No reasoning parameters are sent by default; Ollama requests
+are unchanged. These controls configure the existing loopback model endpoint,
+including a local proxy, and do not enable direct remote endpoints.
+
+Support depends on the model and provider. Consult the
+[OpenAI chat API](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
+and [OpenRouter reasoning documentation](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens);
+OpenRouter maps supported Gemini reasoning caps to `thinkingBudget`. Unsupported
+controls produce provider errors without automatic fallback or retry.
+
+Reasoning may consume the shared completion budget. A `length` finish reason
+fails explicitly as truncation before parsing, even if the content looks like
+complete JSON. Increase the completion budget or reduce reasoning when this
+occurs. Finish reason and prompt/completion/total/reasoning token usage appear in
+classification output, model-run metadata and successful evidence; queue failures
+include bounded diagnostics for truncated, empty and malformed completions.
+HTTP errors retain status and a bounded provider message. Known credential,
+cookie/session, image and structured request echoes are sanitized. Arbitrary
+private prose in a provider error message is not generally redacted; a local
+proxy may return such text. The response's reasoning fields are not included
+in diagnostics.
+
 `neighbors` returns source-level adjacent assets only. It does not create trips,
 people, places, or clusters. Current reasons are deterministic archive facts:
 same burst id, same album id, same resource hash, nearby creation time, nearby
