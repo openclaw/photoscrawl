@@ -73,6 +73,9 @@ publishing them:
 gh workflow run release-unified.yml --repo openclaw/photoscrawl -f version=X.Y.Z
 ```
 
+To validate the release pipeline without creating a tag or publishing artifacts,
+pass the current version and `-f dry_run=true` to the same workflow command.
+
 `make release` refuses local publishing and prints that exact command.
 
 ## Finding and ranking photos

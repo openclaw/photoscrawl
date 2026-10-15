@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Update CrawlKit to v0.17.0 and the dead-code checker to x/tools v0.52.0 while retaining the Go 1.27.0 minimum and Go 1.27.2 build toolchain.
+- Add a release workflow dry run that builds, signs, and verifies artifacts without creating tags or publishing.
+
 ## 0.5.2 - 2026-10-11
 
 **Highlights:** Builds use Go 1.27.2 to fix reachable standard-library security vulnerabilities.
