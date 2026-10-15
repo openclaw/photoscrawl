@@ -222,3 +222,45 @@ insert into location_observation values ('asset:1', 52.379189, 4.899431, 8.5);
 	}
 	return os.WriteFile(filepath.Join(outDir, "attempts", "000000.jsonl"), []byte("{}\n"), 0o600)
 }
+
+func TestClassifyCompletionFlagsFailBeforeDatabaseMutation(t *testing.T) {
+	for _, name := range []string{"MAX_TOKENS", "REASONING_EFFORT", "REASONING_ENABLED", "REASONING_MAX_TOKENS"} {
+		t.Setenv("PHOTOSCRAWL_LOCAL_MODEL_"+name, "")
+	}
+	for _, tc := range []struct {
+		name string
+		env  string
+		args []string
+		want string
+	}{
+		{name: "invalid_env", env: "bad", want: "positive integer"},
+		{name: "invalid_flag", args: []string{"--local-model-max-tokens=0"}, want: "positive integer"},
+		{name: "conflict", args: []string{"--local-model-reasoning-effort=low", "--local-model-reasoning-enabled=false"}, want: "conflicts"},
+		{name: "cap_disable", args: []string{"--local-model-reasoning-max-tokens=128", "--local-model-reasoning-enabled=false"}, want: "conflicts"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PHOTOSCRAWL_LOCAL_MODEL_MAX_TOKENS", tc.env)
+			database := filepath.Join(t.TempDir(), "must-not-exist.sqlite")
+			args := append([]string{"classify", "--db", database}, tc.args...)
+			err := run(context.Background(), args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v", err)
+			}
+			if _, err := os.Stat(database); !os.IsNotExist(err) {
+				t.Fatalf("database mutated: %v", err)
+			}
+		})
+	}
+}
+
+func TestClassifyCompletionFlagOverridesInvalidEnvironment(t *testing.T) {
+	for _, name := range []string{"REASONING_EFFORT", "REASONING_ENABLED", "REASONING_MAX_TOKENS"} {
+		t.Setenv("PHOTOSCRAWL_LOCAL_MODEL_"+name, "")
+	}
+	t.Setenv("PHOTOSCRAWL_LOCAL_MODEL_MAX_TOKENS", "bad")
+	directory := t.TempDir()
+	err := run(context.Background(), []string{"classify", "--db", directory, "--local-model-max-tokens=4096"})
+	if err == nil || strings.Contains(err.Error(), "positive integer") || strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Fatalf("flag did not override environment: %v", err)
+	}
+}
