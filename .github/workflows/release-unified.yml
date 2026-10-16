@@ -30,6 +30,7 @@ jobs:
       build-runner: macos
       nfpm: disabled
       extra-packages: '[]'
+      require-signed-tag: true
       strict-checks: false
     secrets:
       MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}

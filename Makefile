@@ -52,7 +52,7 @@ snapshot:
 	GOWORK=off $${GORELEASER:-goreleaser} release --snapshot --clean --skip=publish
 
 release:
-	@printf '%s\n' 'local releases are disabled; official releases must use: gh workflow run release-unified.yml --repo openclaw/photoscrawl -f version=X.Y.Z' >&2
+	@printf '%s\n' 'local releases are disabled; after pushing the verified fleet-signed tag, use: gh workflow run release-unified.yml --repo openclaw/photoscrawl -f version=X.Y.Z' >&2
 	@false
 
 verify: check
