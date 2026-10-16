@@ -2,7 +2,12 @@
 
 ## Unreleased
 
+## 0.5.3 - 2026-10-16
+
+**Highlights:** Refresh shared crawler dependencies and verify fleet-signed release tags before publishing.
+
 - Update CrawlKit to v0.17.0 and the dead-code checker to x/tools v0.52.0 while retaining the Go 1.27.0 minimum and Go 1.27.2 build toolchain.
+- Require a fleet-signed annotated release tag, verified against the repository's signing allowlist before publication.
 - Add a release workflow dry run that builds, signs, and verifies artifacts without creating tags or publishing.
 
 ## 0.5.2 - 2026-10-11
