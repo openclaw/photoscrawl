@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Run native CI and vulnerability checks on Xcode 27 runners, preserving the macOS 13 deployment target and verifying Intel builds under Rosetta.
 ## 0.5.3 - 2026-10-16
 
 **Highlights:** Refresh shared crawler dependencies and verify fleet-signed release tags before publishing.

@@ -15,8 +15,10 @@ concurrency:
 
 jobs:
   test:
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 20
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,6 +38,15 @@ jobs:
           distribution: goreleaser
           version: "~> v2"
           args: build --snapshot --clean --parallelism=2
+
+      - name: Verify both release architectures
+        run: |
+          if ! arch -x86_64 /usr/bin/true; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+          arch -x86_64 /usr/bin/true
+          arch -x86_64 dist/darwin_amd64/photoscrawl --version
+          dist/darwin_arm64/photoscrawl --version
 
   portable:
     name: Portable (Go 1.27.0)
@@ -58,7 +69,7 @@ jobs:
         run: make check
 
   vulnerabilities:
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 20
     env:
       GOWORK: "off"
