@@ -2,7 +2,9 @@
 
 ## Unreleased
 
+- Update SQLite's Go C runtime to modernc.org/libc v1.79.0 while retaining the Go 1.27.0 minimum and Go 1.27.2 build toolchain.
 - Run native CI and vulnerability checks on Xcode 27 runners, preserving the macOS 13 deployment target and verifying Intel builds under Rosetta.
+
 ## 0.5.3 - 2026-10-16
 
 **Highlights:** Refresh shared crawler dependencies and verify fleet-signed release tags before publishing.
