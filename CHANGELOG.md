@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.5.5 - 2026-10-20
+
+**Highlights:** Rebuild with Go 1.27.3 to fix the reachable crypto/x509 certificate-validation vulnerability.
+
+### Security
+
+- Build with Go 1.27.3 to fix the reachable crypto/x509 certificate-validation vulnerability GO-2026-6809 while retaining the Go 1.27.0 minimum.
+
 ## 0.5.4 - 2026-10-20
 
 **Highlights:** Refresh SQLite's C runtime while preserving Go compatibility and the macOS 13 minimum.
