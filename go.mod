@@ -2,7 +2,7 @@ module github.com/openclaw/photoscrawl
 
 go 1.27.0
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 require (
 	github.com/openclaw/crawlkit v0.17.0
