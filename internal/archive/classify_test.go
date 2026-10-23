@@ -253,7 +253,8 @@ func TestLocalModelOpenAIChatCompletion(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(openAIChatCompletionResponse{
 			Choices: []struct {
-				Message struct {
+				FinishReason string `json:"finish_reason"`
+				Message      struct {
 					Content string `json:"content"`
 				} `json:"message"`
 			}{{
@@ -1082,5 +1083,73 @@ func TestClassifyReclaimsExpiredLease(t *testing.T) {
 	}
 	if expired.Processed != 1 || expired.MetadataClassified != 1 {
 		t.Fatalf("expired lease classify = %#v", expired)
+	}
+}
+
+func TestClassifyCompletionDiagnosticsPersistence(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	paths := testPaths(t)
+	libraryPath := filepath.Join(t.TempDir(), "Synthetic.photoslibrary")
+	if err := mkdirLibrary(libraryPath); err != nil {
+		t.Fatal(err)
+	}
+	var complete atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if request["max_tokens"] != float64(4096) {
+			t.Errorf("budget = %v", request["max_tokens"])
+		}
+		content, finish := "private-synthetic-sentinel", "length"
+		if complete.Load() {
+			content = `{"scene_summary":"Synthetic plate."}`
+			finish = "stop"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"finish_reason": finish, "message": map[string]any{"content": content}}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 2048, "total_tokens": 2058, "completion_tokens_details": map[string]any{"reasoning_tokens": 2048}}})
+	}))
+	defer server.Close()
+	provider := fakeProvider{snapshot: photos.LibrarySnapshot{Provider: "fake", PhotosVersion: "fixture", AuthorizationStatus: "authorized", Assets: []photos.Asset{{LocalIdentifier: "completion-diagnostics-fixture", MediaType: "image", CreationDate: "2026-08-12T12:00:00Z", Resources: []photos.Resource{{SourceIdentifier: "completion-fixture", Type: "photo", UTI: "public.jpeg", LocalPath: writeModelTestImage(t), AvailableLocally: true}}}}}}
+	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-08-12T12:05:00Z")}); err != nil {
+		t.Fatal(err)
+	}
+	disabled := false
+	opts := ClassifyOptions{All: true, LocalModel: "fixture", LocalModelAPI: "openai", LocalModelURL: server.URL, LocalModelCompletion: CompletionConfig{MaxTokens: 4096, ReasoningEnabled: &disabled}, Now: fixedClock("2026-08-12T12:10:00Z")}
+	failed, err := Classify(ctx, paths, opts)
+	if err != nil || failed.ContentClassificationFailures != 1 || len(failed.LocalModelDiagnostics) != 1 {
+		t.Fatalf("result=%+v error=%v", failed, err)
+	}
+	db, err := openArchiveStore(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var reason, metadata string
+	if err := db.DB().QueryRowContext(ctx, `select reason from classification_queue`).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reason, "truncated") || !strings.Contains(reason, "reasoning_tokens=2048") || strings.Contains(reason, "private-synthetic-sentinel") {
+		t.Fatalf("queue reason = %s", reason)
+	}
+	if err := db.DB().QueryRowContext(ctx, `select metadata_json from model_run`).Scan(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(metadata, `"finish_reason":"length"`) || !strings.Contains(metadata, `"reasoning_tokens":2048`) || strings.Contains(metadata, "private-synthetic-sentinel") {
+		t.Fatalf("run metadata = %s", metadata)
+	}
+	complete.Store(true)
+	opts.Now = fixedClock("2026-08-20T12:10:00Z")
+	success, err := Classify(ctx, paths, opts)
+	if err != nil || success.ContentClassified != 1 {
+		t.Fatalf("result=%+v error=%v", success, err)
+	}
+	var evidence string
+	if err := db.DB().QueryRowContext(ctx, `select value_json from evidence_ref where evidence_kind='content_classification'`).Scan(&evidence); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(evidence, `"finish_reason":"stop"`) || !strings.Contains(evidence, `"max_tokens":4096`) || !strings.Contains(evidence, `"reasoning_enabled":false`) {
+		t.Fatalf("evidence = %s", evidence)
 	}
 }

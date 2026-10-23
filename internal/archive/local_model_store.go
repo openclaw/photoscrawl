@@ -29,6 +29,8 @@ func writeLocalModelClassification(ctx context.Context, tx *sql.Tx, input classi
 		"image_extension":         strings.ToLower(filepath.Ext(imagePath)),
 		"image_path_class":        input.localPathClass(imagePath),
 		"classified_at":           classifiedAt.Format(time.RFC3339Nano),
+		"completion_diagnostics":  result.Diagnostics,
+		"completion_config":       classifier.completion,
 		"raw_response":            result.RawResponse,
 		"parsed_response":         result.Payload,
 		"local_only":              true,
@@ -83,9 +85,11 @@ values (?, ?, ?, ?, ?, ?, ?)
 	return written, nil
 }
 
-func writeModelRun(ctx context.Context, tx *sql.Tx, runID string, classifier localModelClassifier, endpoints map[string]struct{}, inputCount, httpRequestAttempts, httpResponses, contentClassified, failures int, completedAt time.Time) error {
+func writeModelRun(ctx context.Context, tx *sql.Tx, runID string, classifier localModelClassifier, endpoints map[string]struct{}, inputCount, httpRequestAttempts, httpResponses, contentClassified, failures int, diagnostics []CompletionDiagnostics, completedAt time.Time) error {
 	responseEndpoints := sortedEndpointSet(endpoints)
 	metadataJSON, err := jsonText(map[string]any{
+		"completion_diagnostics":     diagnostics,
+		"completion_config":          classifier.completion,
 		"content_classified":         contentClassified,
 		"failures":                   failures,
 		"model_api":                  classifier.api,
