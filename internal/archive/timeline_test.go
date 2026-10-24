@@ -29,6 +29,7 @@ func TestTimelineReturnsLocatedAssetsInHalfOpenRange(t *testing.T) {
 				Metadata:         map[string]any{"source_type": 2},
 				Albums: []photos.AlbumMembership{
 					{AlbumID: "shared-trip", AlbumTitle: "Trip", AlbumKind: "album:1:101", FolderPath: "Travel / 2026"},
+					{AlbumID: "quoted-album", AlbumTitle: `Album ["two"]`, AlbumKind: "album:1:101"},
 				},
 				Location: &photos.Location{
 					Latitude:           52.3676,
@@ -76,8 +77,15 @@ func TestTimelineReturnsLocatedAssetsInHalfOpenRange(t *testing.T) {
 	if observation.CreatedAt != "2026-05-27T10:00:00Z" || observation.MediaType != "image" {
 		t.Fatalf("asset metadata = %#v", observation)
 	}
-	if observation.SourceType != 2 || len(observation.Albums) != 1 || observation.Albums[0].Title != "Trip" || observation.Albums[0].FolderPath != "Travel / 2026" {
+	if observation.SourceType != 2 || len(observation.Albums) != 2 {
 		t.Fatalf("source metadata = %#v", observation)
+	}
+	albums := make(map[string]TimelineAlbum, len(observation.Albums))
+	for _, album := range observation.Albums {
+		albums[album.ID] = album
+	}
+	if albums["shared-trip"].Title != "Trip" || albums["shared-trip"].FolderPath != "Travel / 2026" || albums["quoted-album"].Title != `Album ["two"]` {
+		t.Fatalf("album objects = %#v", albums)
 	}
 	if observation.Latitude == nil || observation.Longitude == nil || observation.AccuracyMeters == nil || *observation.AccuracyMeters != accuracy || observation.IsPrecise == nil || !*observation.IsPrecise {
 		t.Fatalf("location quality = %#v", observation)
@@ -93,6 +101,9 @@ func TestTimelineReturnsLocatedAssetsInHalfOpenRange(t *testing.T) {
 	}
 	if all.Count != 2 || all.Observations[1].LocationObservationID != "" || all.Observations[1].Latitude != nil || all.Observations[1].SourceRef != all.Observations[1].AssetID {
 		t.Fatalf("timeline with unlocated assets = %#v", all.Observations)
+	}
+	if len(all.Observations[1].Albums) != 0 {
+		t.Fatalf("unlocated asset albums = %#v", all.Observations[1].Albums)
 	}
 
 	empty, err := Timeline(ctx, paths, TimelineOptions{

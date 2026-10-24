@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Update CrawlKit to v0.17.3 so SQLite lock waits honor context deadlines, with SQLite 3.54.1.
+
 ## 0.5.5 - 2026-10-20
 
 **Highlights:** Rebuild with Go 1.27.3 to fix the reachable crypto/x509 certificate-validation vulnerability.
