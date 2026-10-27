@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.6 - 2026-10-26
+
+**Highlights:** SQLite lock waits honor context deadlines with CrawlKit v0.17.3 and SQLite 3.54.1.
+
 - Update CrawlKit to v0.17.3 so SQLite lock waits honor context deadlines, with SQLite 3.54.1.
 
 ## 0.5.5 - 2026-10-20
