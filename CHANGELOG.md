@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Batch main CodeQL analysis weekly while preserving PR and manual scans.
+
 ## 0.5.6 - 2026-10-26
 
 **Highlights:** SQLite lock waits honor context deadlines with CrawlKit v0.17.3 and SQLite 3.54.1.
