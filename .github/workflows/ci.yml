@@ -28,6 +28,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          # Keep native build outputs separate from the faster scanner job.
+          cache-dependency-path: |
+            go.sum
+            Makefile
+            .github/workflows/ci.yml
 
       - name: Check
         run: make check
