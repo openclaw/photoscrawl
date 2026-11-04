@@ -185,16 +185,6 @@ func TestSimilarScoringReasonsAndExclusions(t *testing.T) {
 	}
 }
 
-func TestSimilarExcludesHiddenCandidates(t *testing.T) {
-	result, err := Similar(context.Background(), similarFixture(t), SimilarOptions{ID: "seed", Limit: 50})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if hasSimilarID(result.Assets, "hidden") {
-		t.Fatalf("hidden candidate returned in %#v", result.Assets)
-	}
-}
-
 func TestSimilarIncludeSameEventIncludesTimeDayAndBurst(t *testing.T) {
 	ctx := context.Background()
 	paths := similarFixture(t)
@@ -210,16 +200,6 @@ func TestSimilarIncludeSameEventIncludesTimeDayAndBurst(t *testing.T) {
 	}
 }
 
-func TestSimilarNoisePolicyData(t *testing.T) {
-	if similarNoisePolicy.maxDocumentFraction != 0.05 {
-		t.Fatalf("frequency cap = %v, want 0.05", similarNoisePolicy.maxDocumentFraction)
-	}
-	want := []string{"arm", "face", "finger", "hand", "man", "people", "person", "tattoo", "tattooed", "woman"}
-	if !sameStrings(similarNoisePolicy.zeroWeightTerms, want...) {
-		t.Fatalf("zero-weight terms = %#v, want %#v", similarNoisePolicy.zeroWeightTerms, want)
-	}
-}
-
 func TestSimilarFoodRankingAndNoiseRules(t *testing.T) {
 	ctx := context.Background()
 	paths := similarFoodFixture(t)
@@ -228,20 +208,12 @@ func TestSimilarFoodRankingAndNoiseRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !similarIDPrefix(result.Assets, "food-other-year", "phone") {
+	if !sameSimilarIDs(result.Assets, "food-other-year", "phone") {
 		t.Fatalf("food ranking = %#v", result.Assets)
 	}
-	if hasSimilarID(result.Assets, "food-same-day") || hasSimilarID(result.Assets, "food-within-12h") {
-		t.Fatalf("same-day or 12-hour candidate was included: %#v", result.Assets)
-	}
 	phone := similarAssetByID(result.Assets, "phone")
-	if !containsText(phone.Shared, "cell_phone") || containsText(phone.Shared, "cell") || containsText(phone.Shared, "fork") {
-		t.Fatalf("compound component filtering = %#v", phone.Shared)
-	}
-	for _, asset := range result.Assets {
-		if containsText(asset.Shared, "arm") || containsText(asset.Shared, "common_noise") {
-			t.Fatalf("noise term survived in %#v", asset)
-		}
+	if !sameStrings(phone.Shared, "cell_phone") {
+		t.Fatalf("filtered shared terms = %#v, want only cell_phone", phone.Shared)
 	}
 
 	included, err := Similar(ctx, paths, SimilarOptions{ID: "food-seed", Limit: 50, IncludeSameEvent: true})
@@ -527,7 +499,7 @@ values(?,?,'image','0',?,'','','Europe/Madrid',100,100,0,0,0,?,0,'food-library',
 		term("food-same-day", "food-same-day-observation", value)
 	}
 	term("food-within-12h", "food-within-observation", "pasta")
-	for _, value := range []string{"cell", "cell_phone", "arm", "common_noise"} {
+	for _, value := range []string{"cell", "cell_phone", "common_noise", "arm", "face", "finger", "hand", "man", "people", "person", "tattoo", "tattooed", "woman"} {
 		term("food-seed", "device-seed-observation", value)
 		term("phone", "device-phone-observation", value)
 	}
