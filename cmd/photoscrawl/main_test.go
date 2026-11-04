@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/openclaw/crawlkit/output"
@@ -169,27 +170,26 @@ func TestPlaceBackfillRunReturnsCanceledDuringRetrySleep(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	errCh := make(chan error, 1)
-	started := time.Now()
-	go func() {
-		errCh <- run(ctx, []string{"place-backfill", "--db", dbPath, "--out", outDir, "--json"})
-	}()
-	time.Sleep(80 * time.Millisecond)
-	cancel()
-
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, context.Canceled) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		errCh := make(chan error, 1)
+		started := time.Now()
+		go func() {
+			errCh <- run(ctx, []string{"place-backfill", "--db", dbPath, "--out", outDir, "--json"})
+		}()
+		synctest.Wait()
+		if _, err := os.Stat(filepath.Join(outDir, "identities.json")); err != nil {
+			t.Fatalf("backfill did not finish retry setup: %v", err)
+		}
+		cancel()
+		if err := <-errCh; !errors.Is(err, context.Canceled) {
 			t.Fatalf("place-backfill run error = %v, want context.Canceled", err)
 		}
-		if elapsed := time.Since(started); elapsed >= 2*time.Second {
-			t.Fatalf("place-backfill ignored cancel for %s", elapsed)
+		if elapsed := time.Since(started); elapsed != 0 {
+			t.Fatalf("cancellation waited for retry timer: %s", elapsed)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("place-backfill did not return after cancel during retry sleep")
-	}
+	})
 }
 
 func writePlaceBackfillRetryFixture(dbPath, outDir string) error {
