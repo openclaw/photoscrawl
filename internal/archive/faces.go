@@ -74,62 +74,6 @@ type facesImportInput struct {
 	peopleByUUID map[string]photosPerson
 }
 
-type ImportFacesOptions struct {
-	LibraryPath string
-}
-
-func ImportFaces(ctx context.Context, paths Paths, opts ImportFacesOptions) (ImportFacesResult, error) {
-	libraryPath, err := resolveFacesLibraryPath(ctx, paths, opts.LibraryPath)
-	if err != nil {
-		return ImportFacesResult{}, err
-	}
-	input, err := preflightFacesImport(ctx, libraryPath)
-	if err != nil {
-		return ImportFacesResult{}, err
-	}
-	archiveDB, err := openAppleArchive(ctx, paths.Database, libraryPath)
-	if err != nil {
-		return ImportFacesResult{}, err
-	}
-	defer archiveDB.Close()
-
-	tx, err := archiveDB.DB().BeginTx(ctx, nil)
-	if err != nil {
-		return ImportFacesResult{}, err
-	}
-	defer tx.Rollback()
-	assetByUUID, err := archiveAssetMap(ctx, tx, libraryPath)
-	if err != nil {
-		return ImportFacesResult{}, err
-	}
-	result, _, err := writeFacesImport(ctx, tx, paths, input, assetByUUID, time.Now().UTC())
-	if err != nil {
-		return ImportFacesResult{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return ImportFacesResult{}, err
-	}
-	return result, nil
-}
-
-func preflightFacesImport(ctx context.Context, libraryPath string) (facesImportInput, error) {
-	liveDBPath := filepath.Join(libraryPath, "database", "Photos.sqlite")
-	if _, err := os.Stat(liveDBPath); err != nil {
-		return facesImportInput{}, fmt.Errorf("find Photos sqlite: %w", err)
-	}
-	snapshotPath, cleanup, err := copyPhotosSQLite(ctx, liveDBPath)
-	if err != nil {
-		return facesImportInput{}, err
-	}
-	defer cleanup()
-	photosDB, err := store.OpenReadOnly(ctx, snapshotPath)
-	if err != nil {
-		return facesImportInput{}, fmt.Errorf("open copied Photos sqlite: %w", err)
-	}
-	defer photosDB.Close()
-	return loadFacesImportInput(ctx, photosDB.DB(), libraryPath)
-}
-
 func preflightPhotosImports(ctx context.Context, libraryPath string) (facesImportInput, photoMetadataImportInput, error) {
 	liveDBPath := filepath.Join(libraryPath, "database", "Photos.sqlite")
 	if _, err := os.Stat(liveDBPath); err != nil {
@@ -357,27 +301,6 @@ order by f.Z_PK
 		out = append(out, row)
 	}
 	return out, namedPersons, unnamedFaces, rows.Err()
-}
-
-func loadPhotosPeopleByUUID(ctx context.Context, libraryPath string) (map[string]photosPerson, error) {
-	liveDBPath := filepath.Join(libraryPath, "database", "Photos.sqlite")
-	if _, err := os.Stat(liveDBPath); err != nil {
-		return nil, fmt.Errorf("find Photos sqlite for people lookup: %w", err)
-	}
-	snapshotPath, cleanup, err := copyPhotosSQLite(ctx, liveDBPath)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-	photosDB, err := store.OpenReadOnly(ctx, snapshotPath)
-	if err != nil {
-		return nil, fmt.Errorf("open copied Photos sqlite for people lookup: %w", err)
-	}
-	defer photosDB.Close()
-	if _, err := validatePhotosFacesSchema(ctx, photosDB.DB()); err != nil {
-		return nil, err
-	}
-	return loadPhotosPeopleByUUIDFromDB(ctx, photosDB.DB())
 }
 
 func loadPhotosPeopleByUUIDFromDB(ctx context.Context, db *sql.DB) (map[string]photosPerson, error) {
