@@ -39,3 +39,14 @@ No production behavior or release artifacts changed.
 
 This is a bounded similarity-test cleanup. Synthetic temporary SQLite data only;
 no production behavior or release artifacts changed.
+
+## Expired original-export deadline
+
+- Replaced the nanosecond timeout and sleep with an already-expired deadline.
+  The fixture starts canceled without depending on timer scheduling.
+- Require `context.DeadlineExceeded`, rather than accepting any error from
+  original export. Keep the prompt-return bound and separate cancellation and
+  in-flight preview-export tests.
+- The expired context returns before PhotoKit; fixtures use temporary paths.
+
+No native export behavior, Photos data, or release artifacts changed.

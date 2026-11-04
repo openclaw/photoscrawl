@@ -23,13 +23,12 @@ func TestExportOriginalResourceReturnsCanceledContextBeforePhotoKit(t *testing.T
 
 func TestExportOriginalResourceExpiredDeadlineDoesNotWaitForever(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	time.Sleep(2 * time.Millisecond)
 	started := time.Now()
 	err := ExportOriginalResource(ctx, "unused", filepath.Join(t.TempDir(), "out.bin"), false)
-	if err == nil {
-		t.Fatal("expected expired deadline to fail")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ExportOriginalResource = %v, want context.DeadlineExceeded", err)
 	}
 	if elapsed := time.Since(started); elapsed >= 2*time.Second {
 		t.Fatalf("expired export wait took %s", elapsed)
