@@ -278,131 +278,67 @@ func TestLocalModelOpenAIChatCompletion(t *testing.T) {
 	}
 }
 
-func TestClassifyLocalModelTerminatesRemoteNonImageRows(t *testing.T) {
+func TestClassifyLocalModelRemoteContentRetryability(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	paths := testPaths(t)
-	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
-	if err := mkdirLibrary(libraryPath); err != nil {
-		t.Fatal(err)
-	}
-	provider := fakeProvider{snapshot: photos.LibrarySnapshot{
-		Provider:            "fake",
-		PhotosVersion:       "fixture",
-		AuthorizationStatus: "authorized",
-		Assets: []photos.Asset{
-			{
-				LocalIdentifier: "fixture-remote-video-asset",
-				MediaType:       "video",
-				MediaSubtypes:   "0",
-				CreationDate:    "2026-05-27T12:00:00Z",
-				Width:           100,
-				Height:          80,
-				Resources: []photos.Resource{
-					{
-						SourceIdentifier: "fixture-remote-video",
-						Type:             "video",
-						UTI:              "com.apple.quicktime-movie",
-						OriginalFilename: "fixture.mov",
-						Availability:     "remote",
-						NeedsDownload:    true,
-					},
-				},
-			},
+	for _, tc := range []struct {
+		name            string
+		mediaType       string
+		resource        photos.Resource
+		waiting         int
+		secondProcessed int
+	}{
+		{
+			name: "terminates non-image rows", mediaType: "video",
+			resource: photos.Resource{SourceIdentifier: "fixture-remote-video", Type: "video", UTI: "com.apple.quicktime-movie", OriginalFilename: "fixture.mov"},
 		},
-	}}
-	if _, err := Crawl(ctx, paths, CrawlOptions{
-		LibraryPath: libraryPath,
-		Provider:    provider,
-		Now:         fixedClock("2026-05-28T10:00:00Z"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	first, err := Classify(ctx, paths, ClassifyOptions{
-		All:        true,
-		LocalModel: "fixture-vision",
-		Now:        fixedClock("2026-05-28T10:15:00Z"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.Processed != 1 || first.WaitingForLocalContent != 0 || first.ContentClassified != 0 || first.ContentClassificationFailures != 0 {
-		t.Fatalf("first classify result = %#v", first)
-	}
-	second, err := Classify(ctx, paths, ClassifyOptions{
-		All:        true,
-		LocalModel: "fixture-vision",
-		Now:        fixedClock("2026-05-28T10:20:00Z"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.Processed != 0 {
-		t.Fatalf("second classify result = %#v", second)
-	}
-}
-
-func TestClassifyLocalModelKeepsRemoteImagesRetryable(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	paths := testPaths(t)
-	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
-	if err := mkdirLibrary(libraryPath); err != nil {
-		t.Fatal(err)
-	}
-	provider := fakeProvider{snapshot: photos.LibrarySnapshot{
-		Provider:            "fake",
-		PhotosVersion:       "fixture",
-		AuthorizationStatus: "authorized",
-		Assets: []photos.Asset{
-			{
-				LocalIdentifier: "fixture-remote-image-asset",
-				MediaType:       "image",
-				MediaSubtypes:   "0",
-				CreationDate:    "2026-05-27T12:00:00Z",
-				Width:           100,
-				Height:          80,
-				Resources: []photos.Resource{
-					{
-						SourceIdentifier: "fixture-remote-photo",
-						Type:             "photo",
-						UTI:              "public.jpeg",
-						OriginalFilename: "fixture.jpeg",
-						Availability:     "remote",
-						NeedsDownload:    true,
-					},
-				},
-			},
+		{
+			name: "keeps images retryable", mediaType: "image",
+			resource: photos.Resource{SourceIdentifier: "fixture-remote-photo", Type: "photo", UTI: "public.jpeg", OriginalFilename: "fixture.jpeg"},
+			waiting:  1, secondProcessed: 1,
 		},
-	}}
-	if _, err := Crawl(ctx, paths, CrawlOptions{
-		LibraryPath: libraryPath,
-		Provider:    provider,
-		Now:         fixedClock("2026-05-28T10:00:00Z"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	first, err := Classify(ctx, paths, ClassifyOptions{
-		All:        true,
-		LocalModel: "fixture-vision",
-		Now:        fixedClock("2026-05-28T10:15:00Z"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.Processed != 1 || first.WaitingForLocalContent != 1 || first.ContentClassified != 0 {
-		t.Fatalf("first classify result = %#v", first)
-	}
-	second, err := Classify(ctx, paths, ClassifyOptions{
-		All:        true,
-		LocalModel: "fixture-vision",
-		Now:        fixedClock("2026-05-28T10:20:00Z"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.Processed != 1 || second.WaitingForLocalContent != 1 {
-		t.Fatalf("second classify result = %#v", second)
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			paths := testPaths(t)
+			libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
+			if err := mkdirLibrary(libraryPath); err != nil {
+				t.Fatal(err)
+			}
+			tc.resource.Availability = "remote"
+			tc.resource.NeedsDownload = true
+			provider := fakeProvider{snapshot: photos.LibrarySnapshot{
+				Provider: "fake", PhotosVersion: "fixture", AuthorizationStatus: "authorized",
+				Assets: []photos.Asset{{
+					LocalIdentifier: "fixture-remote-" + tc.mediaType + "-asset",
+					MediaType:       tc.mediaType, MediaSubtypes: "0", CreationDate: "2026-05-27T12:00:00Z",
+					Width: 100, Height: 80, Resources: []photos.Resource{tc.resource},
+				}},
+			}}
+			if _, err := Crawl(ctx, paths, CrawlOptions{
+				LibraryPath: libraryPath, Provider: provider, Now: fixedClock("2026-05-28T10:00:00Z"),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			first, err := Classify(ctx, paths, ClassifyOptions{
+				All: true, LocalModel: "fixture-vision", Now: fixedClock("2026-05-28T10:15:00Z"),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first.Processed != 1 || first.WaitingForLocalContent != tc.waiting || first.ContentClassified != 0 || first.ContentClassificationFailures != 0 {
+				t.Fatalf("first classify result = %#v", first)
+			}
+			second, err := Classify(ctx, paths, ClassifyOptions{
+				All: true, LocalModel: "fixture-vision", Now: fixedClock("2026-05-28T10:20:00Z"),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if second.Processed != tc.secondProcessed || (tc.waiting != 0 && second.WaitingForLocalContent != tc.waiting) {
+				t.Fatalf("second classify result = %#v", second)
+			}
+		})
 	}
 }
 
