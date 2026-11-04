@@ -63,3 +63,13 @@ No native export behavior, Photos data, or release artifacts changed.
   operations, and assert it in the child handshake.
 - Keep the child's readiness/cancellation handshake and bounded parent context.
   Only the test-owned child receives signals; no Photos archive is opened.
+
+## Model HTTP fixture failures
+
+- Replaced six fatal assertions in the Ollama and OpenAI-compatible handlers
+  with non-fatal test errors, HTTP 400 responses, and normal returns. Fatal
+  assertions ran in server goroutines and aborted requests with EOF.
+- Keep every request check, successful synthetic model response, persisted
+  observation assertion, and root-test fatal assertion.
+
+No model behavior, private media, live Photos library, or release changes.
