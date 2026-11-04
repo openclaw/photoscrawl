@@ -33,10 +33,14 @@ func TestClassifyLocalModelWritesTypedObservations(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request ollamaGenerateRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatalf("decode request: %v", err)
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
 		}
 		if request.Model != "fixture-vision" || len(request.Images) != 1 {
-			t.Fatalf("request = %#v", request)
+			t.Errorf("request = %#v", request)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
 		}
 		_ = json.NewEncoder(w).Encode(ollamaGenerateResponse{
 			Response: `{
@@ -239,17 +243,25 @@ func TestLocalModelOpenAIChatCompletion(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
-			t.Fatalf("path = %s", r.URL.Path)
+			t.Errorf("path = %s", r.URL.Path)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
 		}
 		var request openAIChatCompletionRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatalf("decode request: %v", err)
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
 		}
 		if request.Model != "fixture-openai-vision" || len(request.Messages) != 1 || len(request.Messages[0].Content) != 2 {
-			t.Fatalf("request = %#v", request)
+			t.Errorf("request = %#v", request)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
 		}
 		if request.Messages[0].Content[1].ImageURL == nil || !strings.HasPrefix(request.Messages[0].Content[1].ImageURL.URL, "data:") {
-			t.Fatalf("image part = %#v", request.Messages[0].Content[1])
+			t.Errorf("image part = %#v", request.Messages[0].Content[1])
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
 		}
 		_ = json.NewEncoder(w).Encode(openAIChatCompletionResponse{
 			Choices: []struct {
