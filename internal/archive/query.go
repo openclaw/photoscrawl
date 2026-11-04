@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/openclaw/crawlkit/store"
 )
 
 type SearchOptions struct {
@@ -349,18 +351,7 @@ func normalizeSQLValue(value any) any {
 }
 
 func ftsQuery(query string) string {
-	terms := strings.Fields(query)
-	quoted := make([]string, 0, len(terms))
-	for _, term := range terms {
-		term = strings.TrimSpace(term)
-		if term == "" {
-			continue
-		}
-		term = strings.ReplaceAll(term, `"`, `""`)
-		quoted = append(quoted, `"`+term+`"`)
-	}
-	if len(quoted) == 0 {
-		return `""`
-	}
-	return strings.Join(quoted, " AND ")
+	// The fixed AND operator is always accepted by FTS5Terms.
+	escaped, _ := store.FTS5Terms(query, "AND")
+	return escaped
 }
