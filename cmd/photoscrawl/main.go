@@ -21,22 +21,18 @@ import (
 var version = "dev"
 
 func commandContext() (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(context.Background())
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	stop := func() {
-		// Restore signal handling before cancellation so a second interrupt can terminate blocked work.
-		signal.Stop(signals)
-		cancel()
+	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	stopCommand := func() {
+		// Restore signal handling before exposing cancellation to blocked work.
+		stop()
+		cancel(context.Cause(signalCtx))
 	}
 	go func() {
-		select {
-		case <-signals:
-			stop()
-		case <-ctx.Done():
-		}
+		<-signalCtx.Done()
+		stopCommand()
 	}()
-	return ctx, stop
+	return ctx, stopCommand
 }
 
 func main() {
