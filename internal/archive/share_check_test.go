@@ -89,15 +89,6 @@ func TestBlockedCategoriesInPhrase(t *testing.T) {
 	}
 }
 
-func TestBlockedCategoriesInspectEveryOccurrence(t *testing.T) {
-	if got := blockedCategoriesInPhrase("no passport in foreground but passport visible in background"); !reflect.DeepEqual(got, []string{"passport"}) {
-		t.Fatalf("mixed-negation occurrences = %#v, want passport blocked", got)
-	}
-	if got := blockedCategoriesInPhrase("no passport and no documents"); len(got) != 0 {
-		t.Fatalf("fully negated occurrences = %#v, want none blocked", got)
-	}
-}
-
 func TestShareCheckStatusesNotesCountsAndExclusions(t *testing.T) {
 	ctx := context.Background()
 	paths := shareCheckFixture(t)

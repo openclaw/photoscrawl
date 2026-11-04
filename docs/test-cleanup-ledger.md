@@ -73,3 +73,12 @@ No native export behavior, Photos data, or release artifacts changed.
   observation assertion, and root-test fatal assertion.
 
 No model behavior, private media, live Photos library, or release changes.
+
+## Repeated privacy phrase assertions
+
+Removed the standalone every-occurrence test: its two exact phrases already
+exist in the 62-row table with equal or stricter full-result comparisons. Keep
+the mixed-negation passport and fully negated cases, fixtures and production code.
+
+Temporary first-occurrence and negation-bypass mutations fail those retained
+rows. Full local checks, archive race tests, review and CI use synthetic data.
