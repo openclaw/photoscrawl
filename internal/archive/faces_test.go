@@ -307,14 +307,15 @@ select value, side, zeroblob(2048) from batches cross join (select 1 as side uni
 	}
 }
 
-func TestImportApplePreflightFailureLeavesExistingObservations(t *testing.T) {
-	ctx := context.Background()
+func appleImportTestArchive(t *testing.T, ctx context.Context) (Paths, *store.Store, string) {
+	t.Helper()
 	root := t.TempDir()
 	paths := Paths{DataDir: root, Database: filepath.Join(root, "photos.sqlite")}
 	archiveDB, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = archiveDB.Close() })
 	sourceID := stableID("source_library", "test-library")
 	assetID := stableID("asset", sourceID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001")
 	execTestSQL(t, archiveDB.DB(), `
@@ -325,6 +326,12 @@ values (?, ?, ?, ?, ?, '{}')
 insert into asset(id, local_identifier, media_type, media_subtypes, creation_date, modification_date, added_date, timezone_name, width, height, duration_seconds, favorite, hidden, burst_identifier, represents_burst, source_library_id, metadata_json)
 values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0, '', 0, ?, '{}')
 `, assetID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001", sourceID)
+	return paths, archiveDB, assetID
+}
+
+func TestImportApplePreflightFailureLeavesExistingObservations(t *testing.T) {
+	ctx := context.Background()
+	paths, archiveDB, assetID := appleImportTestArchive(t, ctx)
 	execTestSQL(t, archiveDB.DB(), `
 insert into face_observation(id, asset_id, face_local_id, person_label, confidence, bounding_box_json, source, evidence_id)
 values ('existing-face', ?, 'existing', 'Existing Person', 1, '{}', ?, 'existing-face-evidence')
@@ -341,7 +348,7 @@ values ('existing-metadata', ?, 'apple_exif', 'Existing Camera', '{}', 1, ?, ?, 
 		t.Fatal(err)
 	}
 
-	libraryPath := filepath.Join(root, "Library.photoslibrary")
+	libraryPath := filepath.Join(paths.DataDir, "Library.photoslibrary")
 	photosDBPath := filepath.Join(libraryPath, "database", "Photos.sqlite")
 	createTestPhotosDB(t, photosDBPath)
 	createTestPSIDB(t, filepath.Join(libraryPath, "database", "search", "psi.sqlite"))
@@ -369,27 +376,12 @@ values ('existing-metadata', ?, 'apple_exif', 'Existing Camera', '{}', 1, ?, ?, 
 
 func TestImportSearchIndexIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	paths := Paths{DataDir: root, Database: filepath.Join(root, "photos.sqlite")}
-	archiveDB, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sourceID := stableID("source_library", "test-library")
-	assetID := stableID("asset", sourceID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001")
-	execTestSQL(t, archiveDB.DB(), `
-insert into source_library(id, library_path, snapshot_path, snapshot_created_at, photos_version, metadata_json)
-values (?, ?, ?, ?, ?, '{}')
-`, sourceID, filepath.Join(root, "Library.photoslibrary"), "snapshot", "2026-07-06T00:00:00Z", "test")
-	execTestSQL(t, archiveDB.DB(), `
-insert into asset(id, local_identifier, media_type, media_subtypes, creation_date, modification_date, added_date, timezone_name, width, height, duration_seconds, favorite, hidden, burst_identifier, represents_burst, source_library_id, metadata_json)
-values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0, '', 0, ?, '{}')
-`, assetID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001", sourceID)
+	paths, archiveDB, assetID := appleImportTestArchive(t, ctx)
 	if err := archiveDB.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	libraryPath := filepath.Join(root, "Library.photoslibrary")
+	libraryPath := filepath.Join(paths.DataDir, "Library.photoslibrary")
 	createTestPhotosDB(t, filepath.Join(libraryPath, "database", "Photos.sqlite"))
 	createTestPSIDB(t, filepath.Join(libraryPath, "database", "search", "psi.sqlite"))
 	combined, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraryPath})
@@ -627,27 +619,12 @@ func TestImportAppleAppliesOnlyChangedRows(t *testing.T) {
 
 func TestImportLeoSearchIndexIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	paths := Paths{DataDir: root, Database: filepath.Join(root, "photos.sqlite")}
-	archiveDB, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sourceID := stableID("source_library", "test-library")
-	assetID := stableID("asset", sourceID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001")
-	execTestSQL(t, archiveDB.DB(), `
-insert into source_library(id, library_path, snapshot_path, snapshot_created_at, photos_version, metadata_json)
-values (?, ?, ?, ?, ?, '{}')
-`, sourceID, filepath.Join(root, "Library.photoslibrary"), "snapshot", "2026-07-06T00:00:00Z", "test")
-	execTestSQL(t, archiveDB.DB(), `
-insert into asset(id, local_identifier, media_type, media_subtypes, creation_date, modification_date, added_date, timezone_name, width, height, duration_seconds, favorite, hidden, burst_identifier, represents_burst, source_library_id, metadata_json)
-values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0, '', 0, ?, '{}')
-`, assetID, "92D69D06-27F0-4831-AEC7-C6F640F075BA/L0/001", sourceID)
+	paths, archiveDB, _ := appleImportTestArchive(t, ctx)
 	if err := archiveDB.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	libraryPath := filepath.Join(root, "Library.photoslibrary")
+	libraryPath := filepath.Join(paths.DataDir, "Library.photoslibrary")
 	createTestPhotosDB(t, filepath.Join(libraryPath, "database", "Photos.sqlite"))
 	createTestLeoDB(t, filepath.Join(libraryPath, "database", "search", "leo.sqlite"))
 
