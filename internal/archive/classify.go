@@ -585,16 +585,7 @@ func writeMetadataClassification(ctx context.Context, tx *sql.Tx, input classify
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `
-insert into evidence_ref(id, asset_id, evidence_kind, source, pointer, value_json)
-values (?, ?, ?, ?, ?, ?)
-on conflict(id) do update set
-  asset_id = excluded.asset_id,
-  evidence_kind = excluded.evidence_kind,
-  source = excluded.source,
-  pointer = excluded.pointer,
-  value_json = excluded.value_json
-`, evidenceID, input.AssetID, "classification_input", metadataClassifierSource, input.AssetID+"/classification/archive_metadata", evidenceJSON); err != nil {
+	if _, err := tx.ExecContext(ctx, evidenceUpsertSQL, evidenceID, input.AssetID, "classification_input", metadataClassifierSource, input.AssetID+"/classification/archive_metadata", evidenceJSON); err != nil {
 		return 0, fmt.Errorf("write classification evidence: %w", err)
 	}
 
@@ -618,12 +609,8 @@ values (?, ?, ?, ?, ?, '{}', ?, ?, ?)
 	if !input.hasLocalContent() {
 		reason = "local_metadata_observations_waiting_for_content"
 	}
-	if _, err := tx.ExecContext(ctx, `
-update classification_queue
-set state = ?, reason = ?, updated_at = ?
-where id = ?
-`, state, reason, classifiedAt.Format(time.RFC3339Nano), input.QueueID); err != nil {
-		return written, fmt.Errorf("update classification queue: %w", err)
+	if err := updateClassificationQueue(ctx, tx, input.QueueID, state, reason, classifiedAt); err != nil {
+		return written, err
 	}
 	return written, nil
 }

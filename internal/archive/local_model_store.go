@@ -37,16 +37,7 @@ func writeLocalModelClassification(ctx context.Context, tx *sql.Tx, input classi
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `
-insert into evidence_ref(id, asset_id, evidence_kind, source, pointer, value_json)
-values (?, ?, ?, ?, ?, ?)
-on conflict(id) do update set
-  asset_id = excluded.asset_id,
-  evidence_kind = excluded.evidence_kind,
-  source = excluded.source,
-  pointer = excluded.pointer,
-  value_json = excluded.value_json
-`, evidenceID, input.AssetID, "content_classification", localModelClassifierSource, input.AssetID+"/classification/local_multimodal", evidenceJSON); err != nil {
+	if _, err := tx.ExecContext(ctx, evidenceUpsertSQL, evidenceID, input.AssetID, "content_classification", localModelClassifierSource, input.AssetID+"/classification/local_multimodal", evidenceJSON); err != nil {
 		return 0, fmt.Errorf("write local model evidence: %w", err)
 	}
 

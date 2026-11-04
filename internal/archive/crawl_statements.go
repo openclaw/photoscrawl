@@ -5,6 +5,17 @@ import (
 	"database/sql"
 )
 
+const evidenceUpsertSQL = `
+insert into evidence_ref(id, asset_id, evidence_kind, source, pointer, value_json)
+values (?, ?, ?, ?, ?, ?)
+on conflict(id) do update set
+  asset_id = excluded.asset_id,
+  evidence_kind = excluded.evidence_kind,
+  source = excluded.source,
+  pointer = excluded.pointer,
+  value_json = excluded.value_json
+`
+
 type crawlStatements struct {
 	previousFingerprint *sql.Stmt
 	assetLive           *sql.Stmt
@@ -100,16 +111,7 @@ on conflict(id) do update set
   album_kind = excluded.album_kind,
   folder_path = excluded.folder_path
 `},
-		{&stmts.evidence, `
-insert into evidence_ref(id, asset_id, evidence_kind, source, pointer, value_json)
-values (?, ?, ?, ?, ?, ?)
-on conflict(id) do update set
-  asset_id = excluded.asset_id,
-  evidence_kind = excluded.evidence_kind,
-  source = excluded.source,
-  pointer = excluded.pointer,
-  value_json = excluded.value_json
-`},
+		{&stmts.evidence, evidenceUpsertSQL},
 		{&stmts.location, `
 insert into location_observation(id, asset_id, latitude, longitude, altitude, horizontal_accuracy, source, evidence_id)
 values (?, ?, ?, ?, ?, ?, ?, ?)
