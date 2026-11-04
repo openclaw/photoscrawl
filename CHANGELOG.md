@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Give native CI validation a separate Go cache keyed by its build and workflow inputs so the faster vulnerability scan cannot reserve its cache entry.
+
 - Batch main CodeQL analysis weekly while preserving PR and manual scans.
 
 ## 0.5.6 - 2026-10-26
