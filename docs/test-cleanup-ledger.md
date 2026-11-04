@@ -59,5 +59,7 @@ No native export behavior, Photos data, or release artifacts changed.
 - Fixed the ordering the sleep masked: unregister the command's signal channel
   before canceling its context. Callers observing cancellation can immediately
   interrupt again, including while native work or stdin remains blocked.
+- Preserve the signal-specific cancellation cause returned by eval and place
+  operations, and assert it in the child handshake.
 - Keep the child's readiness/cancellation handshake and bounded parent context.
   Only the test-owned child receives signals; no Photos archive is opened.

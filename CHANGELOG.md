@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Restore signal handling before canceling a command so a quick second interrupt terminates blocked work.
+- Restore signal handling before canceling a command so a quick second interrupt terminates blocked work, while preserving signal-specific cancellation diagnostics.
 
 - Give native CI validation a separate Go cache keyed by its build and workflow inputs so the faster vulnerability scan cannot reserve its cache entry.
 

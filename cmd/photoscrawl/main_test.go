@@ -45,6 +45,7 @@ func TestCommandContextSecondInterruptTerminates(t *testing.T) {
 		fmt.Println("ready")
 		<-ctx.Done()
 		fmt.Println("canceled")
+		fmt.Printf("signal-cause=%t\n", context.Cause(ctx) != context.Canceled)
 		select {}
 	}
 	executable, err := os.Executable()
@@ -75,6 +76,9 @@ func TestCommandContextSecondInterruptTerminates(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
+	if !scanner.Scan() || scanner.Text() != "signal-cause=true" {
+		t.Fatal("first interrupt lost its signal-specific cancellation cause")
+	}
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
