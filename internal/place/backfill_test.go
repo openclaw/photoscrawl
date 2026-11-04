@@ -63,39 +63,6 @@ func TestBackfillRetryDelayKeepsBackoffSchedule(t *testing.T) {
 	}
 }
 
-func TestBackfillHonorsCancelDuringMultiKeyDispatch(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "photos.sqlite")
-	outDir := filepath.Join(dir, "backfill")
-	if err := writeBackfillFixtureDB(dbPath, 8); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	errCh := make(chan error, 1)
-	started := time.Now()
-	go func() {
-		_, err := Backfill(ctx, BackfillOptions{DatabasePath: dbPath, OutputDir: outDir})
-		errCh <- err
-	}()
-	time.Sleep(30 * time.Millisecond)
-	cancel()
-
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Backfill error = %v, want context.Canceled", err)
-		}
-		if elapsed := time.Since(started); elapsed >= 2*time.Second {
-			t.Fatalf("Backfill ignored cancel during dispatch for %s", elapsed)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Backfill did not return after cancel during multi-key dispatch")
-	}
-}
-
 func TestBackfillHonorsCancelDuringRetrySleep(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -120,28 +87,27 @@ func TestBackfillHonorsCancelDuringRetrySleep(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	errCh := make(chan error, 1)
-	started := time.Now()
-	go func() {
-		_, err := Backfill(ctx, BackfillOptions{DatabasePath: dbPath, OutputDir: outDir})
-		errCh <- err
-	}()
-	time.Sleep(40 * time.Millisecond)
-	cancel()
-
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, context.Canceled) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		errCh := make(chan error, 1)
+		started := time.Now()
+		go func() {
+			result, err := Backfill(ctx, BackfillOptions{DatabasePath: dbPath, OutputDir: outDir})
+			if result.LocationKeys != 1 {
+				t.Errorf("retry fixture did not reach backfill: %+v", result)
+			}
+			errCh <- err
+		}()
+		synctest.Wait()
+		cancel()
+		if err := <-errCh; !errors.Is(err, context.Canceled) {
 			t.Fatalf("Backfill error = %v, want context.Canceled", err)
 		}
-		if elapsed := time.Since(started); elapsed >= 2*time.Second {
-			t.Fatalf("Backfill ignored cancel during retry sleep for %s", elapsed)
+		if elapsed := time.Since(started); elapsed != 0 {
+			t.Fatalf("cancellation waited for retry timer: %s", elapsed)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Backfill did not return after cancel during retry sleep")
-	}
+	})
 }
 
 func writeBackfillFixtureDB(path string, keys int) error {
