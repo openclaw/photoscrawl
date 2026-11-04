@@ -121,6 +121,8 @@ func TestImportFacesWithoutSignalColumnsStoresNulls(t *testing.T) {
 	libraryPath := filepath.Join(root, "Library.photoslibrary")
 	createTestPhotosDBWithoutFaceSignals(t, filepath.Join(libraryPath, "database", "Photos.sqlite"))
 
+	createTestPSIDB(t, filepath.Join(libraryPath, "database", "search", "psi.sqlite"))
+
 	archiveDB, err := store.Open(ctx, store.Options{Path: paths.Database, Schema: Schema, SchemaVersion: SchemaVersion})
 	if err != nil {
 		t.Fatal(err)
@@ -133,10 +135,11 @@ func TestImportFacesWithoutSignalColumnsStoresNulls(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := ImportFaces(ctx, paths, ImportFacesOptions{LibraryPath: libraryPath})
+	combined, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraryPath})
 	if err != nil {
 		t.Fatal(err)
 	}
+	result := combined.Faces
 	if result.FaceObservationsInserted != 1 || result.FacesWithEyeState != 0 || result.FacesWithSmile != 0 || result.FacesWithBlurScore != 0 || result.FacesWithPersonKind != 0 {
 		t.Fatalf("import without face signals = %#v", result)
 	}
@@ -389,22 +392,6 @@ values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0
 	libraryPath := filepath.Join(root, "Library.photoslibrary")
 	createTestPhotosDB(t, filepath.Join(libraryPath, "database", "Photos.sqlite"))
 	createTestPSIDB(t, filepath.Join(libraryPath, "database", "search", "psi.sqlite"))
-	faces, err := ImportFaces(ctx, paths, ImportFacesOptions{LibraryPath: libraryPath})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if faces.FaceObservationsInserted != 1 || faces.AssetsTouched != 1 || faces.NamedPersonsFound != 1 || faces.FacesWithEyeState != 1 || faces.FacesWithSmile != 1 || faces.FacesWithQuality != 1 || faces.FacesWithBlurScore != 1 || faces.FacesWithPersonKind != 1 {
-		t.Fatalf("face import counts = %#v", faces)
-	}
-
-	first, err := ImportSearchIndex(ctx, paths, ImportSearchIndexOptions{LibraryPath: libraryPath})
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := ImportSearchIndex(ctx, paths, ImportSearchIndexOptions{LibraryPath: libraryPath})
-	if err != nil {
-		t.Fatal(err)
-	}
 	combined, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraryPath})
 	if err != nil {
 		t.Fatal(err)
@@ -413,6 +400,11 @@ values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0
 	if err != nil {
 		t.Fatal(err)
 	}
+	faces := combined.Faces
+	if faces.FaceObservationsInserted != 1 || faces.AssetsTouched != 1 || faces.NamedPersonsFound != 1 || faces.FacesWithEyeState != 1 || faces.FacesWithSmile != 1 || faces.FacesWithQuality != 1 || faces.FacesWithBlurScore != 1 || faces.FacesWithPersonKind != 1 {
+		t.Fatalf("face import counts = %#v", faces)
+	}
+	first, second := combined.SearchIndex, combinedAgain.SearchIndex
 	if combined.SyncStrategy != "atomic_authoritative_replace_by_source" || combined.TotalAssetsTouched != 1 {
 		t.Fatalf("combined import = %#v", combined)
 	}
@@ -659,14 +651,15 @@ values (?, ?, 'image', '', '2026-07-06T00:00:00Z', '', '', '', 100, 100, 0, 0, 0
 	createTestPhotosDB(t, filepath.Join(libraryPath, "database", "Photos.sqlite"))
 	createTestLeoDB(t, filepath.Join(libraryPath, "database", "search", "leo.sqlite"))
 
-	first, err := ImportSearchIndex(ctx, paths, ImportSearchIndexOptions{LibraryPath: libraryPath})
+	firstImport, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraryPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := ImportSearchIndex(ctx, paths, ImportSearchIndexOptions{LibraryPath: libraryPath})
+	secondImport, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraryPath})
 	if err != nil {
 		t.Fatal(err)
 	}
+	first, second := firstImport.SearchIndex, secondImport.SearchIndex
 	if first.Variant != "leo" || first.GroupsRead != 2 || first.VisualObservationsInserted != 2 {
 		t.Fatalf("first leo import = %#v", first)
 	}
@@ -748,9 +741,11 @@ func createTestPhotosDBWithoutFaceSignals(t *testing.T, path string) {
 	defer db.Close()
 	execTestSQL(t, db, `create table ZPERSON (Z_PK integer primary key, ZDISPLAYNAME text, ZFULLNAME text, ZPERSONUUID text)`)
 	execTestSQL(t, db, `create table ZDETECTEDFACE (Z_PK integer primary key, ZUUID text, ZPERSONFORFACE integer, ZASSETFORFACE integer, ZCENTERX real, ZCENTERY real, ZSIZE real, ZQUALITY real, ZNAMESOURCE integer, ZCLOUDNAMESOURCE integer, ZSOURCEWIDTH integer, ZSOURCEHEIGHT integer)`)
-	execTestSQL(t, db, `create table ZASSET (Z_PK integer primary key, ZUUID text)`)
+	execTestSQL(t, db, `create table ZASSET (Z_PK integer primary key, ZUUID text, ZHASADJUSTMENTS integer)`)
+	execTestSQL(t, db, `create table ZEXTENDEDATTRIBUTES (ZASSET integer)`)
+	execTestSQL(t, db, `create table ZCOMPUTEDASSETATTRIBUTES (ZASSET integer)`)
 	execTestSQL(t, db, `insert into ZPERSON values (1, 'Alex', 'Alex', '08EA22FD-06A7-4145-829F-D724B9DD1BB6')`)
-	execTestSQL(t, db, `insert into ZASSET values (1, '92D69D06-27F0-4831-AEC7-C6F640F075BA')`)
+	execTestSQL(t, db, `insert into ZASSET values (1, '92D69D06-27F0-4831-AEC7-C6F640F075BA', 0)`)
 	execTestSQL(t, db, `insert into ZDETECTEDFACE values (1, 'face-1', 1, 1, 0.5, 0.5, 0.2, 0.9, 1, 0, 100, 100)`)
 }
 

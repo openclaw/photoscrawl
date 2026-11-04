@@ -46,49 +46,6 @@ type searchImportInput struct {
 	cleanup      func()
 }
 
-type ImportSearchIndexOptions struct {
-	LibraryPath string
-}
-
-func ImportSearchIndex(ctx context.Context, paths Paths, opts ImportSearchIndexOptions) (ImportSearchIndexResult, error) {
-	libraryPath, err := resolveFacesLibraryPath(ctx, paths, opts.LibraryPath)
-	if err != nil {
-		return ImportSearchIndexResult{}, err
-	}
-	input, err := preflightSearchImport(ctx, libraryPath)
-	if err != nil {
-		return ImportSearchIndexResult{}, err
-	}
-	defer input.cleanup()
-	archiveDB, err := openAppleArchive(ctx, paths.Database, libraryPath)
-	if err != nil {
-		return ImportSearchIndexResult{}, err
-	}
-	defer archiveDB.Close()
-
-	peopleByUUID, err := loadPhotosPeopleByUUID(ctx, libraryPath)
-	if err != nil {
-		return ImportSearchIndexResult{}, err
-	}
-	tx, err := archiveDB.DB().BeginTx(ctx, nil)
-	if err != nil {
-		return ImportSearchIndexResult{}, err
-	}
-	defer tx.Rollback()
-	assetByUUID, err := archiveAssetMap(ctx, tx, libraryPath)
-	if err != nil {
-		return ImportSearchIndexResult{}, err
-	}
-	result, _, err := writeSearchImport(ctx, tx, input, assetByUUID, peopleByUUID, time.Now().UTC())
-	if err != nil {
-		return ImportSearchIndexResult{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return ImportSearchIndexResult{}, err
-	}
-	return result, nil
-}
-
 func preflightSearchImport(ctx context.Context, libraryPath string) (searchImportInput, error) {
 	searchDBPath, variant, relPath, err := resolveAppleSearchDB(libraryPath)
 	if err != nil {
