@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -74,15 +75,18 @@ func TestCommandContextSecondInterruptTerminates(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	// Allow the cancellation goroutine to unregister before the next signal.
-	time.Sleep(50 * time.Millisecond)
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case err := <-done:
-		if err == nil || ctx.Err() != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || ctx.Err() != nil {
 			t.Fatalf("second interrupt did not terminate child: %v", err)
+		}
+		status, ok := exit.Sys().(syscall.WaitStatus)
+		if !ok || !status.Signaled() || status.Signal() != syscall.SIGINT {
+			t.Fatalf("child exit = %v, want SIGINT termination", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("second interrupt was swallowed")
