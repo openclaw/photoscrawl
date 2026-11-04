@@ -135,7 +135,7 @@ func TestLocalModelMalformedResponsePreservesHTTPProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := classifier.classify(context.Background(), writeModelTestImage(t))
-	if err == nil || !strings.Contains(err.Error(), "did not return a JSON object") {
+	if err == nil || !strings.Contains(err.Error(), "malformed JSON") {
 		t.Fatalf("error = %v", err)
 	}
 	expectedEndpoint := server.URL + "/v1/chat/completions"

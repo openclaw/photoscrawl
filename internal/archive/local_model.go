@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -28,6 +29,7 @@ const (
 )
 
 type localModelResult struct {
+	Diagnostics       CompletionDiagnostics
 	Payload           map[string]any
 	RawResponse       string
 	Endpoint          string
@@ -44,6 +46,7 @@ type localModelClassifier struct {
 	promptVersion string
 	api           string
 	endpointURL   string
+	completion    CompletionConfig
 	client        *http.Client
 }
 
@@ -62,8 +65,9 @@ type ollamaGenerateResponse struct {
 }
 
 type localModelHTTPResponse struct {
-	Content  string
-	Endpoint string
+	Content     string
+	Endpoint    string
+	Diagnostics CompletionDiagnostics
 }
 
 func newLocalModelClassifier(ctx context.Context, modelID, endpointURL, api string) (localModelClassifier, error) {
@@ -131,15 +135,19 @@ func (c localModelClassifier) classify(ctx context.Context, imagePath string) (l
 	}
 	if err != nil {
 		requests, responses, endpoints := recorder.snapshot()
-		return localModelResult{HTTPRequests: requests, HTTPResponses: responses, ResponseEndpoints: endpoints}, err
+		return localModelResult{Diagnostics: response.Diagnostics, Endpoint: response.Endpoint, HTTPRequests: requests, HTTPResponses: responses, ResponseEndpoints: endpoints}, err
 	}
 	payload, err := parseModelPayload(response.Content)
 	if err != nil {
 		requests, responses, endpoints := recorder.snapshot()
-		return localModelResult{Endpoint: response.Endpoint, HTTPRequests: requests, HTTPResponses: responses, ResponseEndpoints: endpoints}, err
+		if c.api == localModelAPIOpenAI {
+			err = response.Diagnostics.wrap(errors.New("local model returned malformed JSON"))
+		}
+		return localModelResult{Diagnostics: response.Diagnostics, Endpoint: response.Endpoint, HTTPRequests: requests, HTTPResponses: responses, ResponseEndpoints: endpoints}, err
 	}
 	requests, responses, endpoints := recorder.snapshot()
 	return localModelResult{
+		Diagnostics:       response.Diagnostics,
 		Payload:           payload,
 		RawResponse:       strings.TrimSpace(response.Content),
 		Endpoint:          response.Endpoint,
@@ -174,10 +182,12 @@ func (c localModelClassifier) classifyOllama(ctx context.Context, data []byte) (
 }
 
 type openAIChatCompletionRequest struct {
-	Model       string              `json:"model"`
-	Messages    []openAIChatMessage `json:"messages"`
-	Temperature float64             `json:"temperature"`
-	MaxTokens   int                 `json:"max_tokens,omitempty"`
+	Model           string               `json:"model"`
+	Messages        []openAIChatMessage  `json:"messages"`
+	Temperature     float64              `json:"temperature"`
+	MaxTokens       int                  `json:"max_tokens,omitempty"`
+	ReasoningEffort string               `json:"reasoning_effort,omitempty"`
+	Reasoning       *openRouterReasoning `json:"reasoning,omitempty"`
 }
 
 type openAIChatMessage struct {
@@ -196,8 +206,10 @@ type openAIChatImageURLPart struct {
 }
 
 type openAIChatCompletionResponse struct {
+	Usage   *CompletionUsage `json:"usage,omitempty"`
 	Choices []struct {
-		Message struct {
+		FinishReason string `json:"finish_reason"`
+		Message      struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
@@ -207,6 +219,10 @@ type openAIChatCompletionResponse struct {
 }
 
 func (c localModelClassifier) classifyOpenAI(ctx context.Context, data []byte) (localModelHTTPResponse, error) {
+	config, err := c.completion.normalized()
+	if err != nil {
+		return localModelHTTPResponse{}, err
+	}
 	mediaType := http.DetectContentType(data)
 	request := openAIChatCompletionRequest{
 		Model: c.modelID,
@@ -217,21 +233,36 @@ func (c localModelClassifier) classifyOpenAI(ctx context.Context, data []byte) (
 				{Type: "image_url", ImageURL: &openAIChatImageURLPart{URL: "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)}},
 			},
 		}},
-		Temperature: 0.1,
-		MaxTokens:   800,
+		Temperature:     0.1,
+		MaxTokens:       config.MaxTokens,
+		ReasoningEffort: config.ReasoningEffort,
+	}
+	if config.ReasoningEnabled != nil || config.ReasoningMaxTokens != 0 {
+		request.Reasoning = &openRouterReasoning{Enabled: config.ReasoningEnabled, MaxTokens: config.ReasoningMaxTokens}
 	}
 	var completion openAIChatCompletionResponse
 	endpoint, err := c.postJSON(ctx, request, &completion)
-	if err != nil {
-		return localModelHTTPResponse{}, err
+	response := localModelHTTPResponse{Endpoint: endpoint, Diagnostics: CompletionDiagnostics{Usage: completion.Usage}}
+	if len(completion.Choices) > 0 {
+		response.Diagnostics.FinishReason = sanitizeProviderMessage(completion.Choices[0].FinishReason)
+		response.Content = completion.Choices[0].Message.Content
 	}
-	if completion.Error != nil && strings.TrimSpace(completion.Error.Message) != "" {
-		return localModelHTTPResponse{}, errors.New(completion.Error.Message)
+	if err != nil {
+		return response, response.Diagnostics.wrap(err)
+	}
+	if completion.Error != nil {
+		return response, response.Diagnostics.wrap(fmt.Errorf("provider error: %s", sanitizeProviderMessage(redactModelRequestEcho(completion.Error.Message, request))))
 	}
 	if len(completion.Choices) == 0 {
-		return localModelHTTPResponse{}, errors.New("local model returned no choices")
+		return response, response.Diagnostics.wrap(errors.New("local model returned no choices"))
 	}
-	return localModelHTTPResponse{Content: completion.Choices[0].Message.Content, Endpoint: endpoint}, nil
+	if response.Diagnostics.FinishReason == "length" {
+		return response, response.Diagnostics.wrap(errors.New("completion truncated (length)"))
+	}
+	if strings.TrimSpace(response.Content) == "" {
+		return response, response.Diagnostics.wrap(errors.New("local model returned empty content"))
+	}
+	return response, nil
 }
 
 func normalizeOpenAIChatURL(value string) string {
@@ -260,14 +291,25 @@ func (c localModelClassifier) postJSON(ctx context.Context, request, response an
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("call local model: %w", err)
+		return "", &sanitizedTransportError{message: "call local model: " + sanitizeProviderMessage(redactModelRequestEcho(err.Error(), request)), cause: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", fmt.Errorf("local model returned %s", resp.Status)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8193))
+		message := providerErrorMessage([]byte(redactModelRequestEcho(string(body[:min(len(body), 8192)]), request)))
+		if len(body) > 8192 {
+			message = "provider error body exceeded 8192 bytes"
+		}
+		if readErr != nil {
+			message = "could not read provider error body"
+		}
+		if completion, ok := response.(*openAIChatCompletionResponse); ok && len(body) <= 8192 {
+			_ = json.Unmarshal(body, completion)
+		}
+		return responseEndpoint(resp), fmt.Errorf("local model HTTP %d: %s", resp.StatusCode, message)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(response); err != nil {
-		return "", fmt.Errorf("decode local model response: %w", err)
+		return responseEndpoint(resp), errors.New("decode local model response: invalid JSON")
 	}
 	return responseEndpoint(resp), nil
 }
