@@ -50,3 +50,14 @@ no production behavior or release artifacts changed.
 - The expired context returns before PhotoKit; fixtures use temporary paths.
 
 No native export behavior, Photos data, or release artifacts changed.
+
+## Second-interrupt ordering
+
+- Removed the fixed sleep between cancellation acknowledgement and the second
+  interrupt in the subprocess test. It now sends that interrupt immediately
+  and requires SIGINT termination, rather than accepting any failed exit.
+- Fixed the ordering the sleep masked: unregister the command's signal channel
+  before canceling its context. Callers observing cancellation can immediately
+  interrupt again, including while native work or stdin remains blocked.
+- Keep the child's readiness/cancellation handshake and bounded parent context.
+  Only the test-owned child receives signals; no Photos archive is opened.
