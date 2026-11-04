@@ -1,5 +1,6 @@
-// Synthetic native eval proof: local PNG rendering and a loopback model server.
-package main
+//go:build darwin
+
+package evalcard_test
 
 import (
 	"context"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"testing"
 
 	"github.com/openclaw/photoscrawl/internal/evalcard"
 	"github.com/openclaw/photoscrawl/internal/photos"
@@ -28,23 +30,20 @@ func (syntheticProvider) Snapshot(context.Context, string) (photos.LibrarySnapsh
 	return photos.LibrarySnapshot{Assets: []photos.Asset{{LocalIdentifier: identifier, MediaType: "image"}}}, nil
 }
 
-func main() {
-	mode := "default"
-	if len(os.Args) > 1 {
-		mode = os.Args[1]
-	}
-	if err := run(mode); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+// Exercise the real renderer with a temporary PNG and a loopback model server.
+func TestNativeEvaluationIntegration(t *testing.T) {
+	for _, mode := range []string{"default", "collisions", "blocked"} {
+		t.Run(mode, func(t *testing.T) {
+			if err := runNativeEval(t, mode); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
-func run(mode string) error {
-	root, err := os.MkdirTemp("", "photoscrawl-eval-proof-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(root)
+func runNativeEval(t *testing.T, mode string) error {
+	t.Helper()
+	root := t.TempDir()
 	originals := filepath.Join(root, "library", "originals")
 	if err := os.MkdirAll(originals, 0o700); err != nil {
 		return err
@@ -84,9 +83,7 @@ func run(mode string) error {
 			return err
 		}
 	}
-	if err := os.Chdir(root); err != nil {
-		return err
-	}
+	t.Chdir(root)
 	result, runErr := evalcard.Run(context.Background(), opts)
 	if mode == "blocked" {
 		if runErr == nil || calls.Load() != 1 {
@@ -95,7 +92,6 @@ func run(mode string) error {
 		if _, err := os.Stat(filepath.Join(opts.OutputDir, "summary.json")); !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("summary exists after model evidence failure: %v", err)
 		}
-		fmt.Println("PASS: native eval reports model evidence write failure and omits summary")
 		return nil
 	}
 	if runErr != nil {
@@ -131,10 +127,5 @@ func run(mode string) error {
 			return fmt.Errorf("missing model output: %s", model)
 		}
 	}
-	if mode == "collisions" {
-		fmt.Println("PASS: native eval retains four distinct model results for punctuation and case collisions")
-		return nil
-	}
-	fmt.Println("PASS: native eval outside checkout renders synthetic PNG, uses built-in prompt and persists model output")
 	return nil
 }
