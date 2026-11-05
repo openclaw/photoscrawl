@@ -3,17 +3,34 @@ package photos
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
-func TestAttachLocalMediaPathsUsesPackageDerivative(t *testing.T) {
+func TestLocalMediaIndexRanksCandidatesAndAttachesPreferredPath(t *testing.T) {
 	libraryPath := filepath.Join(t.TempDir(), "Fixture Photos Library.photoslibrary")
-	derivativePath := filepath.Join(libraryPath, "resources", "derivatives", "A", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE_1_105_c.jpeg")
-	if err := os.MkdirAll(filepath.Dir(derivativePath), 0o755); err != nil {
+	uuid := "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+	want := []LocalMediaCandidate{
+		{Path: filepath.Join(libraryPath, "resources", "derivatives", "A", uuid+"_b.jpeg"), Class: "derivative", Size: 2},
+		{Path: filepath.Join(libraryPath, "resources", "derivatives", "A", uuid+"_c.jpeg"), Class: "derivative", Size: 2},
+		{Path: filepath.Join(libraryPath, "resources", "derivatives", "A", uuid+"_a.jpeg"), Class: "derivative", Size: 3},
+		{Path: filepath.Join(libraryPath, "resources", "renders", "A", uuid+".jpeg"), Class: "render", Size: 1},
+		{Path: filepath.Join(libraryPath, "originals", "A", uuid+".jpeg"), Class: "original", Size: 1},
+	}
+	for _, candidate := range want {
+		if err := os.MkdirAll(filepath.Dir(candidate.Path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(candidate.Path, make([]byte, candidate.Size), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	index, err := BuildLocalMediaIndex(libraryPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(derivativePath, []byte("fixture image"), 0o644); err != nil {
-		t.Fatal(err)
+	if got := index.Candidates(uuid + "/L0/001"); !slices.Equal(got, want) {
+		t.Fatalf("candidates = %#v, want %#v", got, want)
 	}
 	snapshot := LibrarySnapshot{
 		Assets: []Asset{
@@ -27,12 +44,10 @@ func TestAttachLocalMediaPathsUsesPackageDerivative(t *testing.T) {
 		},
 	}
 
-	if err := AttachLocalMediaPaths(&snapshot, libraryPath); err != nil {
-		t.Fatal(err)
-	}
+	index.Attach(&snapshot)
 	resource := snapshot.Assets[0].Resources[0]
-	if resource.LocalPath != derivativePath {
-		t.Fatalf("local path = %q, want %q", resource.LocalPath, derivativePath)
+	if resource.LocalPath != want[0].Path {
+		t.Fatalf("local path = %q, want %q", resource.LocalPath, want[0].Path)
 	}
 	if !resource.AvailableLocally || resource.NeedsDownload || resource.Availability != "local" {
 		t.Fatalf("availability = %#v", resource)
