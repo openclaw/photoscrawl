@@ -82,3 +82,15 @@ the mixed-negation passport and fully negated cases, fixtures and production cod
 
 Temporary first-occurrence and negation-bypass mutations fail those retained
 rows. Full local checks, archive race tests, review and CI use synthetic data.
+
+## Concurrent classifier startup failures
+
+- Let both concurrent-classifier tests observe the first classifier's result
+  while waiting for preview export. An early return now reports its error
+  instead of leaving the test blocked until the global suite timeout.
+- Preserve the exporter gates, explicit release ordering, result counts,
+  recrawl revision fencing, and synthetic Photos library fixtures.
+- Temporary Go overlays cancel only the background classifier before it starts:
+  both original tests time out; both fixed tests fail promptly with the original
+  cancellation error. Full local checks, archive race tests, independent review,
+  and CI validate the unchanged success paths. No live Photos data or releases.
