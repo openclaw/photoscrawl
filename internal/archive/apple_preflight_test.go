@@ -214,8 +214,16 @@ func TestAppleArchivePreflightReadsLiveWALAndSnapshotsRollbackJournal(t *testing
 
 func TestAppleArchivePreflightRejectsFilesystemAliases(t *testing.T) {
 	for _, fixture := range []string{"main-hardlink", "sidecar-symlink", "sidecar-hardlink", "orphan"} {
-		for _, suffix := range []string{"-wal", "-shm", "-journal"} {
-			t.Run(fixture+"/"+suffix, func(t *testing.T) {
+		suffixes := []string{"-wal", "-shm", "-journal"}
+		if fixture == "main-hardlink" {
+			suffixes = []string{""}
+		}
+		for _, suffix := range suffixes {
+			name := fixture
+			if suffix != "" {
+				name += "/" + suffix
+			}
+			t.Run(name, func(t *testing.T) {
 				root := t.TempDir()
 				path, other := filepath.Join(root, "archive.db"), filepath.Join(root, "other.db")
 				library := filepath.Join(root, "Library.photoslibrary")
