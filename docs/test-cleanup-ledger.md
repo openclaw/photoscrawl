@@ -129,3 +129,14 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   end-to-end proof. No production changes, private media, live library access,
   external model calls or releases. Full local checks, review and platform CI
   are required before landing.
+
+## Platform path fixtures
+
+- Share XDG setup and a complete `Paths` comparison between absent/present
+  legacy-archive cases. Remove the standalone partial legacy test and 18 test
+  lines; keep both inputs and the distinct derived-runtime-directory test.
+- Sixteen valid before/after race probes preserve database and ordinary-share
+  failure detection and now reject lost config/data/cache/log/share paths when
+  a legacy archive exists. Healthy cases pass; production source is restored.
+- Run full local checks, independent review and platform CI before landing.
+  Temporary directories only; no production changes, live archives or releases.
