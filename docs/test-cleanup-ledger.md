@@ -115,3 +115,17 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
 - Validate full local checks, archive race tests, built-CLI metadata, independent
   review and platform CI. No new fixtures, production changes, Photos data,
   external model calls or releases.
+
+## Local media candidate selection
+
+- Replace the lone derivative fixture with five competing temporary files.
+  Require derivative/render/original ordering, then size and path ordering,
+  and attachment of the preferred candidate. Keep availability and metadata
+  checks and the separate synthetic-resource test through the public wrapper.
+- Ten before/after race probes pass their expected outcomes: healthy suites
+  pass; reversed class, size or path ordering and last-candidate attachment
+  pass the old tests but fail the expanded fixture. Production source is restored.
+- This is filesystem integration coverage, not native image-decoding or Photos
+  end-to-end proof. No production changes, private media, live library access,
+  external model calls or releases. Full local checks, review and platform CI
+  are required before landing.
