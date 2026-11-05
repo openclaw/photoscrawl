@@ -94,3 +94,13 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   both original tests time out; both fixed tests fail promptly with the original
   cancellation error. Full local checks, archive race tests, independent review,
   and CI validate the unchanged success paths. No live Photos data or releases.
+
+## Model retry fixture phases
+
+- Remove the unreachable `X-Retry-Proof` success branch from the content-retry
+  server. No request sets that header; the test switches to its success handler
+  explicitly after observing the initial failure.
+- Keep the real loopback HTTP failure/recovery phases, synthetic image, archive
+  and classifier calls. Before/after fault overlays must still reject a server
+  that succeeds immediately or never recovers. Run scoped race tests, local
+  checks, independent review and platform CI. No production or release changes.

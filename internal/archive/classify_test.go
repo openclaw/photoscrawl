@@ -181,11 +181,7 @@ func TestClassifyLocalModelRetriesContentFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	imagePath := writeModelTestImage(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Retry-Proof") == "ready" {
-			openAIResponseHandler(w, r)
-			return
-		}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "not ready", http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
