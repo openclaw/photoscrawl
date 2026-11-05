@@ -900,7 +900,11 @@ func TestConcurrentClassifiersClaimEachAssetOnce(t *testing.T) {
 		result, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", LocalModelURL: "http://127.0.0.1:1", AllowICloudDownloads: true, previewExporter: exporter, Now: fixedClock("2026-09-25T10:05:00Z")})
 		firstDone <- classifyOutcome{result: result, err: err}
 	}()
-	<-started
+	select {
+	case <-started:
+	case first := <-firstDone:
+		t.Fatalf("classifier exited before preview export: %v", first.err)
+	}
 	second, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", LocalModelURL: "http://127.0.0.1:1", AllowICloudDownloads: true, previewExporter: exporter, Now: fixedClock("2026-09-25T10:05:01Z")})
 	if err != nil {
 		close(release)
@@ -950,7 +954,11 @@ func TestClassifyRejectsResultAfterRecrawlChangesInput(t *testing.T) {
 		result, err := Classify(ctx, paths, ClassifyOptions{All: true, LocalModel: "fixture-vision", LocalModelURL: "http://127.0.0.1:1", AllowICloudDownloads: true, previewExporter: exporter, Now: fixedClock("2026-09-25T10:05:00Z")})
 		firstDone <- classifyOutcome{result: result, err: err}
 	}()
-	<-started
+	select {
+	case <-started:
+	case first := <-firstDone:
+		t.Fatalf("classifier exited before preview export: %v", first.err)
+	}
 	asset.Width = 200
 	snapshot.Assets[0] = asset
 	if _, err := Crawl(ctx, paths, CrawlOptions{LibraryPath: libraryPath, Provider: fakeProvider{snapshot: snapshot}, Now: fixedClock("2026-09-25T10:06:00Z")}); err != nil {
