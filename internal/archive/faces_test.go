@@ -198,10 +198,7 @@ func TestCopySQLiteCreatesConsistentSnapshotWhileSourceIsLive(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	sourcePath := filepath.Join(root, "live.sqlite")
-	db, err := sql.Open("sqlite", "file:"+sourcePath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openTestSQLite(t, sourcePath)
 	defer db.Close()
 	// Keep the connection-local WAL and cache settings on the writer connection.
 	db.SetMaxOpenConns(1)
@@ -352,10 +349,7 @@ values ('existing-metadata', ?, 'apple_exif', 'Existing Camera', '{}', 1, ?, ?, 
 	photosDBPath := filepath.Join(libraryPath, "database", "Photos.sqlite")
 	createTestPhotosDB(t, photosDBPath)
 	createTestPSIDB(t, filepath.Join(libraryPath, "database", "search", "psi.sqlite"))
-	brokenDB, err := sql.Open("sqlite", "file:"+photosDBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	brokenDB := openTestSQLite(t, photosDBPath)
 	execTestSQL(t, brokenDB, `drop table ZCOMPUTEDASSETATTRIBUTES`)
 	if err := brokenDB.Close(); err != nil {
 		t.Fatal(err)
@@ -364,7 +358,7 @@ values ('existing-metadata', ?, 'apple_exif', 'Existing Camera', '{}', 1, ?, ?, 
 		t.Fatal("ImportApple() succeeded with an unsupported metadata schema")
 	}
 
-	archiveDB, err = store.OpenReadOnly(ctx, paths.Database)
+	archiveDB, err := store.OpenReadOnly(ctx, paths.Database)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -661,10 +655,7 @@ func createTestPhotosDB(t *testing.T, path string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openTestSQLite(t, path)
 	defer db.Close()
 	execTestSQL(t, db, `create table ZPERSON (Z_PK integer primary key, ZDISPLAYNAME text, ZFULLNAME text, ZPERSONUUID text, ZDETECTIONTYPE integer)`)
 	execTestSQL(t, db, `create table ZDETECTEDFACE (Z_PK integer primary key, ZUUID text, ZPERSONFORFACE integer, ZASSETFORFACE integer, ZCENTERX real, ZCENTERY real, ZSIZE real, ZQUALITY real, ZBLURSCORE real, ZISLEFTEYECLOSED integer, ZISRIGHTEYECLOSED integer, ZHASSMILE integer, ZNAMESOURCE integer, ZCLOUDNAMESOURCE integer, ZSOURCEWIDTH integer, ZSOURCEHEIGHT integer)`)
@@ -684,10 +675,7 @@ func TestPhotoMetadataReadsMediaAnalysisBlurriness(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "Photos.sqlite")
 	createTestPhotosDB(t, path)
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openTestSQLite(t, path)
 	defer db.Close()
 	input, err := loadPhotoMetadataInput(ctx, db)
 	if err != nil {
@@ -711,10 +699,7 @@ func createTestPhotosDBWithoutFaceSignals(t *testing.T, path string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openTestSQLite(t, path)
 	defer db.Close()
 	execTestSQL(t, db, `create table ZPERSON (Z_PK integer primary key, ZDISPLAYNAME text, ZFULLNAME text, ZPERSONUUID text)`)
 	execTestSQL(t, db, `create table ZDETECTEDFACE (Z_PK integer primary key, ZUUID text, ZPERSONFORFACE integer, ZASSETFORFACE integer, ZCENTERX real, ZCENTERY real, ZSIZE real, ZQUALITY real, ZNAMESOURCE integer, ZCLOUDNAMESOURCE integer, ZSOURCEWIDTH integer, ZSOURCEHEIGHT integer)`)
@@ -731,10 +716,7 @@ func createTestPSIDB(t *testing.T, path string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openTestSQLite(t, path)
 	defer db.Close()
 	execTestSQL(t, db, `create table assets (uuid_0 integer, uuid_1 integer)`)
 	execTestSQL(t, db, `create table groups (category integer, owning_groupid integer, content_string text, normalized_string text, lookup_identifier text, score real)`)
@@ -751,10 +733,7 @@ func createTestLeoDB(t *testing.T, path string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openTestSQLite(t, path)
 	defer db.Close()
 	execTestSQL(t, db, `create table lexicon (lexeme_id integer primary key, type integer, category integer, content text)`)
 	execTestSQL(t, db, `create table items (identifier text, type integer, lexeme_ids blob)`)
