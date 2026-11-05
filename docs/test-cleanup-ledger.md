@@ -104,3 +104,14 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   and classifier calls. Before/after fault overlays must still reject a server
   that succeeds immediately or never recovers. Run scoped race tests, local
   checks, independent review and platform CI. No production or release changes.
+
+## Manifest command presence
+
+- Require query and timeline command entries before checking their non-mutating
+  flags. The old zero-value map lookups accepted either missing command.
+- Ten before/after race probes pass their expected outcomes: healthy manifests
+  pass, repaired checks reject both omissions, and mutation-flag guards still
+  reject both changed flags. Keep identity, paths, capability and privacy checks.
+- Validate full local checks, archive race tests, built-CLI metadata, independent
+  review and platform CI. No new fixtures, production changes, Photos data,
+  external model calls or releases.

@@ -21,10 +21,12 @@ func TestControlManifest(t *testing.T) {
 	if manifest.Paths.DefaultDatabase != paths.Database || manifest.Paths.DefaultCache != paths.CacheDir {
 		t.Fatalf("paths = %#v", manifest.Paths)
 	}
-	if !slices.Contains(manifest.Capabilities, "search") || manifest.Commands["query"].Mutates {
+	query, ok := manifest.Commands["query"]
+	if !ok || !slices.Contains(manifest.Capabilities, "search") || query.Mutates {
 		t.Fatalf("search contract = %#v", manifest)
 	}
-	if !slices.Contains(manifest.Capabilities, "timeline") || manifest.Commands["timeline"].Mutates {
+	timeline, ok := manifest.Commands["timeline"]
+	if !ok || !slices.Contains(manifest.Capabilities, "timeline") || timeline.Mutates {
 		t.Fatalf("timeline contract = %#v", manifest)
 	}
 	if manifest.Privacy.ExportsSecrets || !slices.Contains(manifest.Privacy.LocalOnlyScopes, "apple-photos") {
