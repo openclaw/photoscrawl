@@ -140,3 +140,15 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   a legacy archive exists. Healthy cases pass; production source is restored.
 - Run full local checks, independent review and platform CI before landing.
   Temporary directories only; no production changes, live archives or releases.
+
+## Preflight fixture overlap
+
+- Remove the foreign-source test whose hardlink fixture stops schema inspection.
+  Keep exact hardlink refusal and direct foreign DELETE/WAL preservation tests.
+- Run the main-hardlink fixture once instead of once per unused sidecar suffix;
+  retain all nine distinct sidecar alias/orphan cases and their assertions.
+- Eight before/after race probes preserve rejection of hardlink-guard,
+  preflight-schema-guard and both-schema-guard bypasses; healthy suites pass.
+  The removed test passes both schema-bypass probes. Production is restored.
+- Require full local checks, independent review and platform CI before landing.
+  Synthetic temporary SQLite/filesystem fixtures only; no live data or releases.
