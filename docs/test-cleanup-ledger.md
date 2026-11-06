@@ -350,3 +350,19 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   Healthy cases pass; source bytes stay unchanged and overlays are removed.
 - Require full local checks, archive race tests, independent review and
   native/portable CI. No live Photos access or releases.
+
+## Cancelled classification retry
+
+- The cancellation case checked only that the queue row was not failed; its
+  loopback model server was never used. Reuse the same archive, server and
+  options to retry the photo at the identical clock time after cancellation.
+- Require the original pending state and ingestion reason, one successful
+  preview/classification with written observations, and the persisted completed
+  state and model-observation reason. No new tests, helpers or fixture files.
+- Twelve paired before/after race runs use temporary Go overlays. Unreleased
+  claims, prematurely completed rows, overwritten reasons and a failed retry
+  write pass the old test and fail the replacement. Both still reject loss of
+  cancellation identity. Healthy cases pass; source bytes stay unchanged.
+- Require full local checks, archive race tests, independent review and
+  native/portable CI. Synthetic SQLite/media and a loopback server only; no
+  production changes, live Photos access or releases.

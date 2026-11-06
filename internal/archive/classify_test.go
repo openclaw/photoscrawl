@@ -634,7 +634,7 @@ func TestClassifyCancelledPreviewLeavesQueueRowForRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(ollamaGenerateResponse{Response: `{"scene_summary":"unused"}`, Done: true})
+		_ = json.NewEncoder(w).Encode(ollamaGenerateResponse{Response: `{"scene_summary":"retried cloud photo"}`, Done: true})
 	}))
 	defer server.Close()
 	provider := fakeProvider{snapshot: photos.LibrarySnapshot{
@@ -658,7 +658,7 @@ func TestClassifyCancelledPreviewLeavesQueueRowForRetry(t *testing.T) {
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
-	_, err := Classify(runCtx, paths, ClassifyOptions{
+	opts := ClassifyOptions{
 		All:                  true,
 		LocalModel:           "fixture-vision",
 		LocalModelURL:        server.URL,
@@ -669,7 +669,8 @@ func TestClassifyCancelledPreviewLeavesQueueRowForRetry(t *testing.T) {
 			cancelRun()
 			return context.Canceled
 		},
-	})
+	}
+	_, err := Classify(runCtx, paths, opts)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("classify error = %v, want context.Canceled", err)
 	}
@@ -682,8 +683,26 @@ func TestClassifyCancelledPreviewLeavesQueueRowForRetry(t *testing.T) {
 	if err := db.DB().QueryRowContext(ctx, `select state, coalesce(reason, '') from classification_queue`).Scan(&state, &reason); err != nil {
 		t.Fatal(err)
 	}
-	if state == "content_failed" {
-		t.Fatalf("cancelled preview marked the asset failed: state=%q reason=%q", state, reason)
+	if state != "pending" || reason != "metadata_ingested" {
+		t.Fatalf("cancelled preview changed queue state: state=%q reason=%q", state, reason)
+	}
+
+	opts.previewExporter = func(_ context.Context, _, destination string, _ int, _ bool) error {
+		return os.WriteFile(destination, []byte("retried preview bytes"), 0o600)
+	}
+	retried, err := Classify(ctx, paths, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.Processed != 1 || retried.ContentClassified != 1 || retried.ContentObservationsWritten == 0 ||
+		retried.ICloudPreviewsDownloaded != 1 || retried.ICloudPreviewDownloadFailures != 0 || retried.ContentClassificationFailures != 0 {
+		t.Fatalf("retry after cancelled preview = %#v", retried)
+	}
+	if err := db.DB().QueryRowContext(ctx, `select state, reason from classification_queue`).Scan(&state, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if state != "content_classified" || reason != "local_model_observations" {
+		t.Fatalf("retried queue state: state=%q reason=%q", state, reason)
 	}
 }
 
