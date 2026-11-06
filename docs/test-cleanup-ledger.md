@@ -319,3 +319,20 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   Healthy suites pass; temporary Go overlays leave production unchanged.
 - Require full local checks, archive race tests, independent review and
   native/portable CI. Synthetic data only; no live Photos access or releases.
+
+## CLI search-index fixture links
+
+- The PSI fixture linked group IDs 10–12 to implicit group rowids 1–3, so the
+  real CLI imported zero search-index observations while its curation checks
+  passed. Use explicit matching rowids on the same three fixture rows.
+- Require three resolved groups, known/unknown categories and a resolved person
+  observation. Search the imported label through the CLI and check its asset,
+  observation identity, source, category and title. Keep existing source-byte
+  preservation and eyes-closed checks. No new tests, helpers or fixture files.
+- Fourteen paired before/after race runs build and invoke the real CLI through
+  temporary Go overlays. Decoder no-op, missing search FTS, wrong label category,
+  dropped unknown group and leaked search-person eye signals pass the old test
+  and fail the repaired test. Both still reject lost detected eye state.
+  Healthy suites pass; source files remain unchanged after the proof.
+- Require full local checks, independent review and native/portable CI. Synthetic
+  SQLite data only; no production changes, live Photos access or releases.
