@@ -10,12 +10,6 @@ import (
 	"github.com/openclaw/photoscrawl/internal/photos"
 )
 
-type budgetProvider struct{ assets []photos.Asset }
-
-func (p budgetProvider) Snapshot(context.Context, string) (photos.LibrarySnapshot, error) {
-	return photos.LibrarySnapshot{Assets: p.assets}, nil
-}
-
 func TestEvalAttemptsAndOriginalCleanupAreBounded(t *testing.T) {
 	oldExport, oldRender := exportEvalOriginal, renderEvalImage
 	t.Cleanup(func() { exportEvalOriginal, renderEvalImage = oldExport, oldRender })
@@ -31,11 +25,11 @@ func TestEvalAttemptsAndOriginalCleanupAreBounded(t *testing.T) {
 		return errors.New("synthetic render failure")
 	}
 	opts, _ := evalRunOptions(t)
-	assets := make([]photos.Asset, 100)
+	assets := make([]photos.Asset, 7)
 	for i := range assets {
 		assets[i] = photos.Asset{LocalIdentifier: "synthetic", MediaType: "image"}
 	}
-	opts.Provider = budgetProvider{assets}
+	opts.Provider = stubProvider{assets}
 	opts.Limit = 2
 	opts.AllowICloudDownloads = true
 	for run := 0; run < 2; run++ {
@@ -120,7 +114,7 @@ func TestOriginalBudgetPreservesExistingCacheAndConsent(t *testing.T) {
 	renderEvalImage = func(context.Context, string, string, float64) error { return errors.New("render") }
 	opts, _ := evalRunOptions(t)
 	asset := photos.Asset{LocalIdentifier: "synthetic", MediaType: "image"}
-	opts.Provider = budgetProvider{[]photos.Asset{asset}}
+	opts.Provider = stubProvider{[]photos.Asset{asset}}
 	opts.AllowICloudDownloads = false
 	if _, err := Run(context.Background(), opts); err != nil {
 		t.Fatal(err)

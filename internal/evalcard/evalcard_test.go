@@ -153,10 +153,10 @@ func evalRunOptions(t *testing.T) (Options, string) {
 	}, filepath.Join(out, "summary.json")
 }
 
-type stubProvider struct{}
+type stubProvider struct{ assets []photos.Asset }
 
-func (stubProvider) Snapshot(context.Context, string) (photos.LibrarySnapshot, error) {
-	return photos.LibrarySnapshot{}, nil
+func (p stubProvider) Snapshot(context.Context, string) (photos.LibrarySnapshot, error) {
+	return photos.LibrarySnapshot{Assets: p.assets}, nil
 }
 
 type errWriter struct{ err error }
