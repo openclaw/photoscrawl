@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/openclaw/photoscrawl/internal/photos"
@@ -120,15 +121,18 @@ func TestTimelineReturnsLocatedAssetsInHalfOpenRange(t *testing.T) {
 
 func TestTimelineRejectsInvalidBoundsBeforeOpeningDatabase(t *testing.T) {
 	t.Parallel()
-	for name, opts := range map[string]TimelineOptions{
-		"missing from": {To: "2026-05-28T00:00:00Z"},
-		"missing to":   {From: "2026-05-27T00:00:00Z"},
-		"invalid from": {From: "2026-05-27", To: "2026-05-28T00:00:00Z"},
-		"reverse":      {From: "2026-05-28T00:00:00Z", To: "2026-05-27T00:00:00Z"},
+	for name, tc := range map[string]struct {
+		opts        TimelineOptions
+		errorPrefix string
+	}{
+		"missing from": {TimelineOptions{To: "2026-05-28T00:00:00Z"}, "from is required"},
+		"missing to":   {TimelineOptions{From: "2026-05-27T00:00:00Z"}, "to is required"},
+		"invalid from": {TimelineOptions{From: "2026-05-27", To: "2026-05-28T00:00:00Z"}, "from must be an ISO 8601 timestamp with an offset: "},
+		"reverse":      {TimelineOptions{From: "2026-05-28T00:00:00Z", To: "2026-05-27T00:00:00Z"}, "from must be before to"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := Timeline(context.Background(), Paths{}, opts); err == nil {
-				t.Fatal("expected validation error")
+			if _, err := Timeline(context.Background(), Paths{}, tc.opts); err == nil || !strings.HasPrefix(err.Error(), tc.errorPrefix) {
+				t.Fatalf("Timeline error = %v, want prefix %q", err, tc.errorPrefix)
 			}
 		})
 	}
