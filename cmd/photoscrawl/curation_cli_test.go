@@ -98,6 +98,10 @@ func TestCurationCLIImportsSyntheticPhotosLibrary(t *testing.T) {
 	if len(junk.Candidates) != 1 || junk.Candidates[0].ID != found.Assets[1].ID {
 		t.Fatalf("junk: %#v", junk)
 	}
+	invalidAge := exec.CommandContext(ctx, binary, "junk", "--kind", "screenshots", "--older-than", "106752d", "--db", database, "--json")
+	if out, err := invalidAge.CombinedOutput(); err == nil || !bytes.Contains(out, []byte(`invalid day duration "106752d"`)) {
+		t.Fatalf("overflowing screenshot age: %v\n%s", err, out)
+	}
 	invoke(&junk, "junk", "--kind", "eyes-closed")
 	if len(junk.Candidates) != 1 || junk.Candidates[0].ID != found.Assets[1].ID || junk.Candidates[0].KeepInstead != found.Assets[0].ID {
 		t.Fatalf("eyes-closed after search-index import: %#v", junk)

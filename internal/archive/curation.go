@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -756,7 +757,7 @@ func parseDuration(x string) (time.Duration, error) {
 	}
 	if strings.HasSuffix(x, "d") {
 		n, e := strconv.ParseInt(strings.TrimSuffix(x, "d"), 10, 64)
-		if e != nil || n < 0 {
+		if e != nil || n < 0 || n > math.MaxInt64/int64(24*time.Hour) {
 			return 0, fmt.Errorf("invalid day duration %q", x)
 		}
 		return time.Duration(n) * 24 * time.Hour, nil

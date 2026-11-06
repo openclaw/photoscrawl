@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject overflowing day counts in `junk --older-than` instead of wrapping the screenshot age cutoff.
+
 ## 0.5.7 - 2026-11-06
 
 **Highlights:** Restore second-interrupt handling and preserve literal SQLite paths.
