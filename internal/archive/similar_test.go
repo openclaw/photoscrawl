@@ -152,6 +152,12 @@ group by term_type, term
 func TestSimilarScoringReasonsAndExclusions(t *testing.T) {
 	ctx := context.Background()
 	paths := similarFixture(t)
+	if _, err := Similar(ctx, paths, SimilarOptions{}); err == nil || err.Error() != "id is required" {
+		t.Fatalf("missing id error = %v", err)
+	}
+	if _, err := Similar(ctx, paths, SimilarOptions{ID: "missing"}); err == nil || err.Error() != "asset not found: missing" {
+		t.Fatalf("unknown id error = %v", err)
+	}
 
 	result, err := Similar(ctx, paths, SimilarOptions{ID: "seed", Limit: 50})
 	if err != nil {
@@ -238,17 +244,6 @@ func TestSimilarExcludeIDsFileAndLimit(t *testing.T) {
 	}
 	if result.Limit != 1 || !sameSimilarIDs(result.Assets, "tie-high") {
 		t.Fatalf("excluded and limited result = %#v", result)
-	}
-}
-
-func TestSimilarRequiresExistingID(t *testing.T) {
-	ctx := context.Background()
-	paths := similarFixture(t)
-	if _, err := Similar(ctx, paths, SimilarOptions{}); err == nil {
-		t.Fatal("missing id was accepted")
-	}
-	if _, err := Similar(ctx, paths, SimilarOptions{ID: "missing"}); err == nil {
-		t.Fatal("unknown id was accepted")
 	}
 }
 
