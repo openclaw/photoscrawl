@@ -263,3 +263,17 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
 - Require full local checks, archive race tests, independent review and
   native/portable CI before landing. Synthetic SQLite data only; no production
   changes, live Photos access or releases.
+
+## People result fixture and duplicate query
+
+- Replace partial people checks and a second identical tombstone query with one
+  literal ordered comparison of labels, UUIDs, kinds, face counts and asset counts.
+- Keep the tombstoned person fixture. Add a second detection in an existing image
+  so face counts and distinct asset counts differ; no extra asset or fixture file.
+- Twelve paired before/after curation race runs show that lost UUIDs, missing
+  distinct-asset counting, a wrong person count and an unexpected person pass the
+  old test but fail the repaired test. Tombstone leakage still fails both.
+  Healthy cases pass; temporary Go overlays leave production bytes unchanged.
+- Require full local checks, archive race tests, independent review and
+  native/portable CI. Synthetic SQLite data only; no product changes, live
+  Photos access or releases.
