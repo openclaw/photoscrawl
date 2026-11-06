@@ -222,3 +222,15 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   repaired test. Healthy suites pass; production source is restored byte-for-byte.
 - Require full local checks, independent review and platform CI before landing.
   Synthetic media only; no new fixture files, production changes or releases.
+
+## Complete package-load rejection fixtures
+
+- Replace the malformed error-only package fixture with a complete loaded root
+  carrying its direct error; cover dependency errors and incomplete graphs too.
+- Keep empty-root, version-mismatch and loaded-versus-selected checks, plus
+  advisory download retry tests.
+- Eight before/after full verifier-suite runs retain direct-error detection and
+  now reject two guard regressions accepted by the old suite. Healthy cases pass.
+  Faults exist only in memory; production bytes remain unchanged.
+- Require evaluator tests, local checks, independent review and native/portable
+  CI. Synthetic package metadata only; no product changes or releases.
