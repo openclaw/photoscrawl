@@ -227,16 +227,50 @@ func TestCurationQueriesEndToEnd(t *testing.T) {
 			t.Fatalf("burst rank = %#v, %v", got, err)
 		}
 		got, err = Rank(ctx, paths, RankOptions{IDsFile: ids, Group: "burst", PerGroup: 1})
-		if err != nil || len(rankGroup(got, "burst-a").Assets) != 1 {
+		burst = rankGroup(got, "burst-a")
+		if err != nil || len(burst.Assets) != 1 || burst.Assets[0].ID != "burst-open" || burst.BestID != "burst-open" {
 			t.Fatalf("per-group trim = %#v, %v", got, err)
 		}
-		got, err = Rank(ctx, paths, RankOptions{IDsFile: ids, Group: "time", GapSeconds: 90})
-		if err != nil || len(got.Groups) != 6 {
-			t.Fatalf("time grouping = %#v, %v", got, err)
+		type groupResult struct {
+			key, bestID string
+			assetIDs    []string
 		}
-		got, err = Rank(ctx, paths, RankOptions{IDsFile: ids, Group: "day"})
-		if err != nil || len(got.Groups) != 5 {
-			t.Fatalf("local-midnight day grouping = %#v, %v", got, err)
+		for _, tc := range []struct {
+			group string
+			want  []groupResult
+		}{
+			{"time", []groupResult{
+				{"2025-01-11T10:00:00Z", "landscape", []string{"landscape", "face-low"}},
+				{"2025-01-12T10:00:00Z", "burst-open", []string{"burst-open", "burst-closed"}},
+				{"2025-01-13T10:00:00Z", "time-one", []string{"time-one"}},
+				{"2025-01-13T10:10:00Z", "time-two", []string{"time-two"}},
+				{"2025-01-14T22:30:00Z", "day-before", []string{"day-before"}},
+				{"2025-01-14T23:30:00Z", "day-after", []string{"day-after"}},
+			}},
+			{"day", []groupResult{
+				{"2025-01-11", "landscape", []string{"landscape", "face-low"}},
+				{"2025-01-12", "burst-open", []string{"burst-open", "burst-closed"}},
+				{"2025-01-13", "time-two", []string{"time-two", "time-one"}},
+				{"2025-01-14", "day-before", []string{"day-before"}},
+				{"2025-01-15", "day-after", []string{"day-after"}},
+			}},
+		} {
+			t.Run(tc.group, func(t *testing.T) {
+				result, err := Rank(ctx, paths, RankOptions{IDsFile: ids, Group: tc.group, GapSeconds: 90})
+				if err != nil {
+					t.Fatal(err)
+				}
+				groups := make([]groupResult, len(result.Groups))
+				for i, group := range result.Groups {
+					groups[i] = groupResult{group.Key, group.BestID, make([]string, len(group.Assets))}
+					for j, asset := range group.Assets {
+						groups[i].assetIDs[j] = asset.ID
+					}
+				}
+				if !reflect.DeepEqual(groups, tc.want) {
+					t.Fatalf("groups = %#v, want %#v", groups, tc.want)
+				}
+			})
 		}
 	})
 	t.Run("junk", func(t *testing.T) {
