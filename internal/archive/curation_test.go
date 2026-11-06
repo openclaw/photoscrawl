@@ -190,19 +190,14 @@ func TestCurationQueriesEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(got.People) < 4 || got.People[0].Label != "Casey" || got.People[0].AssetCount != 6 || got.People[0].Kind != "person" || got.People[1].Label != "Alex" || got.People[2].Label != "Avery" || got.People[2].AssetCount != 4 || got.People[3].Label != "Sam" || got.People[3].AssetCount != 4 || got.People[3].Kind != "pet" {
-			t.Fatalf("people ordering and kinds = %#v", got.People)
+		want := []Person{
+			{Label: "Casey", PersonUUID: "uuid-Casey", Kind: "person", FaceCount: 7, AssetCount: 6},
+			{Label: "Alex", PersonUUID: "uuid-Alex", Kind: "person", FaceCount: 5, AssetCount: 5},
+			{Label: "Avery", PersonUUID: "uuid-Avery", Kind: "unknown", FaceCount: 4, AssetCount: 4},
+			{Label: "Sam", PersonUUID: "uuid-Sam", Kind: "pet", FaceCount: 4, AssetCount: 4},
 		}
-	})
-	t.Run("people excludes tombstoned assets", func(t *testing.T) {
-		got, err := People(ctx, paths)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, person := range got.People {
-			if person.Label == "Deleted Only" {
-				t.Fatalf("a person known only from tombstoned assets was listed: %#v", person)
-			}
+		if !reflect.DeepEqual(got.People, want) {
+			t.Fatalf("people = %#v, want %#v", got.People, want)
 		}
 	})
 	t.Run("find", func(t *testing.T) {
@@ -365,6 +360,11 @@ func curationFixture(t *testing.T) Paths {
 	add("landscape", "landscape-local", "image", "2025-01-11T10:00:00Z", "UTC", "", "0", 0, 0, 500, 400, &high, nil)
 	add("face-low", "face-low-local", "image", "2025-01-11T10:01:00Z", "UTC", "", "0", 0, 0, 500, 400, &low, nil)
 	face("face-low", "Casey", "person", .3, 0)
+	// Two detections in one image distinguish face counts from asset counts.
+	execTestSQL(t, db.DB(), `insert into face_observation(
+id,asset_id,face_local_id,person_label,person_uuid,person_kind,confidence,quality,eyes_closed,bounding_box_json,source,evidence_id)
+select 'second-casey-face',asset_id,'second-casey-face',person_label,person_uuid,person_kind,confidence,quality,eyes_closed,bounding_box_json,source,evidence_id
+from face_observation where id = 'face-face-low-Casey'`)
 	add("burst-closed", "burst-closed-local", "image", "2025-01-12T10:00:00Z", "UTC", "burst-a", "0", 0, 0, 500, 400, &mid, nil)
 	add("burst-open", "burst-open-local", "image", "2025-01-12T10:00:01Z", "UTC", "burst-a", "0", 0, 0, 500, 400, &mid, nil)
 	face("burst-closed", "Casey", "person", .8, 1)
