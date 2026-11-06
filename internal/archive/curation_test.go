@@ -114,13 +114,23 @@ func TestCurationDateAndPercentile(t *testing.T) {
 }
 
 func TestCurationDurationAndScreenshotSubtype(t *testing.T) {
-	for _, input := range []string{"-1d", "1.5d", "-2h"} {
+	for _, input := range []string{"-1d", "1.5d", "-2h", "106752d", "213504d", "9223372036854775807d"} {
 		if _, err := parseDuration(input); err == nil {
-			t.Fatalf("parseDuration(%q) accepted invalid duration", input)
+			t.Errorf("parseDuration(%q) accepted invalid duration", input)
 		}
 	}
-	if got, err := parseDuration("2d"); err != nil || got != 48*time.Hour {
-		t.Fatalf("parseDuration(2d) = %v, %v", got, err)
+	for _, tc := range []struct {
+		input string
+		want  time.Duration
+	}{
+		{"", 30 * 24 * time.Hour},
+		{"0d", 0},
+		{"2d", 48 * time.Hour},
+		{"106751d", 106751 * 24 * time.Hour},
+	} {
+		if got, err := parseDuration(tc.input); err != nil || got != tc.want {
+			t.Fatalf("parseDuration(%q) = %v, %v; want %v", tc.input, got, err, tc.want)
+		}
 	}
 	if !isScreenshotSubtype("4") || isScreenshotSubtype("16") {
 		t.Fatal("screenshot subtype must be bit 2, not portrait bit 4")

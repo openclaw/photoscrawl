@@ -290,3 +290,17 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
 - Require full local checks, archive race tests, independent review and
   native/portable CI. No new tests, helpers or fixtures, production changes,
   live Photos access or releases.
+
+## Screenshot age duration overflow
+
+- The day parser multiplied unchecked integers into nanoseconds. `106752d`
+  wrapped negative, moving the screenshot cutoff into the future; other large
+  inputs wrapped positive and were also silently accepted.
+- Bound day counts before multiplication. Extend the existing duration test
+  with zero, the default, the largest valid whole-day count, and three overflow
+  cases. Reuse the existing synthetic CLI import fixture to require a failure
+  and the invalid-day diagnostic for an overflowing screenshot age.
+- Before the fix, all three overflow cases were accepted and the CLI returned
+  screenshot candidates successfully. Require full local checks, archive race
+  tests, independent review and native/portable CI. No new fixtures, live Photos
+  access or releases.
