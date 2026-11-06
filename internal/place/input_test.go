@@ -79,27 +79,32 @@ func TestRenderCardKeepsAddressAndCapsPOIs(t *testing.T) {
 		},
 		POIStatus: POIStatusFound,
 		POICandidates: []POICandidate{
+			{Name: "Example Beach", Category: "MKPOICategoryBeach", DistanceM: 32},
 			{Name: "Terminal 2", Category: "MKPOICategoryAirport", DistanceM: 10},
+			{Name: "Extra Store", Category: "MKPOICategoryStore", DistanceM: 5},
+			{Name: "Example Museum", Category: "MKPOICategoryMuseum", DistanceM: 30},
 			{Name: "Example International Airport", Category: "MKPOICategoryAirport", DistanceM: 25},
-			{Name: "Extra 1", Category: "MKPOICategoryStore", DistanceM: 30},
-			{Name: "Extra 2", Category: "MKPOICategoryStore", DistanceM: 31},
-			{Name: "Extra 3", Category: "MKPOICategoryStore", DistanceM: 32},
-			{Name: "Extra 4", Category: "MKPOICategoryStore", DistanceM: 33},
+			{Name: "Example Park", Category: "MKPOICategoryPark", DistanceM: 31},
 		},
 	})
 	for _, want := range []string{
 		"Full: Example Airport Terminal, Example City, Example Country",
 		"Area: Example Country > Example State > Example City",
 		"Time zone: Etc/UTC",
-		"Example International Airport",
-		"Terminal 2",
 	} {
 		if !strings.Contains(card, want) {
 			t.Fatalf("card missing %q:\n%s", want, card)
 		}
 	}
-	if strings.Contains(card, "Top candidates") || strings.Contains(card, "Extra") {
-		t.Fatalf("card leaked provider count or store noise:\n%s", card)
+	wantPOIs := "- Terminal 2 (airport, 10m)\n" +
+		"- Example International Airport (airport, 25m)\n" +
+		"- Example Museum (museum, 30m)\n" +
+		"- Example Park (park, 31m)"
+	if _, gotPOIs, ok := strings.Cut(card, "Nearby POIs:\n"); !ok || gotPOIs != wantPOIs {
+		t.Fatalf("nearby POIs = %q, want %q:\n%s", gotPOIs, wantPOIs, card)
+	}
+	if strings.Contains(card, "Top candidates") {
+		t.Fatalf("card leaked provider count:\n%s", card)
 	}
 }
 

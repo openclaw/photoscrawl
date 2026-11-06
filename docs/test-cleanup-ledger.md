@@ -234,3 +234,17 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   Faults exist only in memory; production bytes remain unchanged.
 - Require evaluator tests, local checks, independent review and native/portable
   CI. Synthetic package metadata only; no product changes or releases.
+
+## Place-card POI cap and ordering
+
+- Replace three filtered-out store rows with useful POIs in the existing
+  six-candidate fixture. Keep one closer store to exercise noise filtering.
+- Require the exact four nearest useful POIs, including category, distance and
+  order, alongside the existing address and provider-count checks.
+- Ten before/after race checks show that caps of three or five and reversed
+  distance ordering pass the old test and fail the repaired test. Lost useful-POI
+  filtering still fails both tests; healthy tests pass. Faults use temporary Go
+  overlays; production bytes remain unchanged.
+- Require full local checks, independent review and native/portable CI before
+  landing. Synthetic inline data only; no new fixtures, product changes or
+  releases.
