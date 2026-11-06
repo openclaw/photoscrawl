@@ -171,45 +171,6 @@ insert into album_membership(id, asset_id, album_id, album_title, album_kind) va
 	}
 }
 
-func TestFaceSignalMigrationIsIdempotent(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "photos.sqlite")
-	legacySchema := strings.Replace(Schema, `
-  person_uuid text,
-  person_kind text,
-  confidence real not null,
-  quality real,
-  blur_score real,
-  eyes_closed integer,
-  smile integer,`, `
-  confidence real not null,`, 1)
-	legacy, err := store.Open(ctx, store.Options{Path: dbPath, Schema: legacySchema, SchemaVersion: 3})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
-	migrated, err := openArchiveStore(ctx, dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer migrated.Close()
-	if err := migrateArchiveSchema(ctx, migrated); err != nil {
-		t.Fatal(err)
-	}
-	columns, err := archiveTableColumns(ctx, migrated.DB(), "face_observation")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, column := range []string{"person_uuid", "person_kind", "quality", "blur_score", "eyes_closed", "smile"} {
-		if !columns[column] {
-			t.Fatalf("face_observation missing migrated column %q", column)
-		}
-	}
-}
-
 func archiveTableColumns(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
 	rows, err := db.QueryContext(ctx, "pragma table_info("+table+")")
 	if err != nil {
@@ -503,25 +464,33 @@ func testLegacyArchiveUpgradeAndSnapshotRecovery(t *testing.T, legacyVersion int
 		t.Fatal(err)
 	}
 	defer upgraded.Close()
-	version, err := upgraded.SchemaVersion(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion {
-		t.Fatalf("schema version = %d, want %d", version, SchemaVersion)
-	}
-	for table, want := range map[string]int{"asset": 1, "evidence_ref": 1, "face_observation": 1, "model_observation": 1, "visual_observation": 1} {
-		assertCount(t, upgraded.DB(), "select count(*) from "+table, want)
-	}
 	var label string
-	var quality, eyesClosed sql.NullFloat64
-	if err := upgraded.DB().QueryRowContext(ctx, `select person_label, quality, eyes_closed from face_observation where id = 'face:one'`).Scan(&label, &quality, &eyesClosed); err != nil {
-		t.Fatal(err)
+	for pass := range 2 {
+		if pass > 0 {
+			if err := migrateArchiveSchema(ctx, upgraded); err != nil {
+				t.Fatal(err)
+			}
+		}
+		version, err := upgraded.SchemaVersion(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if version != SchemaVersion {
+			t.Fatalf("schema version = %d, want %d", version, SchemaVersion)
+		}
+		for table, want := range map[string]int{"asset": 1, "evidence_ref": 1, "face_observation": 1, "model_observation": 1, "visual_observation": 1} {
+			assertCount(t, upgraded.DB(), "select count(*) from "+table, want)
+		}
+		var quality, eyesClosed sql.NullFloat64
+		if err := upgraded.DB().QueryRowContext(ctx, `select person_label, quality, eyes_closed from face_observation where id = 'face:one'`).Scan(&label, &quality, &eyesClosed); err != nil {
+			t.Fatal(err)
+		}
+		if label != "Alex" || quality.Valid || eyesClosed.Valid {
+			t.Fatalf("upgraded face = %q quality=%v eyes=%v, want the original label and null new signals", label, quality, eyesClosed)
+		}
+		assertCount(t, upgraded.DB(), `select count(*) from sqlite_master where type = 'index' and name = 'visual_type_label_idx'`, 1)
+		assertCount(t, upgraded.DB(), `select count(*) from pragma_table_info('face_observation') where name in ('person_uuid','person_kind','quality','blur_score','eyes_closed','smile')`, 6)
 	}
-	if label != "Alex" || quality.Valid || eyesClosed.Valid {
-		t.Fatalf("upgraded face = %q quality=%v eyes=%v, want the original label and null new signals", label, quality, eyesClosed)
-	}
-	assertCount(t, upgraded.DB(), `select count(*) from sqlite_master where type = 'index' and name = 'visual_type_label_idx'`, 1)
 
 	// Recover to a fresh filename: never mix a backup with an upgraded archive's WAL.
 	restoredPath := filepath.Join(t.TempDir(), "restored.sqlite")
@@ -537,7 +506,7 @@ func testLegacyArchiveUpgradeAndSnapshotRecovery(t *testing.T, legacyVersion int
 		t.Fatal(err)
 	}
 	defer restored.Close()
-	version, err = restored.SchemaVersion(ctx)
+	version, err := restored.SchemaVersion(ctx)
 	if err != nil || version != legacyVersion {
 		t.Fatalf("restored version = %d, %v; want %d", version, err, legacyVersion)
 	}

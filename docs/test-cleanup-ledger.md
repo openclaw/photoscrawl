@@ -304,3 +304,18 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   screenshot candidates successfully. Require full local checks, archive race
   tests, independent review and native/portable CI. No new fixtures, live Photos
   access or releases.
+
+## Populated migration idempotence
+
+- Fold the empty face-column idempotence test into the existing populated v3/v4
+  upgrade cases. Check schema version, retained rows, face values, query index
+  and all six face columns after both the upgrade and repeated migration.
+  Keep committed-WAL backup and recovery checks unchanged.
+- Remove one empty database fixture and 31 test lines. No new helpers, fixtures
+  or production changes.
+- Twelve paired before/after race runs preserve rejection of repeat-migration
+  errors, missing columns and missing indexes. Repeat-only face corruption or
+  evidence deletion passes the old suite and fails the consolidated suite.
+  Healthy suites pass; temporary Go overlays leave production unchanged.
+- Require full local checks, archive race tests, independent review and
+  native/portable CI. Synthetic data only; no live Photos access or releases.
