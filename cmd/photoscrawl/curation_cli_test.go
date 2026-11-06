@@ -78,6 +78,12 @@ func TestCurationCLIImportsSyntheticPhotosLibrary(t *testing.T) {
 	if imported.Faces.FaceObservationsInserted != 2 || imported.Faces.FacesWithEyeState != 2 || imported.PhotoMetadata.DuplicateObservationsInserted != 1 {
 		t.Fatalf("imported signals: %#v", imported)
 	}
+	index := imported.SearchIndex
+	if index.Variant != "psi" || index.GroupsRead != 3 || index.GroupsResolved != 3 || index.GroupsUnresolved != 0 ||
+		index.VisualObservationsInserted != 3 || index.PersonFaceObservationsInserted != 1 || index.AssetsTouched != 1 ||
+		index.KnownCategoryRows != 2 || index.UnknownCategoryRows != 1 || index.PersonLookupIdentifiersResolved != 1 {
+		t.Fatalf("imported search index: %#v", index)
+	}
 	var people archive.PeopleResult
 	invoke(&people, "people")
 	if len(people.People) != 1 || people.People[0].Label != "Alex" || people.People[0].AssetCount != 2 {
@@ -87,6 +93,13 @@ func TestCurationCLIImportsSyntheticPhotosLibrary(t *testing.T) {
 	invoke(&found, "find", "--person", "Alex", "--rank", "quality")
 	if len(found.Assets) != 2 || found.Assets[0].LocalIdentifier != "fixture-sharp" {
 		t.Fatalf("find: %#v", found)
+	}
+	var indexed archive.SearchResult
+	invoke(&indexed, "search", "--query", "Antique Car")
+	if len(indexed.Results) != 1 || indexed.Results[0].ID != found.Assets[1].ID || indexed.Results[0].ObservationID == "" ||
+		indexed.Results[0].HitType != "observation" || indexed.Results[0].Source != "photos_search_index" ||
+		indexed.Results[0].ObservationType != "apple_label" || indexed.Results[0].Title != "Antique Car" {
+		t.Fatalf("search-index label: %#v", indexed)
 	}
 	var ranked archive.RankResult
 	invoke(&ranked, "rank", "--person", "Alex")
