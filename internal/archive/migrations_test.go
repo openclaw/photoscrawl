@@ -298,42 +298,6 @@ func TestSchemaV2CrawlAdoptsExactLegacyResourceRows(t *testing.T) {
 	}
 }
 
-func TestSchemaV5MigrationAddsVisualLabelIndex(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "photos.sqlite")
-	legacySchema := strings.Replace(Schema, "create index if not exists visual_type_label_idx on visual_observation(observation_type, label collate nocase);\n", "", 1)
-	if legacySchema == Schema {
-		t.Fatal("fixture did not remove the visual label index from the schema")
-	}
-	legacy, err := store.Open(ctx, store.Options{Path: dbPath, Schema: legacySchema, SchemaVersion: 4})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
-	migrated, err := openArchiveStore(ctx, dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer migrated.Close()
-	var count int
-	if err := migrated.DB().QueryRowContext(ctx, `select count(*) from sqlite_master where type = 'index' and name = 'visual_type_label_idx'`).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 1 {
-		t.Fatalf("visual_type_label_idx count = %d, want 1", count)
-	}
-	version, err := migrated.SchemaVersion(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion {
-		t.Fatalf("schema version = %d, want %d", version, SchemaVersion)
-	}
-}
-
 func TestSchemaV6MigrationPreservesFTSRowsAndAddsQueryIndexes(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -478,11 +442,24 @@ func explainQueryPlan(ctx context.Context, db *sql.DB, query string) (string, er
 	return strings.Join(details, " | "), rows.Err()
 }
 
-func TestPopulatedSchemaV3ArchiveUpgradeAndSnapshotRecovery(t *testing.T) {
-	t.Parallel()
+func TestPopulatedLegacyArchiveUpgradeAndSnapshotRecovery(t *testing.T) {
+	for _, version := range []int{3, 4} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			t.Parallel()
+			testLegacyArchiveUpgradeAndSnapshotRecovery(t, version)
+		})
+	}
+}
+
+func testLegacyArchiveUpgradeAndSnapshotRecovery(t *testing.T, legacyVersion int) {
+	t.Helper()
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "photos.sqlite")
-	v3Schema := strings.Replace(Schema, `
+	legacySchema := Schema
+	legacyFaceColumns := 6
+	if legacyVersion == 3 {
+		legacyFaceColumns = 0
+		legacySchema = strings.Replace(Schema, `
   person_uuid text,
   person_kind text,
   confidence real not null,
@@ -491,8 +468,9 @@ func TestPopulatedSchemaV3ArchiveUpgradeAndSnapshotRecovery(t *testing.T) {
   eyes_closed integer,
   smile integer,`, `
   confidence real not null,`, 1)
-	v3Schema = strings.Replace(v3Schema, "create index if not exists visual_type_label_idx on visual_observation(observation_type, label collate nocase);\n", "", 1)
-	legacy, err := store.Open(ctx, store.Options{Path: dbPath, Schema: v3Schema, SchemaVersion: 3})
+	}
+	legacySchema = strings.Replace(legacySchema, "create index if not exists visual_type_label_idx on visual_observation(observation_type, label collate nocase);\n", "", 1)
+	legacy, err := store.Open(ctx, store.Options{Path: dbPath, Schema: legacySchema, SchemaVersion: legacyVersion})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,13 +538,13 @@ func TestPopulatedSchemaV3ArchiveUpgradeAndSnapshotRecovery(t *testing.T) {
 	}
 	defer restored.Close()
 	version, err = restored.SchemaVersion(ctx)
-	if err != nil || version != 3 {
-		t.Fatalf("restored version = %d, %v; want 3", version, err)
+	if err != nil || version != legacyVersion {
+		t.Fatalf("restored version = %d, %v; want %d", version, err, legacyVersion)
 	}
 	for _, table := range []string{"asset", "evidence_ref", "face_observation", "model_observation", "visual_observation"} {
 		assertCount(t, restored.DB(), "select count(*) from "+table, 1)
 	}
-	assertCount(t, restored.DB(), `select count(*) from pragma_table_info('face_observation') where name in ('person_uuid','person_kind','quality','blur_score','eyes_closed','smile')`, 0)
+	assertCount(t, restored.DB(), `select count(*) from pragma_table_info('face_observation') where name in ('person_uuid','person_kind','quality','blur_score','eyes_closed','smile')`, legacyFaceColumns)
 	assertCount(t, restored.DB(), `select count(*) from sqlite_master where name = 'visual_type_label_idx'`, 0)
 	if err := restored.DB().QueryRowContext(ctx, `select person_label from face_observation where id = 'face:one'`).Scan(&label); err != nil || label != "Alex" {
 		t.Fatalf("restored face = %q, %v; want Alex", label, err)

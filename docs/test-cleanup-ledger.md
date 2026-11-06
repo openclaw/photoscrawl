@@ -152,3 +152,14 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   The removed test passes both schema-bypass probes. Production is restored.
 - Require full local checks, independent review and platform CI before landing.
   Synthetic temporary SQLite/filesystem fixtures only; no live data or releases.
+
+## Migration index fixture reuse
+
+- Fold the standalone index test into populated upgrade/recovery rows for both
+  v3 and v4. Keep their distinct face-column layouts, index creation, current
+  version and restored-backup checks, with 22 fewer test lines.
+- Eight before/after race probes preserve missing-index and wrong-version
+  detection. A v4-only face-label overwrite passes the old empty v4 fixture but
+  fails the new populated row. Healthy rows pass; production is restored.
+- Require full local checks, independent review and platform CI before landing.
+  Synthetic temporary SQLite data only; no live archives or releases.
