@@ -248,3 +248,18 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
 - Require full local checks, independent review and native/portable CI before
   landing. Synthetic inline data only; no new fixtures, product changes or
   releases.
+
+## Share-check status fixture reuse
+
+- Fold the standalone undated-photo and SQLite-screenshot tests into the
+  existing status/count/exclusion test. Keep both assets and their explicit
+  status checks, including the screenshot reason, with 15 fewer test lines and
+  two fewer complete archive fixture builds.
+- Keep latest/malformed/missing assessments, saved full replies, unknown
+  sensitivity and argument-validation tests as separate cases.
+- Ten paired before/after race suites preserve detection of SQLite screenshot
+  misclassification, rejection of undated photos, ignored exclusions and lost
+  notes. Healthy suites pass. Temporary Go overlays leave production unchanged.
+- Require full local checks, archive race tests, independent review and
+  native/portable CI before landing. Synthetic SQLite data only; no production
+  changes, live Photos access or releases.
