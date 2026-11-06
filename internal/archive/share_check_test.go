@@ -92,16 +92,16 @@ func TestBlockedCategoriesInPhrase(t *testing.T) {
 func TestShareCheckStatusesNotesCountsAndExclusions(t *testing.T) {
 	ctx := context.Background()
 	paths := shareCheckFixture(t)
-	ids := writeCurationIDs(t, paths.DataDir, "share-ids.txt", "pass", "hidden", "screenshot", "privacy", "unreviewed", "child")
+	ids := writeCurationIDs(t, paths.DataDir, "share-ids.txt", "pass", "hidden", "screenshot", "privacy", "unreviewed", "child", "sqlite-screenshot", "undated")
 	exclude := writeCurationIDs(t, paths.DataDir, "share-exclude.txt", "screenshot-local")
 	got, err := ShareCheck(ctx, paths, ShareCheckOptions{IDsFile: ids, ExcludeIDsFile: exclude})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Assets) != 5 {
+	if len(got.Assets) != 7 {
 		t.Fatalf("assets = %#v", got.Assets)
 	}
-	if !reflect.DeepEqual(got.Counts, map[string]int{"pass": 2, "blocked": 2, "unreviewed": 1}) {
+	if !reflect.DeepEqual(got.Counts, map[string]int{"pass": 3, "blocked": 3, "unreviewed": 1}) {
 		t.Fatalf("counts = %#v", got.Counts)
 	}
 	byID := map[string]ShareCheckAsset{}
@@ -122,6 +122,12 @@ func TestShareCheckStatusesNotesCountsAndExclusions(t *testing.T) {
 	}
 	if byID["child"].Status != "pass" || !reflect.DeepEqual(byID["child"].Notes, []string{"child and face visible"}) {
 		t.Fatalf("child note = %#v", byID["child"])
+	}
+	if byID["sqlite-screenshot"].Status != "blocked" || !containsText(byID["sqlite-screenshot"].Reasons, "screenshot") {
+		t.Fatalf("SQLite-provider screenshot = %#v", byID["sqlite-screenshot"])
+	}
+	if byID["undated"].Status != "pass" {
+		t.Fatalf("undated share check = %#v", byID["undated"])
 	}
 }
 
@@ -148,15 +154,6 @@ func TestShareCheckRequiresLatestPrivacyAssessment(t *testing.T) {
 	}
 	if got.Assets[1].Status != "unreviewed" || !containsText(got.Assets[1].Reasons, "privacy not assessed") {
 		t.Fatalf("missing privacy assessment = %#v", got.Assets[1])
-	}
-}
-
-func TestShareCheckAllowsUndatedAsset(t *testing.T) {
-	paths := shareCheckFixture(t)
-	ids := writeCurationIDs(t, paths.DataDir, "undated-share.txt", "undated")
-	got, err := ShareCheck(context.Background(), paths, ShareCheckOptions{IDsFile: ids})
-	if err != nil || len(got.Assets) != 1 || got.Assets[0].Status != "pass" {
-		t.Fatalf("undated share check = %#v, %v", got, err)
 	}
 }
 
@@ -253,18 +250,6 @@ func TestShareCheckTreatsMalformedAssessmentEntriesAsUnreviewed(t *testing.T) {
 	}
 	if byID["pass"].Status != "pass" {
 		t.Fatalf("explicit empty assessment = %#v, want pass", byID["pass"])
-	}
-}
-
-func TestShareCheckBlocksSQLiteProviderScreenshots(t *testing.T) {
-	paths := shareCheckFixture(t)
-	ids := writeCurationIDs(t, paths.DataDir, "sqlite-screenshot.txt", "sqlite-screenshot")
-	got, err := ShareCheck(context.Background(), paths, ShareCheckOptions{IDsFile: ids})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Assets) != 1 || got.Assets[0].Status != "blocked" || !containsText(got.Assets[0].Reasons, "screenshot") {
-		t.Fatalf("SQLite-provider screenshot = %#v", got.Assets)
 	}
 }
 
