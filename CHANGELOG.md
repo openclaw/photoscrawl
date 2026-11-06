@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.5.7 - 2026-11-06
+
+**Highlights:** Restore second-interrupt handling and preserve literal SQLite paths.
+
+- Update CrawlKit to v0.17.4 to preserve literal SQLite paths when opening archives, taking snapshots, and checking freshness; reject ambiguous Windows paths.
 
 - Restore signal handling before canceling a command so a quick second interrupt terminates blocked work, while preserving signal-specific cancellation diagnostics.
 
