@@ -163,3 +163,14 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   fails the new populated row. Healthy rows pass; production is restored.
 - Require full local checks, independent review and platform CI before landing.
   Synthetic temporary SQLite data only; no live archives or releases.
+
+## Timeline validation errors
+
+- Require the expected validation-error prefix for all four invalid-bound cases.
+  The empty database path can fail independently, so accepting any error hid
+  missing validation. Keep the existing inputs and avoid new archive fixtures.
+- Eight before/after race probes: healthy tests pass; bypassing the from, to or
+  ordering guard passes the old test and fails the repaired test. Production
+  source is restored byte-for-byte after each probe set.
+- Require full local checks, independent review and platform CI before landing.
+  No production changes, live Photos data, external model calls or releases.
