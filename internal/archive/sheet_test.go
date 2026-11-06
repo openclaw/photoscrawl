@@ -86,6 +86,10 @@ func TestSheetNumbersAcrossPagesAndSelectsSources(t *testing.T) {
 	if !slices.Equal(renderedSources, []string{original}) {
 		t.Fatalf("rendered sources = %v, want only original", renderedSources)
 	}
+	wantColors := [][]color.RGBA{
+		{{R: 220, A: 255}, {B: 220, A: 255}, {R: 92, G: 92, B: 92, A: 255}},
+		{{R: 92, G: 92, B: 92, A: 255}, {R: 92, G: 92, B: 92, A: 255}},
+	}
 	assertSheetMode(t, filepath.Dir(got.Sheets[0]), 0o700)
 	for index, path := range got.Sheets {
 		assertSheetMode(t, path, 0o600)
@@ -106,6 +110,13 @@ func TestSheetNumbersAcrossPagesAndSelectsSources(t *testing.T) {
 		}
 		if decoded.Bounds().Dx() != wantWidth || decoded.Bounds().Dy() != 80 {
 			t.Fatalf("sheet %d bounds = %v", index, decoded.Bounds())
+		}
+		for tile, want := range wantColors[index] {
+			// Sample below the number badge and placeholder text, inside the fitted image.
+			point := image.Pt(tile*80+40, 60)
+			if !colorNear(decoded.At(point.X, point.Y), want) {
+				t.Fatalf("sheet %d tile %d pixel %v = %v, want near %v", index, tile, point, decoded.At(point.X, point.Y), want)
+			}
 		}
 	}
 }

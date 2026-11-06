@@ -211,3 +211,14 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
 - Reuse the existing SQL row reader and fixtures. Require full local checks,
   independent review and platform CI. Synthetic archive integration only;
   no production changes, live Photos access, model calls or releases.
+
+## Contact-sheet rendered contents
+
+- Check tile colors in the existing two-page JPEG fixture, alongside source
+  metadata, numbering, dimensions and private file modes. Reuse the existing
+  tolerant color assertion; keep cancellation, orientation and size-bound tests.
+- Eight before/after race suites show that blank tiles, source images replaced
+  with placeholders and blank placeholders pass the old test and fail the
+  repaired test. Healthy suites pass; production source is restored byte-for-byte.
+- Require full local checks, independent review and platform CI before landing.
+  Synthetic media only; no new fixture files, production changes or releases.
