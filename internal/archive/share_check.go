@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -170,7 +171,7 @@ func shareCheckAsset(ctx context.Context, db *sql.DB, asset fullAsset, assessmen
 		for _, category := range blockedCategoriesInPhrase(phrase) {
 			blocked[category] = true
 		}
-		if isPrivacyNote(phrase) && !containsString(row.Notes, phrase) {
+		if isPrivacyNote(phrase) && !slices.Contains(row.Notes, phrase) {
 			row.Notes = append(row.Notes, phrase)
 		}
 	}
@@ -467,7 +468,7 @@ func privacyPhraseNeedsReview(phrase string) bool {
 			continue
 		}
 		note, _ := trimNegationPrefix(clause)
-		if containsString(privacyNoteTerms, note) {
+		if slices.Contains(privacyNoteTerms, note) {
 			continue
 		}
 		return true
@@ -507,13 +508,4 @@ func wordBoundary(value string, index int) bool {
 	}
 	character := value[index]
 	return character < 'a' || character > 'z'
-}
-
-func containsString(values []string, value string) bool {
-	for _, existing := range values {
-		if existing == value {
-			return true
-		}
-	}
-	return false
 }
