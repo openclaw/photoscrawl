@@ -2,6 +2,7 @@ package evalcard
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -63,11 +64,44 @@ func TestRunPreservesDistinctModelOutputs(t *testing.T) {
 }
 
 func TestRunUsesBuiltInPromptOutsideCheckout(t *testing.T) {
-	opts, _ := evalRunOptions(t)
+	opts := preparedModelOptions(t)
 	opts.PromptPath = ""
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var request ollamaGenerateRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if request.Model != "fixture" || len(request.Images) != 1 ||
+			request.Images[0] != base64.StdEncoding.EncodeToString([]byte("synthetic image")) {
+			t.Errorf("model/image request = %#v", request)
+		}
+		for _, want := range []string{
+			"Create a personal photo-library card for the supplied image.",
+			"## One-line summary",
+			`"eval_id": "E001"`,
+			`"local_identifier": "synthetic"`,
+		} {
+			if !strings.Contains(request.Prompt, want) {
+				t.Errorf("model prompt missing %q: %s", want, request.Prompt)
+			}
+		}
+		if strings.Contains(request.Prompt, "{{.MetadataJSON}}") {
+			t.Error("model prompt contains an unexpanded metadata template")
+		}
+		_ = json.NewEncoder(w).Encode(ollamaGenerateResponse{Response: "synthetic card", Done: true})
+	}))
+	defer server.Close()
+	opts.OllamaGenerateURL = server.URL
 	t.Chdir(t.TempDir())
-	if _, err := Run(context.Background(), opts); err != nil {
+	result, err := Run(context.Background(), opts)
+	if err != nil {
 		t.Fatalf("default prompt depends on checkout: %v", err)
+	}
+	if result.AssetsPrepared != 1 || result.ModelCallsAttempted != 1 || result.ModelCallsSucceeded != 1 || calls.Load() != 1 {
+		t.Fatalf("default prompt run = %#v, requests=%d", result, calls.Load())
 	}
 }
 
