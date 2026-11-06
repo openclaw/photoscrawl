@@ -220,9 +220,8 @@ func TestSimilarFoodRankingAndNoiseRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if similarAssetIndex(included.Assets, "food-other-year") >= similarAssetIndex(included.Assets, "food-same-day") ||
-		similarAssetIndex(included.Assets, "food-other-year") >= similarAssetIndex(included.Assets, "phone") {
-		t.Fatalf("other-year food should outrank same-day food: %#v", included.Assets)
+	if !sameSimilarIDs(included.Assets, "food-other-year", "phone", "food-same-day") {
+		t.Fatalf("same-event food ranking = %#v", included.Assets)
 	}
 }
 
@@ -544,15 +543,6 @@ func similarAssetByID(assets []SimilarAsset, id string) SimilarAsset {
 		}
 	}
 	return SimilarAsset{}
-}
-
-func similarAssetIndex(assets []SimilarAsset, id string) int {
-	for i, asset := range assets {
-		if asset.ID == id {
-			return i
-		}
-	}
-	return len(assets)
 }
 
 func sameStrings(values []string, wants ...string) bool {
