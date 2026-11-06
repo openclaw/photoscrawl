@@ -413,3 +413,15 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   `0600` permissions. No test assertions, fixtures or production code change.
 - Require full local checks, archive race tests, independent review and
   native/portable CI. Synthetic data only; no releases.
+
+## Similarity ID error fixture
+
+- Move the missing/unknown ID checks into the populated scoring case. Remove
+  one repeated archive setup, the standalone case and five test lines.
+- Require the specific required-ID and missing-asset errors; keep all scoring,
+  reason and exclusion assertions.
+- Ten paired before/after race runs show unrelated errors pass the old checks
+  and fail the replacement. Accepting invalid IDs still fails both. Healthy
+  cases pass; temporary overlays leave source bytes unchanged.
+- Require full local checks, archive race tests, independent review and
+  native/portable CI. No new helpers, fixtures, product changes or releases.
