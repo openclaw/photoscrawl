@@ -186,3 +186,15 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   production source is restored byte-for-byte.
 - Require full local checks, independent review and platform CI before landing.
   Temporary synthetic data only; no production changes or releases.
+
+## Foreign database fixture reuse
+
+- Share the populated foreign-database fixture between older/current schema
+  versions, removing 32 test lines. Keep both Search and Init calls and check
+  the sentinel, absence of archive tables and original version after each call.
+- Eight before/after race probes retain guard-bypass and sentinel-corruption
+  detection. A current-version-only overwrite passes the old test and fails the
+  shared fixture. Healthy rows pass; production source is restored byte-for-byte.
+- Keep missing, empty, read-only, view-only and versioned-empty input coverage.
+  Require full local checks, review and platform CI. Temporary synthetic SQLite
+  data only; no production changes, live archives or releases.

@@ -79,54 +79,6 @@ func TestSearchDoesNotCreateOrRewriteDatabase(t *testing.T) {
 	if unrelatedTables != 0 {
 		t.Fatalf("search mutated unrelated database with %d tables", unrelatedTables)
 	}
-	versionedPath := filepath.Join(t.TempDir(), "versioned-unrelated.sqlite")
-	versioned, err := store.Open(ctx, store.Options{
-		Path:          versionedPath,
-		Schema:        `create table sentinel(value text);`,
-		SchemaVersion: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := versioned.DB().ExecContext(ctx, `insert into sentinel values ('preserved')`); err != nil {
-		versioned.Close()
-		t.Fatal(err)
-	}
-	if err := versioned.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Search(ctx, Paths{Database: versionedPath}, SearchOptions{Query: "fixture"}); err == nil {
-		t.Fatal("search on unrelated versioned database should fail")
-	}
-	if _, err := Init(ctx, Paths{Database: versionedPath}); err == nil {
-		t.Fatal("init on unrelated versioned database should fail")
-	}
-	versioned, err = store.OpenReadOnly(ctx, versionedPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	version, err := versioned.SchemaVersion(ctx)
-	if err != nil {
-		versioned.Close()
-		t.Fatal(err)
-	}
-	var sentinel string
-	if err := versioned.DB().QueryRowContext(ctx, `select value from sentinel`).Scan(&sentinel); err != nil {
-		versioned.Close()
-		t.Fatal(err)
-	}
-	var photoscrawlTables int
-	if err := versioned.DB().QueryRowContext(ctx, `select count(*) from sqlite_master where type = 'table' and name = 'asset'`).Scan(&photoscrawlTables); err != nil {
-		versioned.Close()
-		t.Fatal(err)
-	}
-	if err := versioned.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if version != 1 || sentinel != "preserved" || photoscrawlTables != 0 {
-		t.Fatalf("search mutated versioned database: version=%d sentinel=%q photoscrawl_tables=%d", version, sentinel, photoscrawlTables)
-	}
-
 	paths := testPaths(t)
 	if _, err := Init(ctx, paths); err != nil {
 		t.Fatal(err)
@@ -146,42 +98,58 @@ func TestSearchDoesNotCreateOrRewriteDatabase(t *testing.T) {
 	}
 }
 
-func TestInitRejectsUnrelatedCurrentVersionDatabase(t *testing.T) {
+func TestForeignVersionedDatabaseRemainsUnchanged(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "unrelated-v2.sqlite")
-	db, err := store.Open(ctx, store.Options{Path: dbPath, Schema: `create table sentinel(value text);`, SchemaVersion: SchemaVersion})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.DB().ExecContext(ctx, `insert into sentinel values ('preserved')`); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Init(ctx, Paths{Database: dbPath}); err == nil {
-		t.Fatal("init on unrelated current-version database should fail")
-	}
-	if _, err := Search(ctx, Paths{Database: dbPath}, SearchOptions{Query: "fixture"}); err == nil {
-		t.Fatal("search on unrelated current-version database should fail")
-	}
-	db, err = store.OpenReadOnly(ctx, dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var sentinel string
-	if err := db.DB().QueryRowContext(ctx, `select value from sentinel`).Scan(&sentinel); err != nil {
-		t.Fatal(err)
-	}
-	var photoscrawlTables int
-	if err := db.DB().QueryRowContext(ctx, `select count(*) from sqlite_master where type = 'table' and name = 'asset'`).Scan(&photoscrawlTables); err != nil {
-		t.Fatal(err)
-	}
-	if sentinel != "preserved" || photoscrawlTables != 0 {
-		t.Fatalf("unrelated v2 database mutated: sentinel=%q photoscrawl_tables=%d", sentinel, photoscrawlTables)
+	for name, version := range map[string]int{"older": 1, "current": SchemaVersion} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dbPath := filepath.Join(t.TempDir(), "foreign.sqlite")
+			db, err := store.Open(ctx, store.Options{Path: dbPath, Schema: `create table sentinel(value text);`, SchemaVersion: version})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.DB().ExecContext(ctx, `insert into sentinel values ('preserved')`); err != nil {
+				db.Close()
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			for _, operation := range []string{"search", "init"} {
+				t.Run(operation, func(t *testing.T) {
+					var err error
+					if operation == "search" {
+						_, err = Search(ctx, Paths{Database: dbPath}, SearchOptions{Query: "fixture"})
+					} else {
+						_, err = Init(ctx, Paths{Database: dbPath})
+					}
+					if err == nil {
+						t.Fatal("unrelated versioned database accepted")
+					}
+					db, err := store.OpenReadOnly(ctx, dbPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer db.Close()
+					gotVersion, err := db.SchemaVersion(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var sentinel string
+					if err := db.DB().QueryRowContext(ctx, `select value from sentinel`).Scan(&sentinel); err != nil {
+						t.Fatal(err)
+					}
+					var photoscrawlTables int
+					if err := db.DB().QueryRowContext(ctx, `select count(*) from sqlite_master where type = 'table' and name = 'asset'`).Scan(&photoscrawlTables); err != nil {
+						t.Fatal(err)
+					}
+					if gotVersion != version || sentinel != "preserved" || photoscrawlTables != 0 {
+						t.Fatalf("foreign database mutated: version=%d sentinel=%q photoscrawl_tables=%d", gotVersion, sentinel, photoscrawlTables)
+					}
+				})
+			}
+		})
 	}
 }
 
