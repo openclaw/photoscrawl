@@ -69,8 +69,8 @@ func TestForgottenDateAndExcludeFilters(t *testing.T) {
 }
 
 func TestForgottenRejectsNegativeGap(t *testing.T) {
-	if _, err := Forgotten(context.Background(), Paths{}, ForgottenOptions{GapHours: -1}); err == nil {
-		t.Fatal("negative gap hours accepted")
+	if _, err := Forgotten(context.Background(), Paths{}, ForgottenOptions{GapHours: -1}); err == nil || err.Error() != "gap hours must not be negative" {
+		t.Fatalf("negative gap error = %v, want gap hours must not be negative", err)
 	}
 }
 
@@ -93,18 +93,6 @@ func TestUserOrSharedAlbumKindProviderMappings(t *testing.T) {
 				t.Fatalf("isUserOrSharedAlbumKind(%q) = %v, want %v", test.kind, got, test.want)
 			}
 		})
-	}
-}
-
-func TestForgottenExcludesSQLiteUserAndSharedAlbums(t *testing.T) {
-	got, err := Forgotten(context.Background(), forgottenFixture(t), ForgottenOptions{GapHours: 3, Limit: 100})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{"sqlite-user-album", "sqlite-shared-album"} {
-		if hasForgottenID(got.Assets, id) {
-			t.Fatalf("SQLite album member %q was recommended: %#v", id, got.Assets)
-		}
 	}
 }
 

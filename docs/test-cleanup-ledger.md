@@ -174,3 +174,15 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   source is restored byte-for-byte after each probe set.
 - Require full local checks, independent review and platform CI before landing.
   No production changes, live Photos data, external model calls or releases.
+
+## Forgotten-assets test overlap
+
+- Remove the SQLite album-exclusion test: the exact-result test uses the same
+  fixture and rejects both album members. Keep both provider kinds, mapping
+  cases, percentile fixtures, date filters and unknown-date coverage.
+- Require the negative-gap validation error instead of accepting a database
+  failure. Eight before/after race probes retain detection of either missing
+  SQLite album filter and now reject a missing gap guard. Healthy tests pass;
+  production source is restored byte-for-byte.
+- Require full local checks, independent review and platform CI before landing.
+  Temporary synthetic data only; no production changes or releases.
