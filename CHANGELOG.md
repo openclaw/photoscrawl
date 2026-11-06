@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.5.7 - 2026-11-06
 
 **Highlights:** Restore second-interrupt handling and preserve literal SQLite paths.
