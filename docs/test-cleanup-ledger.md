@@ -191,10 +191,23 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
 
 - Share the populated foreign-database fixture between older/current schema
   versions, removing 32 test lines. Keep both Search and Init calls and check
-  the sentinel, absence of archive tables and original version after each call.
+  the sentinel, absence of the asset table and original version after each call.
 - Eight before/after race probes retain guard-bypass and sentinel-corruption
   detection. A current-version-only overwrite passes the old test and fails the
   shared fixture. Healthy rows pass; production source is restored byte-for-byte.
 - Keep missing, empty, read-only, view-only and versioned-empty input coverage.
   Require full local checks, review and platform CI. Temporary synthetic SQLite
   data only; no production changes, live archives or releases.
+
+## Apple import preservation snapshots
+
+- Replace per-table counts with ordered row contents for the same six import
+  tables and per-asset FTS mappings. Keep both libraries, empty/unknown-library
+  cases, ambiguity checks and the real SQLite metadata-failure trigger.
+- Require the injected metadata error instead of accepting any failure.
+  Twelve before/after race suites retain row-loss detection and now reject
+  cross-library content changes, content corruption after failure, lost FTS
+  mappings and the wrong error cause. Healthy suites pass; source is restored.
+- Reuse the existing SQL row reader and fixtures. Require full local checks,
+  independent review and platform CI. Synthetic archive integration only;
+  no production changes, live Photos access, model calls or releases.
