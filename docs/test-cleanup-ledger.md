@@ -378,3 +378,16 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   Temporary overlays leave source bytes unchanged.
 - Require full local checks, eval race tests, independent review and
   native/portable CI. Synthetic data only; no product changes or releases.
+
+## Built-in eval prompt request
+
+- The outside-checkout prompt case had no assets or models, so it sent no
+  request. Reuse the prepared-image helper and require one loopback request
+  carrying the built-in instructions, expanded asset metadata and image bytes.
+- Keep execution outside the checkout. No new tests, helpers or fixture files.
+- Twelve paired before/after race runs show that empty prompt text, absent
+  metadata, empty image payload and a skipped model call pass the old case
+  and fail the repaired one. Reading the prompt from the checkout fails both.
+  Healthy cases pass; temporary overlays leave source bytes unchanged.
+- Require full local checks, eval race tests, independent review and
+  native/portable CI. Synthetic data only; no product changes or releases.
