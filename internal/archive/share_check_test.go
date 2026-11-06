@@ -92,8 +92,8 @@ func TestBlockedCategoriesInPhrase(t *testing.T) {
 func TestShareCheckStatusesNotesCountsAndExclusions(t *testing.T) {
 	ctx := context.Background()
 	paths := shareCheckFixture(t)
-	ids := writeCurationIDs(t, paths.DataDir, "share-ids.txt", "pass", "hidden", "screenshot", "privacy", "unreviewed", "child", "sqlite-screenshot", "undated")
-	exclude := writeCurationIDs(t, paths.DataDir, "share-exclude.txt", "screenshot-local")
+	ids := writeTestList(t, paths.DataDir, "share-ids.txt", "pass", "hidden", "screenshot", "privacy", "unreviewed", "child", "sqlite-screenshot", "undated")
+	exclude := writeTestList(t, paths.DataDir, "share-exclude.txt", "screenshot-local")
 	got, err := ShareCheck(ctx, paths, ShareCheckOptions{IDsFile: ids, ExcludeIDsFile: exclude})
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +136,7 @@ func TestShareCheckRejectsMissingIDsFileAndUnknownAsset(t *testing.T) {
 	if _, err := ShareCheck(context.Background(), paths, ShareCheckOptions{}); err == nil {
 		t.Fatal("missing --ids-file accepted")
 	}
-	ids := writeCurationIDs(t, paths.DataDir, "unknown.txt", "missing")
+	ids := writeTestList(t, paths.DataDir, "unknown.txt", "missing")
 	if _, err := ShareCheck(context.Background(), paths, ShareCheckOptions{IDsFile: ids}); err == nil {
 		t.Fatal("unknown asset accepted")
 	}
@@ -144,7 +144,7 @@ func TestShareCheckRejectsMissingIDsFileAndUnknownAsset(t *testing.T) {
 
 func TestShareCheckRequiresLatestPrivacyAssessment(t *testing.T) {
 	paths := shareCheckFixture(t)
-	ids := writeCurationIDs(t, paths.DataDir, "privacy-assessment.txt", "pass", "missing-assessment")
+	ids := writeTestList(t, paths.DataDir, "privacy-assessment.txt", "pass", "missing-assessment")
 	got, err := ShareCheck(context.Background(), paths, ShareCheckOptions{IDsFile: ids})
 	if err != nil {
 		t.Fatal(err)
@@ -222,7 +222,7 @@ func shareCheckFixture(t *testing.T) Paths {
 
 func TestShareCheckReadsCompleteSavedPrivacyReply(t *testing.T) {
 	paths := shareCheckFixture(t)
-	ids := writeCurationIDs(t, paths.DataDir, "long-privacy.txt", "long-privacy")
+	ids := writeTestList(t, paths.DataDir, "long-privacy.txt", "long-privacy")
 	got, err := ShareCheck(context.Background(), paths, ShareCheckOptions{IDsFile: ids})
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func TestShareCheckReadsCompleteSavedPrivacyReply(t *testing.T) {
 
 func TestShareCheckTreatsMalformedAssessmentEntriesAsUnreviewed(t *testing.T) {
 	paths := shareCheckFixture(t)
-	ids := writeCurationIDs(t, paths.DataDir, "malformed.txt", "null-entry", "blank-entry", "object-entry", "pass")
+	ids := writeTestList(t, paths.DataDir, "malformed.txt", "null-entry", "blank-entry", "object-entry", "pass")
 	got, err := ShareCheck(context.Background(), paths, ShareCheckOptions{IDsFile: ids})
 	if err != nil {
 		t.Fatal(err)
@@ -261,7 +261,7 @@ func TestShareCheckRequiresReviewForUnknownSensitivity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	ids := writeCurationIDs(t, paths.DataDir, "unknown-privacy.txt", "pass")
+	ids := writeTestList(t, paths.DataDir, "unknown-privacy.txt", "pass")
 	for _, phrase := range []string{"phone number visible", "private chat visible", "faces with personal contact details", "no documents but phone number visible", "child and phone number visible"} {
 		t.Run(phrase, func(t *testing.T) {
 			evidence, err := json.Marshal(map[string]any{"classified_at": "2025-01-01T00:00:00Z", "parsed_response": map[string]any{"privacy_sensitivity": []string{phrase}}})

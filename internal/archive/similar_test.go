@@ -288,7 +288,7 @@ func TestSimilarFiltersIneligibleCandidatesBeforeShortlist(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	excludePath := writeCurationIDs(t, paths.DataDir, "shortlist-exclude.txt", excludedIDs...)
+	excludePath := writeTestList(t, paths.DataDir, "shortlist-exclude.txt", excludedIDs...)
 	result, err := Similar(ctx, paths, SimilarOptions{ID: "shortlist-seed", ExcludeIDsFile: excludePath, Limit: 30})
 	if err != nil {
 		t.Fatal(err)

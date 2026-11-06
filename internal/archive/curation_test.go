@@ -225,8 +225,8 @@ func TestCurationQueriesEndToEnd(t *testing.T) {
 		}
 	})
 	t.Run("rank", func(t *testing.T) {
-		ids := writeCurationIDs(t, paths.DataDir, "rank.txt", "landscape", "face-low", "burst-closed", "burst-open", "time-one", "time-two", "day-before", "day-after")
-		qualityIDs := writeCurationIDs(t, paths.DataDir, "quality-rank.txt", "landscape", "face-low")
+		ids := writeTestList(t, paths.DataDir, "rank.txt", "landscape", "face-low", "burst-closed", "burst-open", "time-one", "time-two", "day-before", "day-after")
+		qualityIDs := writeTestList(t, paths.DataDir, "quality-rank.txt", "landscape", "face-low")
 		got, err := Rank(ctx, paths, RankOptions{IDsFile: qualityIDs})
 		if err != nil || got.Groups[0].BestID != "landscape" || !containsText(got.Groups[0].Assets[0].Reasons, "overall aesthetic 0.90") {
 			t.Fatalf("quality rank without people = %#v, %v", got, err)
@@ -306,12 +306,12 @@ func TestCurationQueriesEndToEnd(t *testing.T) {
 		}
 	})
 	t.Run("exclude", func(t *testing.T) {
-		exclude := writeCurationIDs(t, paths.DataDir, "exclude.txt", "shot-old", "blurry-local/L0/001")
+		exclude := writeTestList(t, paths.DataDir, "exclude.txt", "shot-old", "blurry-local/L0/001")
 		found, err := Find(ctx, paths, FindOptions{ExcludeIDsFile: exclude, Limit: 100})
 		if err != nil || hasID(found.Assets, "shot-old") || hasID(found.Assets, "blurry-low") {
 			t.Fatalf("find exclusions = %#v, %v", found, err)
 		}
-		ids := writeCurationIDs(t, paths.DataDir, "excluded-rank.txt", "shot-old", "blurry-local/L0/001")
+		ids := writeTestList(t, paths.DataDir, "excluded-rank.txt", "shot-old", "blurry-local/L0/001")
 		ranked, err := Rank(ctx, paths, RankOptions{IDsFile: ids, ExcludeIDsFile: exclude})
 		if err != nil || len(ranked.Groups) != 0 {
 			t.Fatalf("rank exclusions = %#v, %v", ranked, err)
@@ -333,7 +333,7 @@ func TestCurationCommandsKeepUnknownCreationDates(t *testing.T) {
 	if err != nil || hasID(bounded.Assets, "undated") {
 		t.Fatalf("date-bounded find included unknown date = %#v, %v", bounded, err)
 	}
-	ids := writeCurationIDs(t, paths.DataDir, "undated-rank.txt", "time-one", "undated")
+	ids := writeTestList(t, paths.DataDir, "undated-rank.txt", "time-one", "undated")
 	for _, group := range []string{"none", "burst", "time", "day"} {
 		ranked, err := Rank(ctx, paths, RankOptions{IDsFile: ids, Group: group})
 		if err != nil {
@@ -449,7 +449,7 @@ from face_observation where id = 'face-face-low-Casey'`)
 	return paths
 }
 
-func writeCurationIDs(t *testing.T, dir, name string, ids ...string) string {
+func writeTestList(t *testing.T, dir, name string, ids ...string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(joinLines(ids)), 0o600); err != nil {

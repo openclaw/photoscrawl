@@ -43,7 +43,7 @@ func TestSheetNumbersAcrossPagesAndSelectsSources(t *testing.T) {
 		{id: "four", localIdentifier: "local-four"},
 		{id: "five", localIdentifier: "local-five"},
 	})
-	idsFile := writeSheetList(t, root, "ids.txt", "one", "two", "three", "four", "five")
+	idsFile := writeTestList(t, root, "ids.txt", "one", "two", "three", "four", "five")
 	renderedSources := []string{}
 	renderer := func(_ context.Context, sourcePath, destinationPath string, _ float64) error {
 		renderedSources = append(renderedSources, sourcePath)
@@ -127,7 +127,7 @@ func TestSheetFilesUseOriginalOrPlaceholderAndDoNotDrawTitle(t *testing.T) {
 	file := filepath.Join(root, "input.png")
 	missing := filepath.Join(root, "missing.png")
 	writeSyntheticPNG(t, file, color.RGBA{G: 220, A: 255})
-	filesFile := writeSheetList(t, root, "files.txt", file, missing)
+	filesFile := writeTestList(t, root, "files.txt", file, missing)
 	renderer := func(context.Context, string, string, float64) error {
 		return os.ErrInvalid
 	}
@@ -334,24 +334,6 @@ insert into asset_resource(
 	}
 }
 
-func writeSheetList(t *testing.T, root, name string, entries ...string) string {
-	t.Helper()
-	path := filepath.Join(root, name)
-	contents := []byte(stringsJoinLines(entries))
-	if err := os.WriteFile(path, contents, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func stringsJoinLines(entries []string) string {
-	result := ""
-	for _, entry := range entries {
-		result += entry + "\n"
-	}
-	return result
-}
-
 func writeSyntheticPNG(t *testing.T, path string, fill color.Color) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -413,9 +395,9 @@ func TestSheetPropagatesFinalTileCancellation(t *testing.T) {
 				opts := SheetOptions{Tile: 32, Renderer: func(context.Context, string, string, float64) error { return failure }}
 				if byID {
 					createSheetFixture(t, paths, []sheetFixtureAsset{{id: "one", localIdentifier: "one", resourceType: "original", localPath: input}})
-					opts.IDsFile = writeSheetList(t, root, "ids.txt", "one")
+					opts.IDsFile = writeTestList(t, root, "ids.txt", "one")
 				} else {
-					opts.FilesFile = writeSheetList(t, root, "files.txt", input)
+					opts.FilesFile = writeTestList(t, root, "files.txt", input)
 				}
 				if _, err := Sheet(context.Background(), paths, opts); !errors.Is(err, failure) {
 					t.Fatalf("sheet error = %v, want %v", err, failure)
@@ -465,7 +447,7 @@ func TestSheetRejectsExcessiveDimensionsBeforeAllocation(t *testing.T) {
 			for i := range files {
 				files[i] = filepath.Join(root, "missing.png")
 			}
-			list := writeSheetList(t, root, "files.txt", files...)
+			list := writeTestList(t, root, "files.txt", files...)
 			_, err := Sheet(context.Background(), paths, SheetOptions{FilesFile: list, PerSheet: tc.perSheet, Tile: tc.tile})
 			if err == nil {
 				t.Fatal("excessive dimensions accepted")

@@ -403,3 +403,13 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   Healthy cases pass; temporary overlays leave source bytes unchanged.
 - Require full local checks, archive race tests, independent review and
   native/portable CI. No new tests, helpers, fixtures, product changes or releases.
+
+## Shared list fixture writer
+
+- Replace the sheet-specific list writer and join helper with the existing
+  writer, renamed `writeTestList`. Update its 18 callers across sheet,
+  curation, share-check and similarity cases; remove 18 duplicate test lines.
+- Preserve empty-file output, trailing newlines, argument order, paths and
+  `0600` permissions. No test assertions, fixtures or production code change.
+- Require full local checks, archive race tests, independent review and
+  native/portable CI. Synthetic data only; no releases.
