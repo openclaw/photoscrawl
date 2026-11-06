@@ -85,10 +85,12 @@ func TestTimelineReturnsLocatedAssetsInHalfOpenRange(t *testing.T) {
 	for _, album := range observation.Albums {
 		albums[album.ID] = album
 	}
-	if albums["shared-trip"].Title != "Trip" || albums["shared-trip"].FolderPath != "Travel / 2026" || albums["quoted-album"].Title != `Album ["two"]` {
+	if albums["shared-trip"] != (TimelineAlbum{ID: "shared-trip", Title: "Trip", Kind: "album:1:101", FolderPath: "Travel / 2026"}) ||
+		albums["quoted-album"] != (TimelineAlbum{ID: "quoted-album", Title: `Album ["two"]`, Kind: "album:1:101"}) {
 		t.Fatalf("album objects = %#v", albums)
 	}
-	if observation.Latitude == nil || observation.Longitude == nil || observation.AccuracyMeters == nil || *observation.AccuracyMeters != accuracy || observation.IsPrecise == nil || !*observation.IsPrecise {
+	if observation.Latitude == nil || *observation.Latitude != 52.3676 || observation.Longitude == nil || *observation.Longitude != 4.9041 ||
+		observation.AccuracyMeters == nil || *observation.AccuracyMeters != accuracy || observation.IsPrecise == nil || !*observation.IsPrecise {
 		t.Fatalf("location quality = %#v", observation)
 	}
 
@@ -100,11 +102,15 @@ func TestTimelineReturnsLocatedAssetsInHalfOpenRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if all.Count != 2 || all.Observations[1].LocationObservationID != "" || all.Observations[1].Latitude != nil || all.Observations[1].SourceRef != all.Observations[1].AssetID {
+	if all.Count != 2 || len(all.Observations) != 2 || all.Observations[0].AssetID != observation.AssetID ||
+		all.Observations[0].LocationObservationID != observation.LocationObservationID {
 		t.Fatalf("timeline with unlocated assets = %#v", all.Observations)
 	}
-	if len(all.Observations[1].Albums) != 0 {
-		t.Fatalf("unlocated asset albums = %#v", all.Observations[1].Albums)
+	unlocated := all.Observations[1]
+	if unlocated.AssetID == "" || unlocated.LocationObservationID != "" || unlocated.SourceRef != unlocated.AssetID ||
+		unlocated.CreatedAt != "2026-05-27T11:00:00Z" || unlocated.MediaType != "image" || unlocated.SourceType != 0 ||
+		unlocated.Latitude != nil || unlocated.Longitude != nil || unlocated.AccuracyMeters != nil || unlocated.IsPrecise != nil || len(unlocated.Albums) != 0 {
+		t.Fatalf("unlocated asset = %#v", unlocated)
 	}
 
 	empty, err := Timeline(ctx, paths, TimelineOptions{

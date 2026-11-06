@@ -391,3 +391,15 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   Healthy cases pass; temporary overlays leave source bytes unchanged.
 - Require full local checks, eval race tests, independent review and
   native/portable CI. Synthetic data only; no product changes or releases.
+
+## Timeline result fields
+
+- Require literal latitude/longitude and complete album records in the existing
+  timeline fixture. Check both result lengths, retained located identity, and
+  all absent location fields on the existing unlocated photo.
+- Twelve paired before/after race runs show that swapped coordinates, lost album
+  kinds, fabricated longitude and fabricated accuracy/precision pass the old
+  case and fail the replacement. Both still reject an included upper time bound.
+  Healthy cases pass; temporary overlays leave source bytes unchanged.
+- Require full local checks, archive race tests, independent review and
+  native/portable CI. No new tests, helpers, fixtures, product changes or releases.
