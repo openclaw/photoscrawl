@@ -277,3 +277,16 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
 - Require full local checks, archive race tests, independent review and
   native/portable CI. Synthetic SQLite data only; no product changes, live
   Photos access or releases.
+
+## Curation rank group results
+
+- Replace time/day group-count-only checks with literal ordered keys, keepers
+  and member IDs in the existing rank case. Require the correct retained photo
+  after per-group trimming; reuse the same archive, IDs and local-midnight data.
+- Fourteen paired before/after curation race runs show that wrong members,
+  keys, keepers, group order and trimmed photos pass the old checks but fail
+  the repaired checks. Both suites still reject a lost time-gap boundary.
+  Healthy suites pass; temporary Go overlays leave production unchanged.
+- Require full local checks, archive race tests, independent review and
+  native/portable CI. No new tests, helpers or fixtures, production changes,
+  live Photos access or releases.
