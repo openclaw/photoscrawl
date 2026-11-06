@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/openclaw/crawlkit/store"
@@ -55,9 +57,9 @@ func TestAppleImportReplacementIsLibraryScoped(t *testing.T) {
 	if _, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraries[0]}); err != nil {
 		t.Fatalf("valid empty library: %v", err)
 	}
-	for table, count := range appleRows(t, db.DB(), aID) {
-		if count != 0 {
-			t.Fatalf("empty library retained %s rows: %d", table, count)
+	for table, snapshot := range appleRows(t, db.DB(), aID) {
+		if len(snapshot) != 0 {
+			t.Fatalf("empty library retained %s rows: %d", table, len(snapshot))
 		}
 	}
 	assertAppleRows(t, db.DB(), bID, beforeB)
@@ -80,8 +82,8 @@ func TestAppleImportReplacementIsLibraryScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	execTestSQL(t, db.DB(), `create trigger fail_metadata before insert on model_observation begin select raise(abort, 'synthetic metadata failure'); end`)
-	if _, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraries[1]}); err == nil {
-		t.Fatal("injected late failure accepted")
+	if _, err := ImportApple(ctx, paths, ImportAppleOptions{LibraryPath: libraries[1]}); err == nil || !strings.Contains(err.Error(), "synthetic metadata failure") {
+		t.Fatalf("late import error = %v, want synthetic metadata failure", err)
 	}
 	assertAppleRows(t, db.DB(), bID, beforeB)
 }
@@ -126,24 +128,32 @@ added_date, timezone_name, width, height, duration_seconds, favorite, hidden, bu
 values(?, ?, 'image', '', '', '', '', '', 100, 100, 0, 0, 0, '', 0, ?, '{}')`, assetID, identifier, sourceID)
 }
 
-func appleRows(t *testing.T, db *sql.DB, assetID string) map[string]int {
+func appleRows(t *testing.T, db *sql.DB, assetID string) map[string][]map[string]any {
 	t.Helper()
-	result := map[string]int{}
+	result := map[string][]map[string]any{}
 	for _, table := range []string{"face_observation", "visual_observation", "model_observation", "observation_fts", "observation_term", "evidence_ref"} {
-		var count int
-		if err := db.QueryRow(`select count(*) from `+store.QuoteIdent(table)+` where asset_id = ?`, assetID).Scan(&count); err != nil {
-			t.Fatal(err)
+		snapshot, err := rows(context.Background(), db, `select * from `+store.QuoteIdent(table)+` where asset_id = ? order by id`, assetID)
+		if err != nil {
+			t.Fatalf("snapshot %s: %v", table, err)
 		}
-		result[table] = count
+		result[table] = snapshot
 	}
+	mappings, err := rows(context.Background(), db, `
+select mapped.* from observation_fts_rowid mapped
+join observation_fts observations on observations.id = mapped.observation_id
+where observations.asset_id = ?
+order by mapped.observation_id, mapped.fts_rowid
+`, assetID)
+	if err != nil {
+		t.Fatalf("snapshot observation_fts_rowid: %v", err)
+	}
+	result["observation_fts_rowid"] = mappings
 	return result
 }
 
-func assertAppleRows(t *testing.T, db *sql.DB, assetID string, want map[string]int) {
+func assertAppleRows(t *testing.T, db *sql.DB, assetID string, want map[string][]map[string]any) {
 	t.Helper()
-	for table, count := range appleRows(t, db, assetID) {
-		if count != want[table] {
-			t.Fatalf("%s rows = %d, want %d", table, count, want[table])
-		}
+	if got := appleRows(t, db, assetID); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Apple rows changed:\ngot=%#v\nwant=%#v", got, want)
 	}
 }
