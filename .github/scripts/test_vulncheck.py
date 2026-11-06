@@ -174,9 +174,15 @@ class StructuredScanTest(unittest.TestCase):
             "roots": ["example.invalid/app"],
             "modules": {"stdlib": "v1.27.1", "example.invalid/app": "", "example.invalid/dependency": "v1.2.3"},
         })
-        for packages in ([], [{"Error": {"Err": "load failed"}}], [
-            {"ImportPath": "example.invalid/app", "Module": {**root, "Version": "v9.0.0"}},
-        ]):
+        for packages in (
+            [],
+            [{**loaded[-1], "Error": {"Err": "load failed"}}],
+            [{**loaded[-1], "DepsErrors": [{"Err": "dependency load failed"}]}],
+            [{**loaded[-1], "Incomplete": True}],
+            [
+                {"ImportPath": "example.invalid/app", "Module": {**root, "Version": "v9.0.0"}},
+            ],
+        ):
             with self.subTest(packages=packages), self.assertRaises(ValueError):
                 vulncheck.expected_sbom("\n".join(map(json.dumps, packages)), selected, "go1.27.1")
 
