@@ -366,3 +366,15 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
 - Require full local checks, archive race tests, independent review and
   native/portable CI. Synthetic SQLite/media and a loopback server only; no
   production changes, live Photos access or releases.
+
+## Eval provider and attempt fixture
+
+- Reuse one asset-aware provider stub for empty, budget and model eval cases;
+  remove the duplicate provider type and six test lines.
+- Reduce 100 identical candidates to seven: the six-attempt limit plus one.
+  Keep both runs and the empty-cache checks after failed preparation.
+- Ten paired before/after race runs preserve rejection of caps of five/seven,
+  a removed attempt cap and lost original cleanup. Healthy cases pass.
+  Temporary overlays leave source bytes unchanged.
+- Require full local checks, eval race tests, independent review and
+  native/portable CI. Synthetic data only; no product changes or releases.

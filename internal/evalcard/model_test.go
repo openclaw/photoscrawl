@@ -75,7 +75,7 @@ func preparedModelOptions(t *testing.T) Options {
 	t.Helper()
 	opts, _ := evalRunOptions(t)
 	asset := photos.Asset{LocalIdentifier: "synthetic", MediaType: "image"}
-	opts.Provider = budgetProvider{[]photos.Asset{asset}}
+	opts.Provider = stubProvider{[]photos.Asset{asset}}
 	opts.Models = []string{"fixture"}
 	opts.Concurrency = 1
 	if err := os.MkdirAll(opts.CacheDir, 0o700); err != nil {
