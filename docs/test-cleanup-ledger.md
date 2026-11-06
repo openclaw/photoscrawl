@@ -336,3 +336,17 @@ rows. Full local checks, archive race tests, review and CI use synthetic data.
   Healthy suites pass; source files remain unchanged after the proof.
 - Require full local checks, independent review and native/portable CI. Synthetic
   SQLite data only; no production changes, live Photos access or releases.
+
+## Similar same-event result completeness
+
+- Replace relative position checks with the existing exact-ID comparison for
+  the three ordered same-event results. Missing candidates previously counted
+  as being last and could pass. Remove the unused index helper.
+- Keep the same synthetic archive and frequency-threshold population. No new
+  tests, helpers, fixtures or production changes; remove ten test lines.
+- Twelve paired before/after race runs use temporary Go overlays. Missing
+  same-day/phone results, reversed trailing order and a duplicate result pass
+  the old check and fail the replacement. Both reject a wrong first result.
+  Healthy cases pass; source bytes stay unchanged and overlays are removed.
+- Require full local checks, archive race tests, independent review and
+  native/portable CI. No live Photos access or releases.
