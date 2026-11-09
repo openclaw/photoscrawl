@@ -46,7 +46,8 @@ smoke:
 	$(MAKE) build VERSION=ci
 	@test "$$("$(BINARY)" --version)" = ci
 
-check: tidy-check fmt lint test smoke
+check: tidy-check
+	$(MAKE) -j2 fmt lint test smoke
 
 snapshot:
 	GOWORK=off $${GORELEASER:-goreleaser} release --snapshot --clean --skip=publish
