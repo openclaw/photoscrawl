@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Run independent validation gates two at a time after module verification to shorten local and CI checks.
 - Reject overflowing day counts in `junk --older-than` instead of wrapping the screenshot age cutoff.
 
 ## 0.5.7 - 2026-11-06
