@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Prefer Go 1.27.4 for builds and native vulnerability scans to fix GO-2026-6859; retain the Go 1.27.0 source compatibility floor.
+
 - Run independent validation gates two at a time after module verification to shorten local and CI checks.
 - Reject overflowing day counts in `junk --older-than` instead of wrapping the screenshot age cutoff.
 
