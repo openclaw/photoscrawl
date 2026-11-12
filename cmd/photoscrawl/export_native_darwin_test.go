@@ -70,6 +70,8 @@ func TestExportNativeIntegration(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			dir := t.TempDir()
 			outDir := filepath.Join(dir, "out")
 			if err := os.Mkdir(outDir, 0700); err != nil {
