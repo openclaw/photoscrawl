@@ -390,7 +390,7 @@ where claim_owner = ?
 `, owner)
 }
 
-func prepareClassificationPreview(ctx context.Context, paths Paths, input *classifyInput, opts ClassifyOptions) (string, error) {
+func prepareClassificationPreview(ctx context.Context, paths Paths, input *classifyInput, opts ClassifyOptions) (_ string, err error) {
 	exporter := opts.previewExporter
 	if exporter == nil {
 		exporter = photos.ExportImagePreview
@@ -410,8 +410,12 @@ func prepareClassificationPreview(ctx context.Context, paths Paths, input *class
 	if err != nil {
 		return "", fmt.Errorf("create classification preview directory: %w", err)
 	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(previewDir)
+		}
+	}()
 	if err := os.Chmod(previewDir, 0o700); err != nil {
-		_ = os.RemoveAll(previewDir)
 		return "", fmt.Errorf("protect classification preview directory: %w", err)
 	}
 	previewName := strings.TrimPrefix(stableID("classification_preview", input.AssetID), "classification_preview:") + ".jpg"
@@ -427,7 +431,6 @@ func prepareClassificationPreview(ctx context.Context, paths Paths, input *class
 	timedOut := ctx.Err() == nil && errors.Is(previewCtx.Err(), context.DeadlineExceeded)
 	cancelPreview()
 	if err != nil {
-		_ = os.RemoveAll(previewDir)
 		if timedOut {
 			return "", fmt.Errorf("download PhotoKit preview: timed out after %s", timeout)
 		}
@@ -435,7 +438,6 @@ func prepareClassificationPreview(ctx context.Context, paths Paths, input *class
 	}
 	info, statErr := os.Stat(previewPath)
 	if statErr != nil || !info.Mode().IsRegular() || info.Size() == 0 {
-		_ = os.RemoveAll(previewDir)
 		return "", errors.New("download PhotoKit preview: exporter returned no image")
 	}
 	input.Resources = append(input.Resources, classificationPreviewResource(previewPath))
