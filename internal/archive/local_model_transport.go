@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"sync"
 )
 
@@ -58,7 +57,7 @@ func (r *modelHTTPRecorder) recordResponse(endpoint string) {
 func (r *modelHTTPRecorder) snapshot() (int, int, []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.requests, r.responses, sortedEndpointSet(r.endpoints)
+	return r.requests, r.responses, sortedMapKeys(r.endpoints)
 }
 
 func validateLoopbackEndpoint(ctx context.Context, value string, lookup lookupIPAddrFunc) (string, error) {
@@ -133,13 +132,4 @@ func responseEndpoint(resp *http.Response) string {
 		return ""
 	}
 	return resp.Request.URL.String()
-}
-
-func sortedEndpointSet(endpoints map[string]struct{}) []string {
-	values := make([]string, 0, len(endpoints))
-	for endpoint := range endpoints {
-		values = append(values, endpoint)
-	}
-	sort.Strings(values)
-	return values
 }

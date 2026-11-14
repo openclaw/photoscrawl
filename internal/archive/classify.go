@@ -260,7 +260,7 @@ func Classify(ctx context.Context, paths Paths, opts ClassifyOptions) (ClassifyR
 		}
 	}
 	if classifier != nil {
-		result.LocalModelResponseEndpoints = sortedEndpointSet(responseEndpoints)
+		result.LocalModelResponseEndpoints = sortedMapKeys(responseEndpoints)
 		err := db.WithTx(ctx, func(tx *sql.Tx) error {
 			return writeModelRun(ctx, tx, result.ModelRunID, *classifier, responseEndpoints, claimedInputs, result.LocalModelHTTPRequestAttempts, result.LocalModelHTTPResponses, result.ContentClassified, result.ContentClassificationFailures, now().UTC())
 		})
