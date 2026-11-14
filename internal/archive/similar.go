@@ -129,7 +129,7 @@ func Similar(ctx context.Context, paths Paths, opts SimilarOptions) (SimilarResu
 	}
 
 	features = pruneSimilarFeatures(features, documentCount, 0, seed.MediaType == "image" && seed.hidden == 0)
-	assets, err := loadSimilarAssets(ctx, db.DB(), similarCandidateIDs(features))
+	assets, err := loadSimilarAssets(ctx, db.DB(), sortedMapKeys(features))
 	if err != nil {
 		return SimilarResult{}, err
 	}
@@ -499,15 +499,6 @@ func similarZeroWeightTerm(term string) bool {
 		}
 	}
 	return false
-}
-
-func similarCandidateIDs(features map[string]map[string]similarFeature) []string {
-	ids := make([]string, 0, len(features))
-	for id := range features {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
 }
 
 func loadSimilarAssets(ctx context.Context, db *sql.DB, ids []string) ([]fullAsset, error) {

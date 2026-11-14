@@ -192,7 +192,7 @@ from %s a`,
 	}
 
 	assetScoreSelect := []string{"a.ZUUID"}
-	for _, column := range sortedMappedColumns(appleAssetScoreColumns) {
+	for _, column := range sortedMapKeys(appleAssetScoreColumns) {
 		if assetColumns[column] {
 			assetScoreSelect = append(assetScoreSelect, "a."+store.QuoteIdent(column))
 		}
@@ -398,15 +398,6 @@ func sqliteTruthy(value any) bool {
 	default:
 		return false
 	}
-}
-
-func sortedMappedColumns(mapping map[string]string) []string {
-	columns := make([]string, 0, len(mapping))
-	for column := range mapping {
-		columns = append(columns, column)
-	}
-	sort.Strings(columns)
-	return columns
 }
 
 func exifSummary(exif map[string]any) string {

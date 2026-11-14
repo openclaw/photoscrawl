@@ -75,7 +75,7 @@ values (?, ?, ?, ?, ?, ?, ?)
 }
 
 func writeModelRun(ctx context.Context, tx *sql.Tx, runID string, classifier localModelClassifier, endpoints map[string]struct{}, inputCount, httpRequestAttempts, httpResponses, contentClassified, failures int, completedAt time.Time) error {
-	responseEndpoints := sortedEndpointSet(endpoints)
+	responseEndpoints := sortedMapKeys(endpoints)
 	metadataJSON, err := jsonText(map[string]any{
 		"content_classified":         contentClassified,
 		"failures":                   failures,
