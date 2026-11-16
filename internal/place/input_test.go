@@ -1,11 +1,64 @@
 package place
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestLoadInputRejectsMalformedNumbers(t *testing.T) {
+	for _, field := range []string{"latitude", "longitude", "accuracy_meters"} {
+		for _, value := range []string{"12.5junk", "12.5 6", "invalid", "1e9999", "NaN", "+Inf", "-Inf"} {
+			t.Run(field+"/"+value, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "input.json")
+				raw := map[string]any{"latitude": 12.5, "longitude": 34.5}
+				raw[field] = value
+				data, err := json.Marshal(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if input, err := loadInput(path); err == nil {
+					t.Fatalf("accepted malformed %s: %#v", field, input)
+				}
+			})
+		}
+	}
+}
+
+func TestLoadInputPreservesNumericAliasFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "input.json")
+	data := []byte(`{"latitude":"invalid","lat":"12.5","longitude":34.5}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input, err := loadInput(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.Location.Latitude != 12.5 || input.Location.Longitude != 34.5 || input.AccuracyMeters != 0 {
+		t.Fatalf("input = %#v", input)
+	}
+}
+
+func TestLoadInputAcceptsNumericStrings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "input.json")
+	data := []byte(`{"asset":{"location":{"latitude":" 1.25e1 ","longitude":"+34.5","horizontal_accuracy":"8.5"}}}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input, err := loadInput(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.Location.Latitude != 12.5 || input.Location.Longitude != 34.5 || input.AccuracyMeters != 8.5 {
+		t.Fatalf("input = %#v", input)
+	}
+}
 
 func TestLoadInputAcceptsEvalMetadataShape(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "metadata.json")

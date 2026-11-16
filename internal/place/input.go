@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -88,6 +89,9 @@ func validateInput(input Input) error {
 	if input.Location.Latitude == 0 && input.Location.Longitude == 0 {
 		return errors.New("latitude and longitude are required")
 	}
+	if math.IsNaN(input.AccuracyMeters) || math.IsInf(input.AccuracyMeters, 0) {
+		return errors.New("accuracy must be finite")
+	}
 	return nil
 }
 
@@ -120,6 +124,7 @@ func firstString(raw map[string]any, keys ...string) string {
 }
 
 func firstFloat(raw map[string]any, keys ...string) float64 {
+	invalid := false
 	for _, key := range keys {
 		value, ok := raw[key]
 		if !ok {
@@ -133,12 +138,21 @@ func firstFloat(raw map[string]any, keys ...string) float64 {
 			if err == nil {
 				return f
 			}
+			invalid = true
 		case string:
-			var f float64
-			if _, err := fmt.Sscanf(strings.TrimSpace(v), "%f", &f); err == nil {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				continue
+			}
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
 				return f
 			}
+			invalid = true
 		}
+	}
+	if invalid {
+		// Preserve malformed values for validation instead of replacing them with zero.
+		return math.NaN()
 	}
 	return 0
 }
