@@ -304,6 +304,9 @@ Cached place evidence is shared by coordinates, accuracy, and search radius.
 Each response retains the current request's asset, image, and capture time while
 preserving the provider evidence's original generation time.
 
+Numeric place input must parse completely and be finite. Numeric strings may
+include surrounding whitespace and scientific notation.
+
 `place-card` renders cached provider evidence into the same deterministic
 Markdown card without re-calling providers. It keeps address detail, normalizes
 map context, caps useful POIs, and omits raw coordinates, warnings, provider
