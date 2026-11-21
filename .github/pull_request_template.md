@@ -6,6 +6,15 @@ then explain the change. These are illustrative examples, not required wording:
 - Implementation-first: "Change the search query and add a regression test."
 - Reader-first: "Searching an archive misses photos whose captions contain the
   requested term. Include caption matches so users can find those photos."
+
+In 1–3 plain sentences, say who is affected, what happens today, and why it
+matters to them. For a bug, name the trigger if known. For a feature or internal
+work, describe the need in the actual workflow without inventing harm.
+Could a reader understand the problem without knowing your proposed fix?
+
+Good: "Background checks can use up a new user's model allowance before they've
+asked the assistant to monitor anything."
+Bad: "Turn off periodic checks on fresh installs."
 -->
 
 ## Changes
