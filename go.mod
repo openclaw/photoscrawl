@@ -5,7 +5,7 @@ go 1.27.0
 toolchain go1.27.4
 
 require (
-	github.com/openclaw/crawlkit v0.17.4
+	github.com/openclaw/crawlkit v0.18.0
 	modernc.org/sqlite v1.62.0
 )
 

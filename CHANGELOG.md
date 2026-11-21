@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Update CrawlKit to v0.18.0 for canceled SQLite-open and literal-path fixes, retaining the Go 1.27.0 source minimum and Go 1.27.4 build toolchain.
+
 - Reject malformed numeric place input and non-finite accuracy instead of accepting numeric prefixes or silently substituting zero.
 
 - Prefer Go 1.27.4 for builds and native vulnerability scans to fix GO-2026-6859; retain the Go 1.27.0 source compatibility floor.
