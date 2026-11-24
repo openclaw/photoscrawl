@@ -1,12 +1,7 @@
-## Summary
+## What Problem This Solves
 
 <!--
-Lead with the problem, task, or value for someone using or maintaining photoscrawl,
-then explain the change. These are illustrative examples, not required wording:
-- Implementation-first: "Change the search query and add a regression test."
-- Reader-first: "Searching an archive misses photos whose captions contain the
-  requested term. Include caption matches so users can find those photos."
-
+Describe the concrete user, product, or operational problem.
 In 1–3 plain sentences, say who is affected, what happens today, and why it
 matters to them. For a bug, name the trigger if known. For a feature or internal
 work, describe the need in the actual workflow without inventing harm.
@@ -17,17 +12,27 @@ asked the assistant to monitor anything."
 Bad: "Turn off periodic checks on fresh installs."
 -->
 
-## Changes
-
-<!-- Explain the implementation and any relevant scope limits. -->
-
-## Validation
+## User Impact
 
 <!--
-State what was verified and the outcome before commands or logs. Note anything
-not tested or still uncertain. Illustrative examples:
-- Command-only: "Ran go test ./..."
-- Outcome-first: "A synthetic archive fixture confirms caption matches appear in
-  search results; the Go test suite passed (go test ./...)."
-Use synthetic examples or counts; do not include private Photos data or output.
+"User impact: <what users, operators, or developers can now do or expect>."
+Lead with the concrete outcome in plain language, usually one sentence.
+For internal-only changes, say there is no user-visible change; do not invent a benefit.
+Keep important risks, breaking changes, migrations, and required user actions visible here.
+-->
+
+## Why This Change Was Made
+
+<!--
+Briefly explain how the change addresses the problem without repeating the impact.
+Keep the body short. Leave file lists, internal acronyms, and root-cause walkthroughs
+in the diff or optional <details>; include technical detail only when it explains
+behavior or a material tradeoff. Do not hide risks or required actions in <details>.
+-->
+
+## Evidence
+
+<!--
+Start with the behavior checked and the result in plain language. Keep meaningful
+verification gaps visible. Use synthetic examples or counts, not private Photos data.
 -->
