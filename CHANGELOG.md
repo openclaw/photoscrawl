@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.8 - 2026-11-26
+
+**Highlights:** Reject malformed place input and overflowing age filters, with refreshed CrawlKit and Go builds.
+
 - Update CrawlKit to v0.18.0 for canceled SQLite-open and literal-path fixes, retaining the Go 1.27.0 source minimum and Go 1.27.4 build toolchain.
 
 - Reject malformed numeric place input and non-finite accuracy instead of accepting numeric prefixes or silently substituting zero.
